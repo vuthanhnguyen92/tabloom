@@ -1,0 +1,71 @@
+# Tabloom
+
+Tabloom is an original tab and link workspace inspired by the workflow of visual bookmark organizers. It includes a public marketing site, a synchronized web workspace, and a Chrome Manifest V3 new-tab extension.
+
+## Requirements
+
+- Node.js 22.13 or newer
+- A Supabase project for synchronized accounts
+- A Google OAuth client configured through Supabase
+- Chrome for the extension build
+
+## Local development
+
+```bash
+npm install
+cp .env.example .env.local
+npm run dev -- --port 4173
+```
+
+Without Supabase values the web app and extension open in a fully interactive demo mode. Demo changes are in memory and reset on refresh.
+
+Useful commands:
+
+```bash
+npm run test:unit
+npm run build
+npm run build:extension
+npm run build:all
+npm test
+```
+
+## Supabase and Google sign-in
+
+1. Create a Supabase project and run `supabase/migrations/202608190001_initial_workspace.sql` in the SQL editor or with the Supabase CLI.
+2. In Google Cloud, create an OAuth 2.0 web client. Add the callback URL shown under Supabase **Authentication → Providers → Google** to Google’s authorized redirect URIs.
+3. Enable Google in Supabase and enter the Google client ID and secret there. The secret belongs only in Supabase and must never be added to this repository.
+4. Add `http://localhost:4173/app` and the production `/app` URL to Supabase **Authentication → URL Configuration → Redirect URLs**.
+5. Copy `.env.example` to `.env.local` and set the public Supabase project URL and anonymous key for both the `NEXT_PUBLIC_` and `VITE_` variables. The anonymous key is intentionally client-visible; never use the service-role key.
+
+Row-level security ensures every user can read and change only rows whose `user_id` matches their authenticated Supabase user.
+
+## Chrome extension
+
+Build the unpacked extension:
+
+```bash
+npm run build:extension
+```
+
+Then open `chrome://extensions`, enable **Developer mode**, choose **Load unpacked**, and select `dist-extension`.
+
+For Google sign-in:
+
+1. Load the unpacked extension once so Chrome assigns it an ID.
+2. In the extension console run `chrome.identity.getRedirectURL("auth-callback")` or derive `https://EXTENSION_ID.chromiumapp.org/auth-callback`.
+3. Add that exact URL to the Supabase redirect allow list.
+4. Rebuild after setting `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY`, and `VITE_TABLOOM_WEB_URL`.
+
+The extension requests only `tabs`, `storage`, and `identity`, plus network access to Supabase. It reads tab metadata only when the capture tray is opened. “Save & close” closes original tabs only after all selected records are persisted successfully.
+
+## Project layout
+
+- `app/` — marketing site, privacy page, and authenticated web workspace
+- `shared/` — domain types, validation, capture behavior, and repository adapters
+- `extension/` — Chrome new-tab interface, OAuth adapter, and cache
+- `supabase/migrations/` — schema, ownership constraints, indexes, and RLS policies
+- `tests/` — domain, repository, workspace, capture, extension, and server-rendering tests
+
+## Deployment
+
+The web build targets OpenAI Sites through the Vinext/Cloudflare Worker runtime. Configure the same public Supabase variables in the hosted environment before enabling synchronized sign-in. The extension is delivered as an unpacked build in v1; Chrome Web Store submission is intentionally out of scope.
