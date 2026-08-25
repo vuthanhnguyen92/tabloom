@@ -1,13 +1,18 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { Archive, ExternalLink, LogIn, Search, Sprout, X } from "lucide-react";
-import { captureTabs } from "../shared/capture";
-import { createDemoSnapshot, filterWorkspace, hostnameFor, type WorkspaceSnapshot } from "../shared/domain";
+import "@fontsource/poppins/latin-400.css";
+import "@fontsource/poppins/latin-500.css";
+import "@fontsource/poppins/latin-600.css";
+import "@fontsource/poppins/latin-700.css";
+import { ExternalLink, LogIn, Search, Sprout, X } from "lucide-react";
+import { createDemoSnapshot, filterWorkspace, type WorkspaceSnapshot } from "../shared/domain";
 import { MemoryWorkspaceRepository, SupabaseWorkspaceRepository, type WorkspaceRepository } from "../shared/repository";
-import { listCurrentWindowTabs, type CaptureTab } from "./chrome-api";
+import type { CaptureTab } from "./chrome-api";
 import { ChromeSnapshotCache } from "./storage";
 import { extensionSupabase, signInExtensionWithGoogle } from "./supabase";
 import { CollectionRows } from "./CollectionRows";
+import { CurrentTabsSheet } from "./CurrentTabsSheet";
+import { saveDroppedTab } from "./dropped-tab";
 import "./style.css";
 
 const cache = new ChromeSnapshotCache();
@@ -19,12 +24,12 @@ function ExtensionApp() {
   const [snapshot, setSnapshot] = useState<WorkspaceSnapshot | null>(null);
   const [selectedSpace, setSelectedSpace] = useState("");
   const [query, setQuery] = useState("");
-  const [tabs, setTabs] = useState<CaptureTab[]>([]);
-  const [trayOpen, setTrayOpen] = useState(false);
-  const [targetCollection, setTargetCollection] = useState("");
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const [signedIn, setSignedIn] = useState(false);
+  const [tabsExpanded, setTabsExpanded] = useState(true);
+  const [tabsRefreshVersion, setTabsRefreshVersion] = useState(0);
+  const [pendingTab, setPendingTab] = useState<{ tab: CaptureTab; collectionId: string } | null>(null);
 
   async function load(repo: WorkspaceRepository) {
     try {
@@ -58,25 +63,15 @@ function ExtensionApp() {
   const activeSpace = snapshot?.spaces.find((space) => space.id === selectedSpace) ?? snapshot?.spaces[0];
   const collections = visible?.collections.filter((collection) => query || collection.space_id === activeSpace?.id) ?? [];
 
-  async function openTray() {
-    const next = await listCurrentWindowTabs();
-    setTabs(next); setTargetCollection(collections[0]?.id ?? snapshot?.collections[0]?.id ?? ""); setTrayOpen(true); setMessage("");
-  }
-
-  async function save(closeAfterSave: boolean) {
-    if (!repository || !targetCollection) return;
+  async function confirmDroppedTab(closeAfterSave: boolean) {
+    if (!repository || !pendingTab) return;
     try {
-      const selected = tabs.filter((tab) => tab.selected);
-      const result = await captureTabs({
-        tabs: selected,
-        collectionId: targetCollection,
-        closeAfterSave,
-        save: (items) => repository.createLinks(items.map((item) => ({ collection_id: item.collection_id, url: item.url, title: item.title, description: item.description, favicon_url: item.favicon_url }))),
-        close: (ids) => chrome.tabs.remove(ids),
-      });
-      await load(repository); setTrayOpen(false);
-      setMessage(`${result.saved} saved${result.skipped ? ` · ${result.skipped} skipped` : ""}${result.closed ? ` · ${result.closed} closed` : ""}`);
-    } catch (reason) { setError(reason instanceof Error ? reason.message : "Could not save these tabs."); }
+      await saveDroppedTab({ tab: pendingTab.tab, collectionId: pendingTab.collectionId, closeAfterSave, repository, closeTabs: (ids) => chrome.tabs.remove(ids) });
+      await load(repository);
+      if (closeAfterSave) setTabsRefreshVersion((value) => value + 1);
+      setMessage(closeAfterSave ? "1 saved · tab closed" : "1 saved · tab kept open");
+      setPendingTab(null);
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "Could not save this tab."); }
   }
 
   async function signIn() {
@@ -88,15 +83,16 @@ function ExtensionApp() {
     } catch (reason) { setError(reason instanceof Error ? reason.message : "Could not sign in."); }
   }
 
-  return <main className="ext-shell">
+  return <main className={`ext-shell ${tabsExpanded ? "sheet-open" : "sheet-collapsed"}`}>
     <aside className="ext-sidebar"><Mark /><span>MY SPACES</span>{snapshot?.spaces.map((space) => <button key={space.id} className={space.id === activeSpace?.id ? "active" : ""} onClick={() => { setSelectedSpace(space.id); setQuery(""); }}><i style={{ background: space.color }} />{space.name}</button>)}<a href={`${import.meta.env.VITE_TABLOOM_WEB_URL || "http://localhost:4173"}/app`} target="_blank" rel="noreferrer">Manage workspace <ExternalLink size={13} /></a></aside>
-    <section className="ext-main"><header><div><small>{signedIn ? "SYNCED WORKSPACE" : "DEMO WORKSPACE"}</small><h1>{activeSpace?.name || "Your workspace"}</h1></div><label><Search size={17} /><input aria-label="Search your links" placeholder="Search your links" value={query} onChange={(event) => setQuery(event.target.value)} /></label><button className="capture" onClick={() => void openTray()}><Archive size={16} /> Capture tabs</button></header>
+    <section className="ext-main"><header><div><small>{signedIn ? "SYNCED WORKSPACE" : "DEMO WORKSPACE"}</small><h1>{activeSpace?.name || "Your workspace"}</h1></div><label><Search size={17} /><input aria-label="Search your links" placeholder="Search your links" value={query} onChange={(event) => setQuery(event.target.value)} /></label></header>
       {message && <p className="ext-message">{message}</p>}{error && <p className="ext-message error">{error}<button onClick={() => setError("")}><X size={14} /></button></p>}
       {!extensionSupabase && <p className="demo-note">Demo mode · add Supabase settings to synchronize this new-tab page.</p>}
       {extensionSupabase && !signedIn && <div className="ext-signin"><Sprout size={32} /><h2>Your workspace is ready to bloom.</h2><p>Sign in to capture tabs and sync them with Tabloom on the web.</p><button onClick={() => void signIn()}><LogIn size={16} /> Sign in with Google</button></div>}
-      {(!extensionSupabase || signedIn) && repository && visible && <CollectionRows collections={collections} links={visible.links} repository={repository} onReload={() => load(repository)} />}
+      {(!extensionSupabase || signedIn) && repository && visible && <CollectionRows collections={collections} links={visible.links} repository={repository} onReload={() => load(repository)} onBrowserTabDrop={(tab, collectionId) => setPendingTab({ tab, collectionId })} />}
     </section>
-    {trayOpen && <section className="capture-tray" role="dialog" aria-modal="true" aria-label="Capture current tabs"><header><div><h2>Capture this window</h2><p>Select the context you want to keep.</p></div><button aria-label="Close capture tray" onClick={() => setTrayOpen(false)}><X /></button></header><div className="tab-list">{tabs.map((tab, index) => <div className={!tab.saveable ? "disabled" : ""} key={tab.id ?? index}><input aria-label={`Capture ${tab.title || "Untitled tab"}`} type="checkbox" disabled={!tab.saveable} checked={tab.selected} onChange={(event) => setTabs((items) => items.map((item, itemIndex) => itemIndex === index ? { ...item, selected: event.target.checked } : item))} /><span><b>{tab.title || "Untitled"}</b><small>{tab.saveable ? hostnameFor(tab.url || "") : "This browser page cannot be saved"}</small></span></div>)}</div><div className="destination"><label htmlFor="capture-destination">Save to</label><select id="capture-destination" value={targetCollection} onChange={(event) => setTargetCollection(event.target.value)}>{snapshot?.collections.map((collection) => <option value={collection.id} key={collection.id}>{collection.name}</option>)}</select></div><footer><button onClick={() => void save(false)}>Save selected</button><button className="close-tabs" onClick={() => void save(true)}>Save & close</button></footer></section>}
+    <CurrentTabsSheet activeSpaceId={activeSpace?.id} collections={snapshot?.collections.filter((item) => item.space_id === activeSpace?.id) ?? []} expanded={tabsExpanded} repository={repository} refreshVersion={tabsRefreshVersion} onError={setError} onExpandedChange={setTabsExpanded} onMessage={setMessage} onWorkspaceReload={() => repository ? load(repository) : Promise.resolve()} />
+    {pendingTab && <div className="drop-confirm-backdrop"><section className="drop-confirm" role="dialog" aria-modal="true" aria-label="Save dropped tab"><button className="dialog-close" aria-label="Cancel dropped tab" onClick={() => setPendingTab(null)}><X size={18} /></button><small>SAVE CURRENT TAB</small><h2>{pendingTab.tab.title || "Untitled tab"}</h2><p>Save this tab and keep it open, or close it after Tabloom confirms the link was saved?</p><div><button onClick={() => setPendingTab(null)}>Cancel</button><button onClick={() => void confirmDroppedTab(false)}>Save and keep tab open</button><button className="close-after-save" onClick={() => void confirmDroppedTab(true)}>Save and close tab</button></div></section></div>}
   </main>;
 }
 
