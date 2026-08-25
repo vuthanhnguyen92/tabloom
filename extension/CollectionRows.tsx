@@ -8,6 +8,7 @@ import { BROWSER_TAB_MIME } from "./CurrentTabsSheet";
 export type CollectionRowsProps = {
   collections: Collection[];
   links: SavedLink[];
+  allLinks?: SavedLink[];
   repository: WorkspaceRepository;
   onReload: () => Promise<void>;
   openLink?: (url: string) => void;
@@ -16,7 +17,7 @@ export type CollectionRowsProps = {
 
 type DraggedItem = { kind: "collection" | "link"; id: string } | null;
 
-export function CollectionRows({ collections, links, repository, onReload, openLink = (url) => chrome.tabs.create({ url }), onBrowserTabDrop }: CollectionRowsProps) {
+export function CollectionRows({ collections, links, allLinks = links, repository, onReload, openLink = (url) => chrome.tabs.create({ url }), onBrowserTabDrop }: CollectionRowsProps) {
   const [dragged, setDragged] = useState<DraggedItem>(null);
   const orderedCollections = [...collections].sort((a, b) => a.position - b.position);
 
@@ -35,7 +36,7 @@ export function CollectionRows({ collections, links, repository, onReload, openL
 
   async function moveLink(collectionId: string, targetLinkId?: string) {
     if (dragged?.kind !== "link") return;
-    const orderedIds = links
+    const orderedIds = allLinks
       .filter((item) => item.collection_id === collectionId && item.id !== dragged.id)
       .sort((a, b) => a.position - b.position)
       .map((item) => item.id);
@@ -48,7 +49,7 @@ export function CollectionRows({ collections, links, repository, onReload, openL
 
   function allowDrop(event: DragEvent) {
     event.preventDefault();
-    event.dataTransfer.dropEffect = "move";
+    event.dataTransfer.dropEffect = Array.from(event.dataTransfer.types).includes(BROWSER_TAB_MIME) ? "copy" : "move";
   }
 
   function acceptBrowserTab(event: DragEvent, collectionId: string) {
@@ -67,6 +68,7 @@ export function CollectionRows({ collections, links, repository, onReload, openL
         draggable
         key={collection.id}
         onDragStart={(event) => { event.dataTransfer.effectAllowed = "move"; setDragged({ kind: "collection", id: collection.id }); }}
+        onDragEnd={() => setDragged(null)}
         onDragOver={allowDrop}
         onDrop={(event) => { event.preventDefault(); if (acceptBrowserTab(event, collection.id)) return; if (dragged?.kind === "collection") void moveCollection(collection.id); else void moveLink(collection.id); }}
         role="group"
@@ -79,6 +81,7 @@ export function CollectionRows({ collections, links, repository, onReload, openL
             href={link.url}
             key={link.id}
             onDragStart={(event) => { event.stopPropagation(); event.dataTransfer.effectAllowed = "move"; setDragged({ kind: "link", id: link.id }); }}
+            onDragEnd={() => setDragged(null)}
             onDragOver={allowDrop}
             onDrop={(event) => { event.preventDefault(); event.stopPropagation(); if (!acceptBrowserTab(event, collection.id)) void moveLink(collection.id, link.id); }}
           ><i>{link.title[0]?.toUpperCase()}</i><span><b>{link.title}</b><small>{hostnameFor(link.url)}</small></span></a>)}
