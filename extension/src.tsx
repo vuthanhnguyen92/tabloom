@@ -7,6 +7,7 @@ import { MemoryWorkspaceRepository, SupabaseWorkspaceRepository, type WorkspaceR
 import { listCurrentWindowTabs, type CaptureTab } from "./chrome-api";
 import { ChromeSnapshotCache } from "./storage";
 import { extensionSupabase, signInExtensionWithGoogle } from "./supabase";
+import { CollectionRows } from "./CollectionRows";
 import "./style.css";
 
 const cache = new ChromeSnapshotCache();
@@ -93,7 +94,7 @@ function ExtensionApp() {
       {message && <p className="ext-message">{message}</p>}{error && <p className="ext-message error">{error}<button onClick={() => setError("")}><X size={14} /></button></p>}
       {!extensionSupabase && <p className="demo-note">Demo mode · add Supabase settings to synchronize this new-tab page.</p>}
       {extensionSupabase && !signedIn && <div className="ext-signin"><Sprout size={32} /><h2>Your workspace is ready to bloom.</h2><p>Sign in to capture tabs and sync them with Tabloom on the web.</p><button onClick={() => void signIn()}><LogIn size={16} /> Sign in with Google</button></div>}
-      {(!extensionSupabase || signedIn) && <div className="ext-columns">{collections.map((collection) => { const links = visible?.links.filter((link) => link.collection_id === collection.id) ?? []; return <article key={collection.id}><div className="ext-col-head"><b>{collection.name}</b><span>{links.length} links</span></div>{links.map((link) => <a href={link.url} key={link.id}><i>{link.title[0]?.toUpperCase()}</i><span><b>{link.title}</b><small>{hostnameFor(link.url)}</small></span></a>)}<button className="open-links" onClick={() => links.forEach((link) => chrome.tabs.create({ url: link.url }))}>Open all</button></article>; })}</div>}
+      {(!extensionSupabase || signedIn) && repository && visible && <CollectionRows collections={collections} links={visible.links} repository={repository} onReload={() => load(repository)} />}
     </section>
     {trayOpen && <section className="capture-tray" role="dialog" aria-modal="true" aria-label="Capture current tabs"><header><div><h2>Capture this window</h2><p>Select the context you want to keep.</p></div><button aria-label="Close capture tray" onClick={() => setTrayOpen(false)}><X /></button></header><div className="tab-list">{tabs.map((tab, index) => <div className={!tab.saveable ? "disabled" : ""} key={tab.id ?? index}><input aria-label={`Capture ${tab.title || "Untitled tab"}`} type="checkbox" disabled={!tab.saveable} checked={tab.selected} onChange={(event) => setTabs((items) => items.map((item, itemIndex) => itemIndex === index ? { ...item, selected: event.target.checked } : item))} /><span><b>{tab.title || "Untitled"}</b><small>{tab.saveable ? hostnameFor(tab.url || "") : "This browser page cannot be saved"}</small></span></div>)}</div><div className="destination"><label htmlFor="capture-destination">Save to</label><select id="capture-destination" value={targetCollection} onChange={(event) => setTargetCollection(event.target.value)}>{snapshot?.collections.map((collection) => <option value={collection.id} key={collection.id}>{collection.name}</option>)}</select></div><footer><button onClick={() => void save(false)}>Save selected</button><button className="close-tabs" onClick={() => void save(true)}>Save & close</button></footer></section>}
   </main>;
