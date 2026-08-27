@@ -1,6 +1,6 @@
 import { isSaveableUrl, type CaptureResult, type SavedLink } from "./domain";
 
-export type BrowserTab = { id?: number; title?: string; url?: string; favIconUrl?: string };
+export type BrowserTab = { id?: number; title?: string; url?: string; favIconUrl?: string; active?: boolean; index?: number };
 
 type CaptureOptions = {
   tabs: BrowserTab[];
