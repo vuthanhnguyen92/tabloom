@@ -30,6 +30,17 @@ describe("ChromeSnapshotCache", () => {
     const snapshot = createDemoSnapshot();
     await cache.write(snapshot);
     expect(await cache.read()).toEqual(snapshot);
+    expect(await cache.readEnvelope()).toMatchObject({ version: 2, snapshot, bookmarkSources: [] });
+  });
+
+  it("migrates a legacy snapshot value without losing offline data", async () => {
+    const snapshot = createDemoSnapshot();
+    const area = {
+      get: vi.fn(async (key: string) => ({ [key]: snapshot })),
+      set: vi.fn(async () => undefined),
+    };
+    const cache = new ChromeSnapshotCache(area);
+    expect(await cache.readEnvelope()).toEqual({ version: 2, snapshot, bookmarkSources: [], cachedAt: "" });
   });
 });
 
