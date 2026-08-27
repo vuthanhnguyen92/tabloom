@@ -41,4 +41,5 @@ yarn-error.log*
 /outputs/
 /work/
 /supabase/.temp/
+/.worktrees/
 *.tsbuildinfo
