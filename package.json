@@ -16,7 +16,7 @@
     "test:e2e:bookmarks": "playwright test tests/e2e/browser-bookmarks.spec.ts --project=chromium",
     "build:extension": "vite build --config extension/vite.config.ts",
     "build:all": "npm run build && npm run build:extension",
-    "lint": "eslint . --ignore-pattern dist --ignore-pattern dist-extension --ignore-pattern .next",
+    "lint": "eslint . --ignore-pattern dist --ignore-pattern dist-extension --ignore-pattern .next --ignore-pattern .worktrees",
     "verify": "npm run lint && npx tsc --noEmit && npm run test:unit && npm run test:supabase && npm run build:all",
     "db:generate": "drizzle-kit generate"
   },
