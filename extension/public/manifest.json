@@ -4,7 +4,7 @@
   "description": "Capture open tabs into organized, synchronized spaces.",
   "version": "0.5.0",
   "permissions": ["tabs", "storage", "identity"],
-  "optional_permissions": ["tabGroups"],
+  "optional_permissions": ["tabGroups", "bookmarks"],
   "host_permissions": ["https://*.supabase.co/*"],
   "chrome_url_overrides": { "newtab": "index.html" },
   "content_security_policy": {
