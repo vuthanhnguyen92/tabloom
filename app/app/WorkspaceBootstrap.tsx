@@ -5,11 +5,19 @@ import type { Session } from "@supabase/supabase-js";
 import Link from "next/link";
 import { createDemoSnapshot } from "../../shared/domain";
 import { MemoryWorkspaceRepository, SupabaseWorkspaceRepository, type WorkspaceRepository } from "../../shared/repository";
+import { CombinedWorkspaceRepository, SupabaseBookmarkRepository } from "../../shared/bookmark-repository";
 import { Brand } from "../components/Brand";
 import { getSupabaseBrowserClient } from "../lib/supabase-browser";
 import { WorkspaceClient } from "./WorkspaceClient";
 
 const demoRepository = new MemoryWorkspaceRepository("demo-user", createDemoSnapshot());
+
+function createSyncedRepository(client: NonNullable<ReturnType<typeof getSupabaseBrowserClient>>, userId: string) {
+  return new CombinedWorkspaceRepository(
+    new SupabaseWorkspaceRepository(client, userId),
+    new SupabaseBookmarkRepository(client, userId),
+  );
+}
 
 export function WorkspaceBootstrap() {
   const client = getSupabaseBrowserClient();
@@ -20,11 +28,11 @@ export function WorkspaceBootstrap() {
     if (!client) return;
     void client.auth.getSession().then(({ data }) => {
       setSession(data.session);
-      setRepository(data.session ? new SupabaseWorkspaceRepository(client, data.session.user.id) : null);
+      setRepository(data.session ? createSyncedRepository(client, data.session.user.id) : null);
     });
     const { data } = client.auth.onAuthStateChange((_event, next) => {
       setSession(next);
-      setRepository(next ? new SupabaseWorkspaceRepository(client, next.user.id) : null);
+      setRepository(next ? createSyncedRepository(client, next.user.id) : null);
     });
     return () => data.subscription.unsubscribe();
   }, [client]);

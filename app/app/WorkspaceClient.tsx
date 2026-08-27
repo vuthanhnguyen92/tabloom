@@ -16,7 +16,8 @@ import {
 import Link from "next/link";
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import { Brand } from "../components/Brand";
-import { filterWorkspace, hostnameFor, isSaveableUrl, type SavedLink, type WorkspaceSnapshot } from "../../shared/domain";
+import { filterWorkspace, findDuplicateLink, hostnameFor, isSaveableUrl, type SavedLink, type WorkspaceSnapshot } from "../../shared/domain";
+import { copyBookmarkToCollection } from "../../shared/bookmark-repository";
 import type { WorkspaceRepository } from "../../shared/repository";
 
 type DialogState =
@@ -28,7 +29,12 @@ type DialogState =
   | { type: "link"; collectionId: string; link?: SavedLink }
   | { type: "delete-collection"; collectionId: string }
   | { type: "open-many"; links: SavedLink[] }
+  | { type: "copy-bookmark"; link: SavedLink; collectionId: string; duplicate: SavedLink }
   | null;
+
+type DraggedLink =
+  | { kind: "saved-link"; id: string }
+  | { kind: "browser-bookmark"; link: SavedLink };
 
 export function WorkspaceClient({ repository, mode, onSignOut, initialSnapshot }: { repository: WorkspaceRepository; mode: "demo" | "synced"; onSignOut?: () => void; initialSnapshot?: WorkspaceSnapshot }) {
   const [snapshot, setSnapshot] = useState<WorkspaceSnapshot>(initialSnapshot ?? { spaces: [], collections: [], links: [] });
@@ -37,7 +43,7 @@ export function WorkspaceClient({ repository, mode, onSignOut, initialSnapshot }
   const [dialog, setDialog] = useState<DialogState>(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(!initialSnapshot);
-  const [draggedLinkId, setDraggedLinkId] = useState<string | null>(null);
+  const [draggedLink, setDraggedLink] = useState<DraggedLink | null>(null);
 
   const reload = useCallback(async () => {
     try {
@@ -97,11 +103,26 @@ export function WorkspaceClient({ repository, mode, onSignOut, initialSnapshot }
     await mutate(() => repository.reorderCollections(selectedSpace.id, items.map((item) => item.id)));
   }
 
+  async function copyBookmark(link: SavedLink, collectionId: string, allowDuplicate = false) {
+    const duplicate = findDuplicateLink(snapshot.links, collectionId, link.url);
+    if (duplicate && !allowDuplicate) {
+      setDraggedLink(null);
+      setDialog({ type: "copy-bookmark", link, collectionId, duplicate });
+      return;
+    }
+    setDraggedLink(null);
+    await mutate(() => copyBookmarkToCollection(repository, link, collectionId));
+  }
+
   async function dropLink(collectionId: string) {
-    if (!draggedLinkId) return;
-    const orderedIds = snapshot.links.filter((item) => item.collection_id === collectionId && item.id !== draggedLinkId).sort((a, b) => a.position - b.position).map((item) => item.id);
-    orderedIds.push(draggedLinkId);
-    setDraggedLinkId(null);
+    if (!draggedLink) return;
+    if (draggedLink.kind === "browser-bookmark") {
+      await copyBookmark(draggedLink.link, collectionId);
+      return;
+    }
+    const orderedIds = snapshot.links.filter((item) => item.collection_id === collectionId && item.id !== draggedLink.id).sort((a, b) => a.position - b.position).map((item) => item.id);
+    orderedIds.push(draggedLink.id);
+    setDraggedLink(null);
     await mutate(() => repository.reorderLinks(collectionId, orderedIds));
   }
 
@@ -120,6 +141,11 @@ export function WorkspaceClient({ repository, mode, onSignOut, initialSnapshot }
     links.forEach((link) => window.open(link.url, "_blank", "noopener,noreferrer"));
     setDialog(null);
   }
+
+  const normalCollections = snapshot.collections
+    .filter((collection) => collection.origin === "saved" && !collection.read_only)
+    .sort((a, b) => a.position - b.position);
+  const selectedSpaceReadOnly = selectedSpace?.origin === "browser-bookmark" || selectedSpace?.read_only;
 
   if (loading) return <main className="workspace-loading" aria-live="polite"><Brand /><span>Growing your workspace…</span></main>;
 
@@ -140,23 +166,28 @@ export function WorkspaceClient({ repository, mode, onSignOut, initialSnapshot }
         </header>
         {error && <div className="notice error" role="alert"><span>{error}</span><button aria-label="Dismiss error" onClick={() => setError("")}><X size={16} /></button></div>}
         {selectedSpace ? <>
-          <div className="workspace-intro"><div><span>✦</span><h2>{query ? `Results for “${query}”` : selectedSpace.name}</h2><p>{query ? `${visible.links.length} matching links across your workspace.` : "A clear place for the work that moves this project forward."}</p></div>{!query && <div className="collection-actions"><button aria-label={`Rename ${selectedSpace.name} space`} onClick={() => setDialog({ type: "edit-space", spaceId: selectedSpace.id })}><Pencil size={15} /></button><button aria-label={`Delete ${selectedSpace.name} space`} onClick={() => setDialog({ type: "delete-space", spaceId: selectedSpace.id })}><Trash2 size={15} /></button><button onClick={() => setDialog({ type: "collection" })}><Plus size={15} /> New collection</button></div>}</div>
+          <div className="workspace-intro"><div><span>✦</span><h2>{query ? `Results for “${query}”` : selectedSpace.name}</h2><p>{query ? `${visible.links.length} matching links across your workspace.` : selectedSpaceReadOnly ? "A read-only view of bookmarks manually synced from your browsers." : "A clear place for the work that moves this project forward."}</p></div>{!query && !selectedSpaceReadOnly && <div className="collection-actions"><button aria-label={`Rename ${selectedSpace.name} space`} onClick={() => setDialog({ type: "edit-space", spaceId: selectedSpace.id })}><Pencil size={15} /></button><button aria-label={`Delete ${selectedSpace.name} space`} onClick={() => setDialog({ type: "delete-space", spaceId: selectedSpace.id })}><Trash2 size={15} /></button><button onClick={() => setDialog({ type: "collection" })}><Plus size={15} /> New collection</button></div>}</div>
           {collections.length ? <div className="workspace-columns">
             {collections.map((collection, collectionIndex) => {
               const links = visible.links.filter((link) => link.collection_id === collection.id).sort((a, b) => a.position - b.position);
-              return <article className="collection" key={collection.id} onDragOver={(event) => event.preventDefault()} onDrop={() => void dropLink(collection.id)}>
-                <header><div><h3>{collection.name}</h3><span>{links.length} links</span></div><div className="collection-actions"><button aria-label={`Rename ${collection.name} collection`} onClick={() => setDialog({ type: "edit-collection", collectionId: collection.id })}><Pencil size={14} /></button><button aria-label={`Move ${collection.name} left`} disabled={collectionIndex === 0} onClick={() => void moveCollection(collection.id, -1)}><ChevronLeft size={15} /></button><button aria-label={`Move ${collection.name} right`} disabled={collectionIndex === collections.length - 1} onClick={() => void moveCollection(collection.id, 1)}><ChevronRight size={15} /></button><button aria-label={`Delete ${collection.name}`} onClick={() => links.length ? setDialog({ type: "delete-collection", collectionId: collection.id }) : void mutate(() => repository.deleteCollection(collection.id))}><Trash2 size={14} /></button></div></header>
-                {links.map((link) => <div className="link-card" draggable onDragStart={() => setDraggedLinkId(link.id)} key={link.id}><GripVertical className="drag-handle" size={14} /><a href={link.url} target="_blank" rel="noreferrer"><i>{link.title[0]?.toUpperCase()}</i><span><b>{link.title}</b><small>{hostnameFor(link.url)}</small></span></a><button aria-label={`Move ${link.title} to previous collection`} disabled={collectionIndex === 0} onClick={() => void moveLink(link, -1)}><ChevronLeft size={14} /></button><button aria-label={`Move ${link.title} to next collection`} disabled={collectionIndex === collections.length - 1} onClick={() => void moveLink(link, 1)}><ChevronRight size={14} /></button><button aria-label={`Edit ${link.title}`} onClick={() => setDialog({ type: "link", collectionId: collection.id, link })}><MoreHorizontal size={15} /></button><button aria-label={`Delete ${link.title}`} onClick={() => void mutate(() => repository.deleteLink(link.id))}><Trash2 size={14} /></button></div>)}
-                {!query && <button className="add-link" onClick={() => setDialog({ type: "link", collectionId: collection.id })}><Plus size={14} /> Add link</button>}
+              const collectionReadOnly = collection.origin === "browser-bookmark" || collection.read_only;
+              return <article className={`collection ${collectionReadOnly ? "collection-read-only" : ""}`} key={collection.id} onDragOver={collectionReadOnly ? undefined : (event) => event.preventDefault()} onDrop={collectionReadOnly ? undefined : () => void dropLink(collection.id)}>
+                <header><div><h3>{collection.name}</h3><span>{links.length} links</span></div>{!collectionReadOnly && <div className="collection-actions"><button aria-label={`Rename ${collection.name} collection`} onClick={() => setDialog({ type: "edit-collection", collectionId: collection.id })}><Pencil size={14} /></button><button aria-label={`Move ${collection.name} left`} disabled={collectionIndex === 0} onClick={() => void moveCollection(collection.id, -1)}><ChevronLeft size={15} /></button><button aria-label={`Move ${collection.name} right`} disabled={collectionIndex === collections.length - 1} onClick={() => void moveCollection(collection.id, 1)}><ChevronRight size={15} /></button><button aria-label={`Delete ${collection.name}`} onClick={() => links.length ? setDialog({ type: "delete-collection", collectionId: collection.id }) : void mutate(() => repository.deleteCollection(collection.id))}><Trash2 size={14} /></button></div>}</header>
+                {links.map((link) => {
+                  const bookmark = link.origin === "browser-bookmark" || link.read_only;
+                  return <div className={`link-card ${bookmark ? "bookmark-link-card" : ""}`} draggable onDragStart={() => setDraggedLink(bookmark ? { kind: "browser-bookmark", link } : { kind: "saved-link", id: link.id })} onDragEnd={() => setDraggedLink(null)} key={link.id}><GripVertical className="drag-handle" size={14} /><a href={link.url} target="_blank" rel="noreferrer"><i>{link.title[0]?.toUpperCase()}</i><span><b>{link.title}</b><small>{hostnameFor(link.url)}</small>{link.device_label && <small className="device-only-label">{link.device_label}</small>}</span></a>{!bookmark && <><button aria-label={`Move ${link.title} to previous collection`} disabled={collectionIndex === 0} onClick={() => void moveLink(link, -1)}><ChevronLeft size={14} /></button><button aria-label={`Move ${link.title} to next collection`} disabled={collectionIndex === collections.length - 1} onClick={() => void moveLink(link, 1)}><ChevronRight size={14} /></button><button aria-label={`Edit ${link.title}`} onClick={() => setDialog({ type: "link", collectionId: collection.id, link })}><MoreHorizontal size={15} /></button><button aria-label={`Delete ${link.title}`} onClick={() => void mutate(() => repository.deleteLink(link.id))}><Trash2 size={14} /></button></>}</div>;
+                })}
+                {!query && !collectionReadOnly && <button className="add-link" onClick={() => setDialog({ type: "link", collectionId: collection.id })}><Plus size={14} /> Add link</button>}
                 {!!links.length && <button className="open-all" onClick={() => links.length > 10 ? setDialog({ type: "open-many", links }) : openLinks(links)}><ExternalLink size={13} /> Open all</button>}
               </article>;
             })}
-          </div> : <div className="workspace-empty"><Search size={28} /><h3>{query ? "No links found" : "Start your first collection"}</h3><p>{query ? "Try a title, URL, collection, or space name." : "Collections keep related links together."}</p>{!query && <button className="button button-primary" onClick={() => setDialog({ type: "collection" })}>Create collection</button>}</div>}
+          </div> : <div className="workspace-empty"><Search size={28} /><h3>{query ? "No links found" : selectedSpaceReadOnly ? "No synced bookmarks" : "Start your first collection"}</h3><p>{query ? "Try a title, URL, collection, or space name." : selectedSpaceReadOnly ? "Use the Chrome extension to sync this device's bookmarks." : "Collections keep related links together."}</p>{!query && !selectedSpaceReadOnly && <button className="button button-primary" onClick={() => setDialog({ type: "collection" })}>Create collection</button>}</div>}
+          {draggedLink?.kind === "browser-bookmark" && <div className="bookmark-copy-tray" aria-label="Copy bookmark to a saved collection"><strong>Copy to a saved collection</strong><div>{normalCollections.map((collection) => <div role="group" aria-label={`${collection.name} copy target`} className="bookmark-copy-target" key={collection.id} onDragOver={(event) => event.preventDefault()} onDrop={() => void dropLink(collection.id)}>{collection.name}</div>)}</div></div>}
         </> : <div className="workspace-empty"><h2>Plant your first space</h2><p>Spaces are the top-level home for each part of your work.</p><button className="button button-primary" onClick={() => setDialog({ type: "space" })}>Create a space</button></div>}
       </section>
 
       {dialog && <div className="dialog-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setDialog(null); }}><section className="dialog" role="dialog" aria-modal="true" aria-label="Workspace action"><button className="dialog-close" aria-label="Close dialog" onClick={() => setDialog(null)}><X size={18} /></button>
-        {dialog.type === "delete-collection" ? <><h2>Delete this collection?</h2><p>Its saved links will also be removed. This cannot be undone.</p><div className="dialog-actions"><button onClick={() => setDialog(null)}>Cancel</button><button className="danger" onClick={() => void mutate(() => repository.deleteCollection(dialog.collectionId))}>Delete collection</button></div></> : dialog.type === "delete-space" ? <><h2>Delete this space?</h2><p>All of its collections and saved links will also be removed. This cannot be undone.</p><div className="dialog-actions"><button onClick={() => setDialog(null)}>Cancel</button><button className="danger" onClick={() => void mutate(() => repository.deleteSpace(dialog.spaceId))}>Delete space</button></div></> : dialog.type === "open-many" ? <><h2>Open {dialog.links.length} tabs?</h2><p>Opening a large collection can make your browser feel busy.</p><div className="dialog-actions"><button onClick={() => setDialog(null)}>Cancel</button><button className="button-primary" onClick={() => openLinks(dialog.links)}>Open tabs</button></div></> : <form onSubmit={submitDialog}><h2>{dialog.type === "space" ? "New space" : dialog.type === "edit-space" ? "Rename space" : dialog.type === "collection" ? "New collection" : dialog.type === "edit-collection" ? "Rename collection" : dialog.link ? "Edit link" : "Add link"}</h2>{dialog.type !== "link" ? <label>Name<input aria-label="Name" name="name" maxLength={80} defaultValue={dialog.type === "edit-space" ? snapshot.spaces.find((item) => item.id === dialog.spaceId)?.name : dialog.type === "edit-collection" ? snapshot.collections.find((item) => item.id === dialog.collectionId)?.name : ""} /></label> : <><label>Link title<input aria-label="Link title" name="title" defaultValue={dialog.link?.title} maxLength={300} /></label><label>Link URL<input aria-label="Link URL" name="url" type="text" defaultValue={dialog.link?.url ?? "https://"} /></label><label>Note<textarea name="description" defaultValue={dialog.link?.description} maxLength={1000} /></label></>}{(dialog.type === "space" || dialog.type === "edit-space") && <label>Color<input name="color" type="color" defaultValue={dialog.type === "edit-space" ? snapshot.spaces.find((item) => item.id === dialog.spaceId)?.color : "#f56f72"} /></label>}<button className="button button-primary" type="submit">{dialog.type === "link" ? "Save link" : "Save"}</button></form>}
+        {dialog.type === "delete-collection" ? <><h2>Delete this collection?</h2><p>Its saved links will also be removed. This cannot be undone.</p><div className="dialog-actions"><button onClick={() => setDialog(null)}>Cancel</button><button className="danger" onClick={() => void mutate(() => repository.deleteCollection(dialog.collectionId))}>Delete collection</button></div></> : dialog.type === "delete-space" ? <><h2>Delete this space?</h2><p>All of its collections and saved links will also be removed. This cannot be undone.</p><div className="dialog-actions"><button onClick={() => setDialog(null)}>Cancel</button><button className="danger" onClick={() => void mutate(() => repository.deleteSpace(dialog.spaceId))}>Delete space</button></div></> : dialog.type === "open-many" ? <><h2>Open {dialog.links.length} tabs?</h2><p>Opening a large collection can make your browser feel busy.</p><div className="dialog-actions"><button onClick={() => setDialog(null)}>Cancel</button><button className="button-primary" onClick={() => openLinks(dialog.links)}>Open tabs</button></div></> : dialog.type === "copy-bookmark" ? <><h2>This link is already saved</h2><p>{dialog.duplicate.title} already exists in this collection. You can still save another copy.</p><div className="dialog-actions"><button onClick={() => setDialog(null)}>Cancel</button><button className="button-primary" onClick={() => void copyBookmark(dialog.link, dialog.collectionId, true)}>Save another copy</button></div></> : <form onSubmit={submitDialog}><h2>{dialog.type === "space" ? "New space" : dialog.type === "edit-space" ? "Rename space" : dialog.type === "collection" ? "New collection" : dialog.type === "edit-collection" ? "Rename collection" : dialog.link ? "Edit link" : "Add link"}</h2>{dialog.type !== "link" ? <label>Name<input aria-label="Name" name="name" maxLength={80} defaultValue={dialog.type === "edit-space" ? snapshot.spaces.find((item) => item.id === dialog.spaceId)?.name : dialog.type === "edit-collection" ? snapshot.collections.find((item) => item.id === dialog.collectionId)?.name : ""} /></label> : <><label>Link title<input aria-label="Link title" name="title" defaultValue={dialog.link?.title} maxLength={300} /></label><label>Link URL<input aria-label="Link URL" name="url" type="text" defaultValue={dialog.link?.url ?? "https://"} /></label><label>Note<textarea name="description" defaultValue={dialog.link?.description} maxLength={1000} /></label></>}{(dialog.type === "space" || dialog.type === "edit-space") && <label>Color<input name="color" type="color" defaultValue={dialog.type === "edit-space" ? snapshot.spaces.find((item) => item.id === dialog.spaceId)?.color : "#f56f72"} /></label>}<button className="button button-primary" type="submit">{dialog.type === "link" ? "Save link" : "Save"}</button></form>}
       </section></div>}
     </main>
   );

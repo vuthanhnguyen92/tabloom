@@ -159,6 +159,15 @@ footer small { grid-column: 1 / -1; color: #aaa3a0; padding-top: 30px; border-to
 .link-card .drag-handle { color: #c7c1bb; cursor: grab; }.link-card > a { display: flex; align-items: center; gap: 10px; flex: 1; min-width: 0; }
 .link-card > a > i { width: 30px; height: 30px; display: grid; place-items: center; background: var(--violet-soft); color: var(--violet); border-radius: 8px; font-style: normal; font-weight: 800; flex: none; }
 .link-card > a > span { display: flex; flex: 1; flex-direction: column; min-width: 0; }.link-card b { font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }.link-card small { color: var(--muted); font-size: 10px; margin-top: 3px; }
+.collection-read-only { border: 1px solid color-mix(in srgb, var(--violet) 18%, transparent); }
+.bookmark-link-card { cursor: grab; }
+.bookmark-link-card:active { cursor: grabbing; }
+.link-card .device-only-label { color: var(--violet); font-size: 10px; font-weight: 600; }
+.bookmark-copy-tray { position: sticky; bottom: 18px; z-index: 5; margin: 0 0 18px; padding: 13px; border: 1px solid var(--line); border-radius: 14px; background: color-mix(in srgb, white 94%, var(--violet-soft)); box-shadow: 0 12px 30px rgba(51,43,75,.16); }
+.bookmark-copy-tray > strong { display: block; margin-bottom: 9px; font-size: 13px; }
+.bookmark-copy-tray > div { display: flex; flex-wrap: wrap; gap: 8px; }
+.bookmark-copy-target { min-width: 150px; padding: 11px 13px; border: 1px dashed var(--violet); border-radius: 9px; color: var(--violet); background: var(--violet-soft); font-size: 12px; font-weight: 700; }
+.bookmark-copy-target:hover { border-style: solid; transform: translateY(-1px); }
 .add-link { width: 100%; background: transparent; border-color: transparent; color: var(--muted); }
 .open-all { width: 100%; border: 0; background: transparent; color: var(--violet); font-size: 11px; display: flex; justify-content: center; align-items: center; gap: 6px; padding: 9px; cursor: pointer; font-weight: 700; }
 .workspace-empty { min-height: 360px; display: flex; align-items: center; justify-content: center; flex-direction: column; text-align: center; color: var(--muted); }.workspace-empty h2, .workspace-empty h3 { color: var(--ink); margin: 16px 0 5px; }.workspace-empty p { margin: 0 0 22px; }
