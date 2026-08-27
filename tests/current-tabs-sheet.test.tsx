@@ -1,9 +1,19 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { readFileSync } from "node:fs";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { CurrentTabsSheet } from "../extension/CurrentTabsSheet";
 import { createDemoSnapshot } from "../shared/domain";
 import { MemoryWorkspaceRepository } from "../shared/repository";
+const extensionStyles = readFileSync("extension/style.css", "utf8");
+
+let styleElement: HTMLStyleElement;
+beforeAll(() => {
+  styleElement = document.createElement("style");
+  styleElement.textContent = extensionStyles;
+  document.head.appendChild(styleElement);
+});
+afterAll(() => styleElement.remove());
 
 const browserTabs = [
   { id: 41, title: "Roadmap", url: "https://linear.app/roadmap", favIconUrl: undefined, saveable: true, selected: true },
@@ -38,6 +48,14 @@ describe("CurrentTabsSheet", () => {
     expect(screen.queryByRole("button", { name: /save selected/i })).not.toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "Collapse current tabs" }));
     expect(onExpandedChange).toHaveBeenCalledWith(false);
+  });
+
+  it("renders current-tab card titles at font weight 500", async () => {
+    setup();
+    await screen.findByText("Roadmap");
+    const rules = Array.from(styleElement.sheet!.cssRules) as CSSStyleRule[];
+    const rule = rules.find((item) => item.selectorText?.split(", ").includes(".current-tab-list b") && item.style.fontWeight);
+    expect(rule?.style.fontWeight).toBe("500");
   });
 
   it("places a saveable tab payload on drag start", async () => {

@@ -17,6 +17,7 @@
 .ext-link-grid > a > span { display: flex; flex-direction: column; min-width: 0; }
 .ext-link-grid > a b { font-size: 16px; line-height: 1.25; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .ext-link-grid > a small { color: #716f82; font-size: 14px; line-height: 1.25; margin-top: 5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ext-link-grid > a b, .current-tab-list b { font-weight: 500; }
 .open-links { width: auto; border: 0; color: #7157d9; background: transparent; font-size: 10px; font-weight: 700; padding: 14px 8px 0; }
 .ext-message, .demo-note { background: white; border: 1px solid #e3ded7; border-radius: 9px; padding: 10px 13px; font-size: 11px; color: #716f82; display: flex; justify-content: space-between; }.ext-message.error { background: #ffe5e1; color: #8c3038; }.ext-message button { border: 0; background: transparent; color: inherit; }.demo-note { background: #fff3d9; color: #715421; border-color: #f0d9a5; }
 .ext-signin { min-height: 440px; display: flex; align-items: center; justify-content: center; flex-direction: column; text-align: center; }.ext-signin svg { color: #f56f72; }.ext-signin h2 { margin: 16px 0 4px; font-size: 27px; }.ext-signin p { color: #716f82; max-width: 430px; line-height: 1.6; }.ext-signin button { border: 0; background: #25233a; color: white; padding: 12px 17px; border-radius: 10px; font-weight: 700; display: flex; gap: 8px; align-items: center; }

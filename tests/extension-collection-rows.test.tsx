@@ -1,8 +1,18 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { readFileSync } from "node:fs";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { CollectionRows } from "../extension/CollectionRows";
 import { createDemoSnapshot } from "../shared/domain";
 import { MemoryWorkspaceRepository } from "../shared/repository";
+const extensionStyles = readFileSync("extension/style.css", "utf8");
+
+let styleElement: HTMLStyleElement;
+beforeAll(() => {
+  styleElement = document.createElement("style");
+  styleElement.textContent = extensionStyles;
+  document.head.appendChild(styleElement);
+});
+afterAll(() => styleElement.remove());
 
 function setup() {
   const snapshot = createDemoSnapshot();
@@ -20,6 +30,13 @@ describe("CollectionRows", () => {
     const rows = screen.getAllByRole("group", { name: /collection$/i });
     expect(rows).toHaveLength(3);
     expect(within(screen.getByRole("group", { name: "Plan collection" })).getAllByRole("link")).toHaveLength(3);
+  });
+
+  it("renders saved-link card titles at font weight 500", () => {
+    setup();
+    const rules = Array.from(styleElement.sheet!.cssRules) as CSSStyleRule[];
+    const rule = rules.find((item) => item.selectorText?.split(", ").includes(".ext-link-grid > a b") && item.style.fontWeight);
+    expect(rule?.style.fontWeight).toBe("500");
   });
 
   it("persists collection order when a row is dragged", async () => {
