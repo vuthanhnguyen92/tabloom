@@ -50,6 +50,26 @@ export function isSaveableUrl(value?: string | null): boolean {
   }
 }
 
+export function normalizeUrlForDuplicate(value?: string | null): string | null {
+  if (!isSaveableUrl(value)) return null;
+  return new URL(value!).href;
+}
+
+export function findDuplicateLink(
+  links: SavedLink[],
+  collectionId: string,
+  url: string,
+  excludeId?: string,
+): SavedLink | undefined {
+  const normalized = normalizeUrlForDuplicate(url);
+  if (!normalized) return undefined;
+  return links.find((link) => (
+    link.collection_id === collectionId
+    && link.id !== excludeId
+    && normalizeUrlForDuplicate(link.url) === normalized
+  ));
+}
+
 export function hostnameFor(value: string): string {
   try { return new URL(value).hostname.replace(/^www\./, ""); }
   catch { return value; }

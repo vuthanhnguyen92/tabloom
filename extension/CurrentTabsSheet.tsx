@@ -1,6 +1,6 @@
 import { ChevronLeft, ChevronRight, Layers3, Plus, RefreshCw, X } from "lucide-react";
 import { type DragEvent, type FormEvent, useCallback, useEffect, useRef, useState } from "react";
-import type { Collection } from "../shared/domain";
+import { normalizeUrlForDuplicate, type Collection } from "../shared/domain";
 import type { WorkspaceRepository } from "../shared/repository";
 import { listCurrentWindowTabs, type CaptureTab } from "./chrome-api";
 
@@ -55,16 +55,27 @@ export function CurrentTabsSheet({ activeSpaceId, expanded, repository, refreshV
     if (!repository || !activeSpaceId) return onError("Sign in or select a space before saving tabs.");
     const supported = tabs.filter((tab) => tab.saveable && tab.url);
     if (!supported.length) return onError("There are no supported tabs to save.");
+    const seenUrls = new Set<string>();
+    const uniqueSupported = supported.filter((tab) => {
+      const normalized = normalizeUrlForDuplicate(tab.url);
+      if (!normalized || seenUrls.has(normalized)) return false;
+      seenUrls.add(normalized);
+      return true;
+    });
     savingAllRef.current = true;
     setSavingAll(true);
     let collection: Collection | undefined;
     try {
       const created = await repository.createCollection({ name, space_id: activeSpaceId });
       collection = created;
-      await repository.createLinks(supported.map((tab) => ({ collection_id: created.id, url: tab.url!, title: tab.title || tab.url!, description: "", favicon_url: tab.favIconUrl ?? null })));
+      await repository.createLinks(uniqueSupported.map((tab) => ({ collection_id: created.id, url: tab.url!, title: tab.title || tab.url!, description: "", favicon_url: tab.favIconUrl ?? null })));
       await onWorkspaceReload();
-      const skipped = tabs.length - supported.length;
-      onMessage(`${supported.length} saved${skipped ? ` · ${skipped} skipped` : ""}`);
+      const duplicateCount = supported.length - uniqueSupported.length;
+      const unsupportedCount = tabs.length - supported.length;
+      const summary = [`${uniqueSupported.length} saved`];
+      if (duplicateCount) summary.push(`${duplicateCount} duplicate${duplicateCount === 1 ? "" : "s"} skipped`);
+      if (unsupportedCount) summary.push(`${unsupportedCount} unsupported skipped`);
+      onMessage(summary.join(" · "));
       setCollectionName(""); setNaming(false);
     } catch (reason) {
       if (collection) await repository.deleteCollection(collection.id).catch(() => undefined);

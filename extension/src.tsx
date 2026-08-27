@@ -5,7 +5,7 @@ import "@fontsource/poppins/latin-500.css";
 import "@fontsource/poppins/latin-600.css";
 import "@fontsource/poppins/latin-700.css";
 import { ExternalLink, LogIn, Search, Sprout, X } from "lucide-react";
-import { createDemoSnapshot, filterWorkspace, type WorkspaceSnapshot } from "../shared/domain";
+import { createDemoSnapshot, filterWorkspace, findDuplicateLink, type SavedLink, type WorkspaceSnapshot } from "../shared/domain";
 import { MemoryWorkspaceRepository, SupabaseWorkspaceRepository, type WorkspaceRepository } from "../shared/repository";
 import type { CaptureTab } from "./chrome-api";
 import { ChromeSnapshotCache } from "./storage";
@@ -29,7 +29,7 @@ function ExtensionApp() {
   const [signedIn, setSignedIn] = useState(false);
   const [tabsExpanded, setTabsExpanded] = useState(true);
   const [tabsRefreshVersion, setTabsRefreshVersion] = useState(0);
-  const [pendingTab, setPendingTab] = useState<{ tab: CaptureTab; collectionId: string } | null>(null);
+  const [pendingTab, setPendingTab] = useState<{ tab: CaptureTab; collectionId: string; duplicate?: SavedLink } | null>(null);
   const [savingDroppedTab, setSavingDroppedTab] = useState(false);
   const [browserTabDrag, setBrowserTabDrag] = useState({ active: false, session: 0 });
   const savingDroppedTabRef = useRef(false);
@@ -81,6 +81,28 @@ function ExtensionApp() {
     finally { savingDroppedTabRef.current = false; setSavingDroppedTab(false); }
   }
 
+  function keepDuplicateTabOpen() {
+    setMessage("Already saved · tab kept open");
+    setPendingTab(null);
+  }
+
+  async function closeDuplicateTab() {
+    if (!pendingTab?.duplicate || savingDroppedTabRef.current || typeof pendingTab.tab.id !== "number") return;
+    savingDroppedTabRef.current = true;
+    setSavingDroppedTab(true);
+    try {
+      await chrome.tabs.remove([pendingTab.tab.id]);
+      setTabsRefreshVersion((value) => value + 1);
+      setMessage("Already saved · tab closed");
+      setPendingTab(null);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Could not close this tab.");
+    } finally {
+      savingDroppedTabRef.current = false;
+      setSavingDroppedTab(false);
+    }
+  }
+
   async function signIn() {
     try {
       const session = await signInExtensionWithGoogle();
@@ -96,10 +118,10 @@ function ExtensionApp() {
       {message && <p className="ext-message">{message}</p>}{error && <p className="ext-message error">{error}<button onClick={() => setError("")}><X size={14} /></button></p>}
       {!extensionSupabase && <p className="demo-note">Demo mode · add Supabase settings to synchronize this new-tab page.</p>}
       {extensionSupabase && !signedIn && <div className="ext-signin"><Sprout size={32} /><h2>Your workspace is ready to bloom.</h2><p>Sign in to capture tabs and sync them with Tabloom on the web.</p><button onClick={() => void signIn()}><LogIn size={16} /> Sign in with Google</button></div>}
-      {(!extensionSupabase || signedIn) && repository && visible && <CollectionRows browserTabDragSession={browserTabDrag.active ? browserTabDrag.session : 0} collections={collections} links={visible.links} allLinks={snapshot?.links ?? visible.links} repository={repository} onReload={() => load(repository)} onBrowserTabDrop={(tab, collectionId) => { setBrowserTabDrag((current) => ({ ...current, active: false })); setPendingTab({ tab, collectionId }); }} />}
+      {(!extensionSupabase || signedIn) && repository && visible && <CollectionRows browserTabDragSession={browserTabDrag.active ? browserTabDrag.session : 0} collections={collections} links={visible.links} allLinks={snapshot?.links ?? visible.links} highlightedLinkId={pendingTab?.duplicate?.id} repository={repository} onReload={() => load(repository)} onBrowserTabDrop={(tab, collectionId) => { setBrowserTabDrag((current) => ({ ...current, active: false })); setPendingTab({ tab, collectionId, duplicate: findDuplicateLink(snapshot?.links ?? [], collectionId, tab.url ?? "") }); }} />}
     </section>
     <CurrentTabsSheet activeSpaceId={activeSpace?.id} collections={snapshot?.collections.filter((item) => item.space_id === activeSpace?.id) ?? []} expanded={tabsExpanded} repository={repository} refreshVersion={tabsRefreshVersion} onError={setError} onExpandedChange={setTabsExpanded} onMessage={setMessage} onTabDragChange={(dragging) => setBrowserTabDrag((current) => dragging ? { active: true, session: current.session + 1 } : { ...current, active: false })} onWorkspaceReload={() => repository ? load(repository) : Promise.resolve()} />
-    {pendingTab && <div className="drop-confirm-backdrop"><section className="drop-confirm" role="dialog" aria-modal="true" aria-label="Save dropped tab"><button className="dialog-close" aria-label="Cancel dropped tab" disabled={savingDroppedTab} onClick={() => setPendingTab(null)}><X size={18} /></button><small>SAVE CURRENT TAB</small><h2>{pendingTab.tab.title || "Untitled tab"}</h2><p>Save this tab and keep it open, or close it after Tabloom confirms the link was saved?</p><div><button disabled={savingDroppedTab} onClick={() => setPendingTab(null)}>Cancel</button><button disabled={savingDroppedTab} onClick={() => void confirmDroppedTab(false)}>Save and keep tab open</button><button className="close-after-save" disabled={savingDroppedTab} onClick={() => void confirmDroppedTab(true)}>Save and close tab</button></div></section></div>}
+    {pendingTab && <div className="drop-confirm-backdrop"><section className="drop-confirm" role="dialog" aria-modal="true" aria-label={pendingTab.duplicate ? "Duplicate current tab" : "Save dropped tab"}><button className="dialog-close" aria-label="Cancel dropped tab" disabled={savingDroppedTab} onClick={() => setPendingTab(null)}><X size={18} /></button>{pendingTab.duplicate ? <><small>DUPLICATE LINK</small><h2>Already saved in {snapshot?.collections.find((item) => item.id === pendingTab.collectionId)?.name ?? "this collection"}</h2><p>The existing saved card is highlighted. Keep or close the current tab without creating a duplicate, or save another copy.</p><div><button disabled={savingDroppedTab} onClick={keepDuplicateTabOpen}>Keep tab open</button><button disabled={savingDroppedTab || typeof pendingTab.tab.id !== "number"} onClick={() => void closeDuplicateTab()}>Close tab</button><button className="close-after-save" disabled={savingDroppedTab} onClick={() => void confirmDroppedTab(false)}>Save another copy</button></div></> : <><small>SAVE CURRENT TAB</small><h2>{pendingTab.tab.title || "Untitled tab"}</h2><p>Save this tab and keep it open, or close it after Tabloom confirms the link was saved?</p><div><button disabled={savingDroppedTab} onClick={() => setPendingTab(null)}>Cancel</button><button disabled={savingDroppedTab} onClick={() => void confirmDroppedTab(false)}>Save and keep tab open</button><button className="close-after-save" disabled={savingDroppedTab} onClick={() => void confirmDroppedTab(true)}>Save and close tab</button></div></>}</section></div>}
   </main>;
 }
 

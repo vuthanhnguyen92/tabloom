@@ -88,11 +88,32 @@ describe("CurrentTabsSheet", () => {
     await user.type(screen.getByLabelText("Collection name"), "Window research");
     await user.click(screen.getByRole("button", { name: "Create and save" }));
 
-    await waitFor(() => expect(onMessage).toHaveBeenCalledWith("1 saved · 1 skipped"));
+    await waitFor(() => expect(onMessage).toHaveBeenCalledWith("1 saved · 1 unsupported skipped"));
     const snapshot = await repository.load();
     const collection = snapshot.collections.find((item) => item.name === "Window research");
     expect(collection).toBeDefined();
     expect(snapshot.links.filter((item) => item.collection_id === collection?.id).map((item) => item.title)).toEqual(["Roadmap"]);
+  });
+
+  it("saves repeated current-tab URLs only once in a new collection", async () => {
+    const snapshot = createDemoSnapshot();
+    const repository = new MemoryWorkspaceRepository("demo-user", snapshot);
+    const onMessage = vi.fn();
+    const repeatedTabs = [
+      browserTabs[0],
+      { ...browserTabs[0], id: 43, title: "Roadmap duplicate", url: "https://LINEAR.app:443/roadmap" },
+      browserTabs[1],
+    ];
+    render(<CurrentTabsSheet activeSpaceId="space-launch" collections={snapshot.collections} expanded repository={repository} onError={vi.fn()} onExpandedChange={vi.fn()} onMessage={onMessage} onWorkspaceReload={vi.fn(async () => undefined)} listTabs={vi.fn(async () => repeatedTabs)} />);
+    await screen.findByText("Roadmap");
+    await userEvent.click(screen.getByRole("button", { name: "Save all as collection" }));
+    await userEvent.type(screen.getByLabelText("Collection name"), "Deduplicated window");
+    await userEvent.click(screen.getByRole("button", { name: "Create and save" }));
+
+    await waitFor(() => expect(onMessage).toHaveBeenCalledWith("1 saved · 1 duplicate skipped · 1 unsupported skipped"));
+    const next = await repository.load();
+    const collection = next.collections.find((item) => item.name === "Deduplicated window")!;
+    expect(next.links.filter((item) => item.collection_id === collection.id)).toHaveLength(1);
   });
 
   it("reports collection creation failures", async () => {

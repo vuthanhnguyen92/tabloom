@@ -1,6 +1,6 @@
 import { Fragment, useState, type DragEvent } from "react";
 import type { Collection, SavedLink } from "../shared/domain";
-import { hostnameFor } from "../shared/domain";
+import { findDuplicateLink, hostnameFor } from "../shared/domain";
 import type { WorkspaceRepository } from "../shared/repository";
 import type { CaptureTab } from "./chrome-api";
 import { BROWSER_TAB_MIME } from "./CurrentTabsSheet";
@@ -14,15 +14,18 @@ export type CollectionRowsProps = {
   onReload: () => Promise<void>;
   openLink?: (url: string) => void;
   onBrowserTabDrop?: (tab: CaptureTab, collectionId: string) => void;
+  highlightedLinkId?: string;
 };
 
 type DraggedItem = { kind: "collection" | "link"; id: string } | null;
 type LinkDropPreview = { collectionId: string; targetLinkId?: string } | null;
+type PendingDuplicateMove = { sourceId: string; collectionId: string; targetLinkId?: string; duplicate: SavedLink } | null;
 
-export function CollectionRows({ collections, links, allLinks = links, browserTabDragSession = 0, repository, onReload, openLink = (url) => chrome.tabs.create({ url }), onBrowserTabDrop }: CollectionRowsProps) {
+export function CollectionRows({ collections, links, allLinks = links, browserTabDragSession = 0, repository, onReload, openLink = (url) => chrome.tabs.create({ url }), onBrowserTabDrop, highlightedLinkId }: CollectionRowsProps) {
   const [dragged, setDragged] = useState<DraggedItem>(null);
   const [linkDropPreview, setLinkDropPreview] = useState<LinkDropPreview>(null);
   const [browserDropTarget, setBrowserDropTarget] = useState<{ collectionId: string; session: number } | null>(null);
+  const [pendingDuplicateMove, setPendingDuplicateMove] = useState<PendingDuplicateMove>(null);
   const orderedCollections = [...collections].sort((a, b) => a.position - b.position);
 
   function clearDrag() {
@@ -44,18 +47,32 @@ export function CollectionRows({ collections, links, allLinks = links, browserTa
     await onReload();
   }
 
-  async function moveLink(collectionId: string, targetLinkId?: string) {
-    if (dragged?.kind !== "link") return;
-    if (targetLinkId === dragged.id) return clearDrag();
+  async function persistLinkMove(sourceId: string, collectionId: string, targetLinkId?: string) {
     const orderedIds = allLinks
-      .filter((item) => item.collection_id === collectionId && item.id !== dragged.id)
+      .filter((item) => item.collection_id === collectionId && item.id !== sourceId)
       .sort((a, b) => a.position - b.position)
       .map((item) => item.id);
     const targetIndex = targetLinkId ? orderedIds.indexOf(targetLinkId) : orderedIds.length;
-    orderedIds.splice(targetIndex < 0 ? orderedIds.length : targetIndex, 0, dragged.id);
+    orderedIds.splice(targetIndex < 0 ? orderedIds.length : targetIndex, 0, sourceId);
+    setPendingDuplicateMove(null);
     clearDrag();
     await repository.reorderLinks(collectionId, orderedIds);
     await onReload();
+  }
+
+  async function moveLink(collectionId: string, targetLinkId?: string) {
+    if (dragged?.kind !== "link") return;
+    if (targetLinkId === dragged.id) return clearDrag();
+    const source = allLinks.find((link) => link.id === dragged.id);
+    const duplicate = source && source.collection_id !== collectionId
+      ? findDuplicateLink(allLinks, collectionId, source.url, source.id)
+      : undefined;
+    if (duplicate) {
+      setPendingDuplicateMove({ sourceId: dragged.id, collectionId, targetLinkId, duplicate });
+      clearDrag();
+      return;
+    }
+    await persistLinkMove(dragged.id, collectionId, targetLinkId);
   }
 
   function allowDrop(event: DragEvent) {
@@ -110,7 +127,10 @@ export function CollectionRows({ collections, links, allLinks = links, browserTa
             {showsPreview && linkDropPreview.targetLinkId === link.id && <div aria-hidden="true" className="ext-link-drop-preview"><span>Drop here</span></div>}
             <a
             aria-label={`${link.title} · ${hostnameFor(link.url)}`}
-            className={dragged?.kind === "link" && dragged.id === link.id ? "dragging" : undefined}
+            className={[
+              dragged?.kind === "link" && dragged.id === link.id ? "dragging" : "",
+              link.id === highlightedLinkId || link.id === pendingDuplicateMove?.duplicate.id ? "duplicate-highlight" : "",
+            ].filter(Boolean).join(" ") || undefined}
             draggable
             href={link.url}
             onDragStart={(event) => { event.stopPropagation(); event.dataTransfer.effectAllowed = "move"; setLinkDropPreview(null); setDragged({ kind: "link", id: link.id }); }}
@@ -124,5 +144,6 @@ export function CollectionRows({ collections, links, allLinks = links, browserTa
         <button className="open-links" onClick={() => collectionLinks.forEach((link) => openLink(link.url))}>Open all</button>
       </article>;
     })}
+    {pendingDuplicateMove && <div className="drop-confirm-backdrop"><section className="drop-confirm" role="dialog" aria-modal="true" aria-label="Duplicate link"><small>DUPLICATE LINK</small><h2>Already saved in this collection</h2><p>This URL is already represented by <strong>{pendingDuplicateMove.duplicate.title}</strong>. You can cancel or move another copy here.</p><div><button aria-label="Cancel move" onClick={() => setPendingDuplicateMove(null)}>Cancel</button><button className="close-after-save" onClick={() => void persistLinkMove(pendingDuplicateMove.sourceId, pendingDuplicateMove.collectionId, pendingDuplicateMove.targetLinkId)}>Move anyway</button></div></section></div>}
   </div>;
 }

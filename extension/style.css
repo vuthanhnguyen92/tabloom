@@ -16,6 +16,8 @@
 .ext-link-grid { display: flex; flex-wrap: wrap; gap: 14px 18px; }
 .ext-link-grid > a { display: flex; gap: 10px; align-items: center; width: 200px; max-width: 200px; height: 92px; max-height: 100px; background: white; border: 1px solid #e3ded7; border-radius: 8px; padding: 12px; text-decoration: none; color: #25233a; cursor: grab; overflow: hidden; box-shadow: 0 2px 5px rgba(37,35,58,.06); transition: opacity .16s ease, transform .16s ease; }
 .ext-link-grid > a.dragging { opacity: .35; transform: scale(.97); }
+.ext-link-grid > a.duplicate-highlight { border-color: #7157d9; box-shadow: 0 0 0 3px rgba(113,87,217,.28), 0 8px 20px rgba(37,35,58,.12); animation: duplicate-pulse 1.1s ease-in-out 2; }
+@keyframes duplicate-pulse { 50% { box-shadow: 0 0 0 6px rgba(113,87,217,.12), 0 8px 20px rgba(37,35,58,.12); } }
 .ext-link-drop-preview { flex: none; width: 200px; max-width: 200px; height: 92px; max-height: 100px; border: 2px dashed #7157d9; border-radius: 8px; color: #7157d9; background: rgba(113,87,217,.08); display: grid; place-items: center; pointer-events: none; animation: drop-preview-in .14s ease-out; }
 .ext-link-drop-preview span { font-size: 12px; font-weight: 500; }
 @keyframes drop-preview-in { from { opacity: 0; transform: scale(.92); } to { opacity: 1; transform: scale(1); } }
@@ -43,6 +45,7 @@
   .ext-col-head span, .ext-link-grid > a small, .ext-signin p, .current-tabs-hint, .current-tab-list small, .drop-confirm p { color: #aaa7b8; }
   .ext-link-grid > a { color: #e4e2ec; background: #525164; border-color: #66657a; box-shadow: 0 4px 12px rgba(0,0,0,.18); }
   .ext-link-grid > a:hover { background: #5d5c72; border-color: #7b7894; }
+  .ext-link-grid > a.duplicate-highlight { border-color: #b9a8ff; box-shadow: 0 0 0 3px rgba(185,168,255,.28), 0 8px 20px rgba(0,0,0,.25); }
   .ext-columns.link-dragging article, .ext-columns.browser-tab-dragging article { background: rgba(185,168,255,.035); outline-color: rgba(185,168,255,.3); }
   .ext-columns.link-dragging article.drop-target, .ext-columns.browser-tab-dragging article.drop-target { background: rgba(185,168,255,.09); outline-color: #b9a8ff; }
   .ext-link-drop-preview { color: #c2b3ff; background: rgba(185,168,255,.1); border-color: #9d89ef; }
@@ -60,4 +63,4 @@
   .drop-confirm > div .close-after-save { color: white; background: #f56f72; border-color: #f56f72; }
   .ext-message.error { color: #ffb7b5; background: #49272b; border-color: #6c383e; }
 }
-@media (prefers-reduced-motion: reduce) { * { scroll-behavior: auto !important; }.ext-columns article, .ext-link-grid > a { transition: none; }.ext-link-drop-preview { animation: none; } }
+@media (prefers-reduced-motion: reduce) { * { scroll-behavior: auto !important; }.ext-columns article, .ext-link-grid > a { transition: none; }.ext-link-drop-preview, .ext-link-grid > a.duplicate-highlight { animation: none; } }

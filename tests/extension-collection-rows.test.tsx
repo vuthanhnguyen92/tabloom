@@ -1,4 +1,5 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { readFileSync } from "node:fs";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { CollectionRows } from "../extension/CollectionRows";
@@ -124,6 +125,50 @@ describe("CollectionRows", () => {
     const snapshot = await repository.load();
     const design = snapshot.links.filter((item) => item.collection_id === "collection-design").sort((a, b) => a.position - b.position);
     expect(design.map((item) => item.title)).toEqual(["Product roadmap", "Brand system", "Homepage explorations", "Prototype"]);
+  });
+
+  it("warns before moving a saved link into a collection containing the same URL", async () => {
+    const snapshot = createDemoSnapshot();
+    const product = snapshot.links.find((link) => link.title === "Product roadmap")!;
+    snapshot.links.push({ ...product, id: "duplicate-product", collection_id: "collection-design", position: 3 });
+    const repository = new MemoryWorkspaceRepository("demo-user", snapshot);
+    const onReload = vi.fn(async () => undefined);
+    render(<CollectionRows collections={snapshot.collections} links={snapshot.links} repository={repository} onReload={onReload} />);
+    const source = within(screen.getByRole("group", { name: "Plan collection" })).getByRole("link", { name: /Product roadmap/i });
+    const dataTransfer = createDataTransfer();
+    fireEvent.dragStart(source, { dataTransfer });
+    fireEvent.drop(screen.getByRole("group", { name: "Design collection" }), { dataTransfer });
+
+    expect(await screen.findByRole("dialog", { name: "Duplicate link" })).toBeInTheDocument();
+    expect(within(screen.getByRole("group", { name: "Design collection" })).getByRole("link", { name: /Product roadmap/i })).toHaveClass("duplicate-highlight");
+    expect((await repository.load()).links.find((link) => link.id === product.id)?.collection_id).toBe("collection-plan");
+    await userEvent.click(screen.getByRole("button", { name: "Cancel move" }));
+    expect(screen.queryByRole("dialog", { name: "Duplicate link" })).not.toBeInTheDocument();
+    expect(onReload).not.toHaveBeenCalled();
+  });
+
+  it("allows an intentional duplicate move after confirmation", async () => {
+    const snapshot = createDemoSnapshot();
+    const product = snapshot.links.find((link) => link.title === "Product roadmap")!;
+    snapshot.links.push({ ...product, id: "duplicate-product", collection_id: "collection-design", position: 3 });
+    const repository = new MemoryWorkspaceRepository("demo-user", snapshot);
+    const onReload = vi.fn(async () => undefined);
+    render(<CollectionRows collections={snapshot.collections} links={snapshot.links} repository={repository} onReload={onReload} />);
+    const source = within(screen.getByRole("group", { name: "Plan collection" })).getByRole("link", { name: /Product roadmap/i });
+    const dataTransfer = createDataTransfer();
+    fireEvent.dragStart(source, { dataTransfer });
+    fireEvent.drop(screen.getByRole("group", { name: "Design collection" }), { dataTransfer });
+    await userEvent.click(await screen.findByRole("button", { name: "Move anyway" }));
+
+    await waitFor(() => expect(onReload).toHaveBeenCalledOnce());
+    expect((await repository.load()).links.find((link) => link.id === product.id)?.collection_id).toBe("collection-design");
+  });
+
+  it("can highlight an existing saved card for a duplicate current tab", () => {
+    const snapshot = createDemoSnapshot();
+    const product = snapshot.links.find((link) => link.title === "Product roadmap")!;
+    render(<CollectionRows collections={snapshot.collections} highlightedLinkId={product.id} links={snapshot.links} repository={new MemoryWorkspaceRepository("demo-user", snapshot)} onReload={vi.fn(async () => undefined)} />);
+    expect(within(screen.getByRole("group", { name: "Plan collection" })).getByRole("link", { name: /Product roadmap/i })).toHaveClass("duplicate-highlight");
   });
 
   it("reorders link tiles within the same collection", async () => {
