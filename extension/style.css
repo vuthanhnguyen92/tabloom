@@ -9,8 +9,11 @@
 .ext-main { padding: 34px 44px; overflow: hidden; }.ext-main > header { display: grid; grid-template-columns: 1fr minmax(240px,400px); gap: 18px; align-items: center; }.ext-main header small { color: #d94f5a; font-size: 9px; font-weight: 700; letter-spacing: .14em; }.ext-main header h1 { margin: 5px 0; font-size: 26px; letter-spacing: -.04em; }.ext-main header label { background: white; border: 1px solid #e3ded7; border-radius: 10px; display: flex; align-items: center; gap: 8px; height: 42px; padding: 0 13px; color: #716f82; }.ext-main header input { width: 100%; border: 0; outline: 0; }
 .ext-columns { display: flex; flex-direction: column; margin-top: 36px; border-top: 1px solid #d8d3cc; }
 .ext-columns article { min-width: 0; padding: 22px 8px 26px; border-bottom: 1px solid #d8d3cc; outline: 1px dashed transparent; outline-offset: -5px; cursor: grab; transition: background-color .16s ease, outline-color .16s ease; }
+.ext-columns article.read-only { cursor: default; }
 .ext-columns.link-dragging article, .ext-columns.browser-tab-dragging article { background: rgba(113,87,217,.035); outline-color: rgba(113,87,217,.28); }
+.ext-columns.link-dragging article.read-only, .ext-columns.browser-tab-dragging article.read-only { background: transparent; outline-color: transparent; }
 .ext-columns.link-dragging article.drop-target, .ext-columns.browser-tab-dragging article.drop-target { background: rgba(113,87,217,.09); outline-color: #7157d9; }
+.ext-columns article.bookmark-drop-target { background: rgba(245,111,114,.09); outline-color: #f56f72; }
 .ext-columns article:active, .ext-link-grid > a:active { cursor: grabbing; }
 .ext-col-head { display: flex; justify-content: space-between; align-items: center; padding: 0 8px 18px; }.ext-col-head b { font-size: 15px; }.ext-col-head span { font-size: 10px; color: #716f82; }
 .ext-link-grid { display: flex; flex-wrap: wrap; gap: 14px 18px; }
@@ -25,6 +28,7 @@
 .ext-link-grid > a > span { display: flex; flex-direction: column; min-width: 0; }
 .ext-link-grid > a b { font-size: 16px; line-height: 1.25; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .ext-link-grid > a small { color: #716f82; font-size: 14px; line-height: 1.25; margin-top: 5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ext-link-grid > a small.bookmark-device-label { color: #7157d9; font-size: 11px; margin-top: 2px; }
 .ext-link-grid > a b, .current-tab-list b { font-weight: 500; }
 .open-links { width: auto; border: 0; color: #7157d9; background: transparent; font-size: 10px; font-weight: 700; padding: 14px 8px 0; }
 .ext-message, .demo-note { background: white; border: 1px solid #e3ded7; border-radius: 9px; padding: 10px 13px; font-size: 11px; color: #716f82; display: flex; justify-content: space-between; }.ext-message.error { background: #ffe5e1; color: #8c3038; }.ext-message button { border: 0; background: transparent; color: inherit; }.demo-note { background: #fff3d9; color: #715421; border-color: #f0d9a5; }
@@ -50,6 +54,7 @@
   .ext-columns.link-dragging article.drop-target, .ext-columns.browser-tab-dragging article.drop-target { background: rgba(185,168,255,.09); outline-color: #b9a8ff; }
   .ext-link-drop-preview { color: #c2b3ff; background: rgba(185,168,255,.1); border-color: #9d89ef; }
   .ext-link-grid > a > i { color: #b9a8ff; background: #403c5a; }
+  .ext-link-grid > a small.bookmark-device-label { color: #c2b3ff; }
   .open-links { color: #b5a1ff; }
   .demo-note { color: #efcf8f; background: #393224; border-color: #5b4d31; }
   .ext-signin button { color: #1d1d25; background: #e4e2ec; }

@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { CollectionRows } from "../extension/CollectionRows";
 import { createDemoSnapshot } from "../shared/domain";
+import { mergeBookmarkEntries, toBookmarkWorkspace } from "../shared/bookmarks";
 import { MemoryWorkspaceRepository } from "../shared/repository";
 const extensionStyles = readFileSync("extension/style.css", "utf8");
 
@@ -26,6 +27,59 @@ function setup() {
 const createDataTransfer = (types: string[] = []) => ({ effectAllowed: "none", dropEffect: "none", types, getData: () => "" });
 
 describe("CollectionRows", () => {
+  it("renders bookmark collections as locked and bookmark cards as copy drag sources", () => {
+    const normal = createDemoSnapshot();
+    const bookmark = toBookmarkWorkspace("demo-user", mergeBookmarkEntries(
+      [{ id: "mac", device_name: "Work Mac", last_synced_at: "2026-08-27T12:00:00.000Z" }],
+      [{ id: "entry", source_id: "mac", chrome_bookmark_id: "one", url: "https://example.com", normalized_url: "https://example.com/", title: "Browser example", folder_path: "Imported", syncing: false, position: 0 }],
+    ));
+    const onBookmarkDrop = vi.fn(async () => undefined);
+    render(<CollectionRows
+      collections={[normal.collections[0], bookmark.collections[0]]}
+      links={[...normal.links.filter((link) => link.collection_id === normal.collections[0].id), ...bookmark.links]}
+      allLinks={[...normal.links, ...bookmark.links]}
+      repository={new MemoryWorkspaceRepository("demo-user", normal)}
+      onReload={vi.fn(async () => undefined)}
+      onBookmarkDrop={onBookmarkDrop}
+    />);
+    const locked = screen.getByRole("group", { name: "Imported collection" });
+    expect(locked).toHaveClass("read-only");
+    expect(locked).toHaveAttribute("draggable", "false");
+    expect(screen.getByText("Only on Work Mac")).toBeVisible();
+    const bookmarkCard = screen.getByRole("link", { name: /Browser example/i });
+    const dataTransfer = createDataTransfer();
+    fireEvent.dragStart(bookmarkCard, { dataTransfer });
+    expect(dataTransfer.effectAllowed).toBe("copy");
+    fireEvent.dragOver(screen.getByRole("group", { name: "Plan collection" }), { dataTransfer });
+    expect(screen.getByRole("group", { name: "Plan collection" })).toHaveClass("bookmark-drop-target");
+  });
+
+  it("copies a dragged bookmark only into a normal collection", async () => {
+    const normal = createDemoSnapshot();
+    const bookmark = toBookmarkWorkspace("demo-user", mergeBookmarkEntries(
+      [{ id: "mac", device_name: "Work Mac", last_synced_at: null }],
+      [{ id: "entry", source_id: "mac", chrome_bookmark_id: "one", url: "https://example.com", normalized_url: "https://example.com/", title: "Browser example", folder_path: "Imported", syncing: null, position: 0 }],
+    ));
+    const onBookmarkDrop = vi.fn(async () => undefined);
+    const onReload = vi.fn(async () => undefined);
+    render(<CollectionRows
+      collections={[normal.collections[0], bookmark.collections[0]]}
+      links={[...normal.links.filter((link) => link.collection_id === normal.collections[0].id), ...bookmark.links]}
+      allLinks={[...normal.links, ...bookmark.links]}
+      repository={new MemoryWorkspaceRepository("demo-user", normal)}
+      onReload={onReload}
+      onBookmarkDrop={onBookmarkDrop}
+    />);
+    const transfer = createDataTransfer();
+    fireEvent.dragStart(screen.getByRole("link", { name: /Browser example/i }), { dataTransfer: transfer });
+    fireEvent.drop(screen.getByRole("group", { name: "Imported collection" }), { dataTransfer: transfer });
+    expect(onBookmarkDrop).not.toHaveBeenCalled();
+    fireEvent.dragStart(screen.getByRole("link", { name: /Browser example/i }), { dataTransfer: transfer });
+    fireEvent.drop(screen.getByRole("group", { name: "Plan collection" }), { dataTransfer: transfer });
+    await waitFor(() => expect(onBookmarkDrop).toHaveBeenCalledWith(expect.objectContaining({ title: "Browser example" }), "collection-plan"));
+    expect(onReload).toHaveBeenCalledOnce();
+  });
+
   it("renders each collection as a row containing compact link tiles", () => {
     setup();
     const rows = screen.getAllByRole("group", { name: /collection$/i });
