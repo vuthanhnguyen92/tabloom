@@ -18,8 +18,8 @@ function setup() {
   const snapshot = createDemoSnapshot();
   const repository = new MemoryWorkspaceRepository("demo-user", snapshot);
   const onReload = vi.fn(async () => undefined);
-  render(<CollectionRows collections={snapshot.collections} links={snapshot.links} repository={repository} onReload={onReload} />);
-  return { repository, onReload };
+  const view = render(<CollectionRows collections={snapshot.collections} links={snapshot.links} repository={repository} onReload={onReload} />);
+  return { repository, onReload, container: view.container };
 }
 
 const createDataTransfer = (types: string[] = []) => ({ effectAllowed: "none", dropEffect: "none", types, getData: () => "" });
@@ -37,6 +37,45 @@ describe("CollectionRows", () => {
     const rules = Array.from(styleElement.sheet!.cssRules) as CSSStyleRule[];
     const rule = rules.find((item) => item.selectorText?.split(", ").includes(".ext-link-grid > a b") && item.style.fontWeight);
     expect(rule?.style.fontWeight).toBe("500");
+  });
+
+  it("reveals collection drop zones while a saved-link card is dragged", () => {
+    const { container } = setup();
+    const source = screen.getByRole("link", { name: /Product roadmap/i });
+    fireEvent.dragStart(source, { dataTransfer: createDataTransfer() });
+
+    expect(container.querySelector(".ext-columns")).toHaveClass("link-dragging");
+    expect(source).toHaveClass("dragging");
+  });
+
+  it("inserts a preview before the hovered card without persisting", async () => {
+    const { repository, onReload } = setup();
+    const source = screen.getByRole("link", { name: /Product roadmap/i });
+    const target = screen.getByRole("link", { name: /Brand system/i });
+    const dataTransfer = createDataTransfer();
+    fireEvent.dragStart(source, { dataTransfer });
+    fireEvent.dragOver(target, { dataTransfer });
+
+    const grid = screen.getByRole("group", { name: "Design collection" }).querySelector(".ext-link-grid")!;
+    expect(grid.children[0]).toHaveClass("ext-link-drop-preview");
+    expect(grid.children[1]).toBe(target);
+    expect(onReload).not.toHaveBeenCalled();
+    expect((await repository.load()).links.find((link) => link.title === "Product roadmap")?.collection_id).toBe("collection-plan");
+  });
+
+  it("previews an end-of-collection drop and clears it when dragging ends", () => {
+    const { container } = setup();
+    const source = screen.getByRole("link", { name: /Product roadmap/i });
+    const targetCollection = screen.getByRole("group", { name: "Design collection" });
+    const dataTransfer = createDataTransfer();
+    fireEvent.dragStart(source, { dataTransfer });
+    fireEvent.dragOver(targetCollection, { dataTransfer });
+
+    const grid = targetCollection.querySelector(".ext-link-grid")!;
+    expect(grid.lastElementChild).toHaveClass("ext-link-drop-preview");
+    fireEvent.dragEnd(source, { dataTransfer });
+    expect(container.querySelector(".ext-link-drop-preview")).not.toBeInTheDocument();
+    expect(container.querySelector(".ext-columns")).not.toHaveClass("link-dragging");
   });
 
   it("persists collection order when a row is dragged", async () => {
@@ -87,11 +126,12 @@ describe("CollectionRows", () => {
   });
 
   it("negotiates copy for a current browser tab and move for saved items", () => {
-    setup();
+    const { container } = setup();
     const row = screen.getByRole("group", { name: "Plan collection" });
     const browserTabTransfer = createDataTransfer(["application/x-tabloom-tab"]);
     fireEvent.dragOver(row, { dataTransfer: browserTabTransfer });
     expect(browserTabTransfer.dropEffect).toBe("copy");
+    expect(container.querySelector(".ext-link-drop-preview")).not.toBeInTheDocument();
 
     const savedItemTransfer = createDataTransfer();
     fireEvent.dragOver(row, { dataTransfer: savedItemTransfer });

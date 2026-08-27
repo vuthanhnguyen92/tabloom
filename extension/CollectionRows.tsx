@@ -1,4 +1,4 @@
-import { useState, type DragEvent } from "react";
+import { Fragment, useState, type DragEvent } from "react";
 import type { Collection, SavedLink } from "../shared/domain";
 import { hostnameFor } from "../shared/domain";
 import type { WorkspaceRepository } from "../shared/repository";
@@ -16,10 +16,17 @@ export type CollectionRowsProps = {
 };
 
 type DraggedItem = { kind: "collection" | "link"; id: string } | null;
+type LinkDropPreview = { collectionId: string; targetLinkId?: string } | null;
 
 export function CollectionRows({ collections, links, allLinks = links, repository, onReload, openLink = (url) => chrome.tabs.create({ url }), onBrowserTabDrop }: CollectionRowsProps) {
   const [dragged, setDragged] = useState<DraggedItem>(null);
+  const [linkDropPreview, setLinkDropPreview] = useState<LinkDropPreview>(null);
   const orderedCollections = [...collections].sort((a, b) => a.position - b.position);
+
+  function clearDrag() {
+    setDragged(null);
+    setLinkDropPreview(null);
+  }
 
   async function moveCollection(targetId: string) {
     if (dragged?.kind !== "collection" || dragged.id === targetId) return;
@@ -29,20 +36,21 @@ export function CollectionRows({ collections, links, allLinks = links, repositor
     if (from < 0 || target < 0) return;
     orderedIds.splice(from, 1);
     orderedIds.splice(orderedIds.indexOf(targetId), 0, dragged.id);
-    setDragged(null);
+    clearDrag();
     await repository.reorderCollections(orderedCollections[0].space_id, orderedIds);
     await onReload();
   }
 
   async function moveLink(collectionId: string, targetLinkId?: string) {
     if (dragged?.kind !== "link") return;
+    if (targetLinkId === dragged.id) return clearDrag();
     const orderedIds = allLinks
       .filter((item) => item.collection_id === collectionId && item.id !== dragged.id)
       .sort((a, b) => a.position - b.position)
       .map((item) => item.id);
     const targetIndex = targetLinkId ? orderedIds.indexOf(targetLinkId) : orderedIds.length;
     orderedIds.splice(targetIndex < 0 ? orderedIds.length : targetIndex, 0, dragged.id);
-    setDragged(null);
+    clearDrag();
     await repository.reorderLinks(collectionId, orderedIds);
     await onReload();
   }
@@ -50,6 +58,12 @@ export function CollectionRows({ collections, links, allLinks = links, repositor
   function allowDrop(event: DragEvent) {
     event.preventDefault();
     event.dataTransfer.dropEffect = Array.from(event.dataTransfer.types).includes(BROWSER_TAB_MIME) ? "copy" : "move";
+  }
+
+  function previewLinkDrop(collectionId: string, targetLinkId?: string) {
+    if (dragged?.kind !== "link") return;
+    if (targetLinkId === dragged.id) return setLinkDropPreview(null);
+    setLinkDropPreview({ collectionId, targetLinkId });
   }
 
   function acceptBrowserTab(event: DragEvent, collectionId: string) {
@@ -60,31 +74,37 @@ export function CollectionRows({ collections, links, allLinks = links, repositor
     catch { return false; }
   }
 
-  return <div className="ext-columns">
+  return <div className={`ext-columns ${dragged?.kind === "link" ? "link-dragging" : ""}`}>
     {orderedCollections.map((collection) => {
       const collectionLinks = links.filter((link) => link.collection_id === collection.id).sort((a, b) => a.position - b.position);
+      const showsPreview = linkDropPreview?.collectionId === collection.id;
       return <article
         aria-label={`${collection.name} collection`}
+        className={showsPreview ? "drop-target" : undefined}
         draggable
         key={collection.id}
-        onDragStart={(event) => { event.dataTransfer.effectAllowed = "move"; setDragged({ kind: "collection", id: collection.id }); }}
-        onDragEnd={() => setDragged(null)}
-        onDragOver={allowDrop}
+        onDragStart={(event) => { event.dataTransfer.effectAllowed = "move"; setLinkDropPreview(null); setDragged({ kind: "collection", id: collection.id }); }}
+        onDragEnd={clearDrag}
+        onDragOver={(event) => { allowDrop(event); previewLinkDrop(collection.id); }}
         onDrop={(event) => { event.preventDefault(); if (acceptBrowserTab(event, collection.id)) return; if (dragged?.kind === "collection") void moveCollection(collection.id); else void moveLink(collection.id); }}
         role="group"
       >
         <div className="ext-col-head"><b>{collection.name}</b><span>{collectionLinks.length} links</span></div>
         <div className="ext-link-grid">
-          {collectionLinks.map((link) => <a
+          {collectionLinks.map((link) => <Fragment key={link.id}>
+            {showsPreview && linkDropPreview.targetLinkId === link.id && <div aria-hidden="true" className="ext-link-drop-preview"><span>Drop here</span></div>}
+            <a
             aria-label={`${link.title} · ${hostnameFor(link.url)}`}
+            className={dragged?.kind === "link" && dragged.id === link.id ? "dragging" : undefined}
             draggable
             href={link.url}
-            key={link.id}
-            onDragStart={(event) => { event.stopPropagation(); event.dataTransfer.effectAllowed = "move"; setDragged({ kind: "link", id: link.id }); }}
-            onDragEnd={() => setDragged(null)}
-            onDragOver={allowDrop}
+            onDragStart={(event) => { event.stopPropagation(); event.dataTransfer.effectAllowed = "move"; setLinkDropPreview(null); setDragged({ kind: "link", id: link.id }); }}
+            onDragEnd={clearDrag}
+            onDragOver={(event) => { event.stopPropagation(); allowDrop(event); previewLinkDrop(collection.id, link.id); }}
             onDrop={(event) => { event.preventDefault(); event.stopPropagation(); if (!acceptBrowserTab(event, collection.id)) void moveLink(collection.id, link.id); }}
-          ><i>{link.title[0]?.toUpperCase()}</i><span><b>{link.title}</b><small>{hostnameFor(link.url)}</small></span></a>)}
+          ><i>{link.title[0]?.toUpperCase()}</i><span><b>{link.title}</b><small>{hostnameFor(link.url)}</small></span></a>
+          </Fragment>)}
+          {showsPreview && !linkDropPreview.targetLinkId && <div aria-hidden="true" className="ext-link-drop-preview"><span>Drop here</span></div>}
         </div>
         <button className="open-links" onClick={() => collectionLinks.forEach((link) => openLink(link.url))}>Open all</button>
       </article>;
