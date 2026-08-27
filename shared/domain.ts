@@ -1,4 +1,11 @@
-export type Space = {
+export type WorkspaceOrigin = "saved" | "browser-bookmark";
+
+export type WorkspaceRecordMeta = {
+  origin: WorkspaceOrigin;
+  read_only: boolean;
+};
+
+export type Space = WorkspaceRecordMeta & {
   id: string;
   user_id: string;
   name: string;
@@ -8,7 +15,7 @@ export type Space = {
   updated_at: string;
 };
 
-export type Collection = {
+export type Collection = WorkspaceRecordMeta & {
   id: string;
   user_id: string;
   space_id: string;
@@ -18,7 +25,7 @@ export type Collection = {
   updated_at: string;
 };
 
-export type SavedLink = {
+export type SavedLink = WorkspaceRecordMeta & {
   id: string;
   user_id: string;
   collection_id: string;
@@ -29,6 +36,7 @@ export type SavedLink = {
   position: number;
   created_at: string;
   updated_at: string;
+  device_label?: string | null;
 };
 
 export type WorkspaceSnapshot = {
@@ -89,7 +97,7 @@ export function filterWorkspace(snapshot: WorkspaceSnapshot, rawQuery: string): 
   const links = snapshot.links.filter((link) => {
     const collection = collectionById.get(link.collection_id);
     const space = collection ? spaceById.get(collection.space_id) : undefined;
-    return [link.title, link.url, link.description, collection?.name, space?.name]
+    return [link.title, link.url, link.description, link.device_label, collection?.name, space?.name]
       .some((value) => value?.toLocaleLowerCase().includes(query));
   });
   const collectionIds = new Set(links.map((link) => link.collection_id));
@@ -101,14 +109,14 @@ export function filterWorkspace(snapshot: WorkspaceSnapshot, rawQuery: string): 
 const now = "2026-08-19T00:00:00.000Z";
 export function createDemoSnapshot(userId = "demo-user"): WorkspaceSnapshot {
   const spaces: Space[] = [
-    { id: "space-launch", user_id: userId, name: "Product launch", color: "#f56f72", position: 0, created_at: now, updated_at: now },
-    { id: "space-research", user_id: userId, name: "Research", color: "#7157d9", position: 1, created_at: now, updated_at: now },
-    { id: "space-personal", user_id: userId, name: "Personal", color: "#2bb8a8", position: 2, created_at: now, updated_at: now },
+    { id: "space-launch", user_id: userId, name: "Product launch", color: "#f56f72", position: 0, created_at: now, updated_at: now, origin: "saved", read_only: false },
+    { id: "space-research", user_id: userId, name: "Research", color: "#7157d9", position: 1, created_at: now, updated_at: now, origin: "saved", read_only: false },
+    { id: "space-personal", user_id: userId, name: "Personal", color: "#2bb8a8", position: 2, created_at: now, updated_at: now, origin: "saved", read_only: false },
   ];
   const collections: Collection[] = [
-    { id: "collection-plan", user_id: userId, space_id: "space-launch", name: "Plan", position: 0, created_at: now, updated_at: now },
-    { id: "collection-design", user_id: userId, space_id: "space-launch", name: "Design", position: 1, created_at: now, updated_at: now },
-    { id: "collection-learn", user_id: userId, space_id: "space-launch", name: "Learn", position: 2, created_at: now, updated_at: now },
+    { id: "collection-plan", user_id: userId, space_id: "space-launch", name: "Plan", position: 0, created_at: now, updated_at: now, origin: "saved", read_only: false },
+    { id: "collection-design", user_id: userId, space_id: "space-launch", name: "Design", position: 1, created_at: now, updated_at: now, origin: "saved", read_only: false },
+    { id: "collection-learn", user_id: userId, space_id: "space-launch", name: "Learn", position: 2, created_at: now, updated_at: now, origin: "saved", read_only: false },
   ];
   const seeds = [
     ["Product roadmap", "https://linear.app/roadmap", "collection-plan"],
@@ -124,6 +132,7 @@ export function createDemoSnapshot(userId = "demo-user"): WorkspaceSnapshot {
     id: `link-${position}`, user_id: userId, collection_id, url, title,
     description: title === "Brand system" ? "Figma assets for launch" : "",
     favicon_url: null, position, created_at: now, updated_at: now,
+    origin: "saved", read_only: false, device_label: null,
   }));
   return { spaces, collections, links };
 }

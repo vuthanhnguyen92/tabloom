@@ -5,6 +5,7 @@ import {
   type Collection,
   type SavedLink,
   type Space,
+  type WorkspaceRecordMeta,
   type WorkspaceSnapshot,
 } from "./domain";
 
@@ -31,6 +32,7 @@ export interface WorkspaceRepository {
 const stamp = () => new Date().toISOString();
 const id = () => globalThis.crypto.randomUUID();
 const clone = <T>(value: T): T => structuredClone(value);
+const markSaved = <T extends object>(value: T): T & WorkspaceRecordMeta => ({ ...value, origin: "saved", read_only: false });
 
 export class MemoryWorkspaceRepository implements WorkspaceRepository {
   private snapshot: WorkspaceSnapshot;
@@ -40,15 +42,15 @@ export class MemoryWorkspaceRepository implements WorkspaceRepository {
   async load() { return clone(this.snapshot); }
   async createSpace(input: CreateSpaceInput) {
     const timestamp = stamp();
-    const item: Space = { id: id(), user_id: this.userId, ...input, position: this.snapshot.spaces.length, created_at: timestamp, updated_at: timestamp };
+    const item: Space = { id: id(), user_id: this.userId, ...input, position: this.snapshot.spaces.length, created_at: timestamp, updated_at: timestamp, origin: "saved", read_only: false };
     this.snapshot.spaces.push(item); return clone(item);
   }
   async updateSpace(spaceId: string, input: Partial<Pick<Space, "name" | "color">>) { this.snapshot.spaces = this.snapshot.spaces.map((item) => item.id === spaceId ? { ...item, ...input, updated_at: stamp() } : item); }
   async deleteSpace(spaceId: string) { const collectionIds = new Set(this.snapshot.collections.filter((item) => item.space_id === spaceId).map((item) => item.id)); this.snapshot.spaces = this.snapshot.spaces.filter((item) => item.id !== spaceId); this.snapshot.collections = this.snapshot.collections.filter((item) => !collectionIds.has(item.id)); this.snapshot.links = this.snapshot.links.filter((item) => !collectionIds.has(item.collection_id)); }
-  async createCollection(input: CreateCollectionInput) { const timestamp = stamp(); const item: Collection = { id: id(), user_id: this.userId, ...input, position: this.snapshot.collections.filter((entry) => entry.space_id === input.space_id).length, created_at: timestamp, updated_at: timestamp }; this.snapshot.collections.push(item); return clone(item); }
+  async createCollection(input: CreateCollectionInput) { const timestamp = stamp(); const item: Collection = { id: id(), user_id: this.userId, ...input, position: this.snapshot.collections.filter((entry) => entry.space_id === input.space_id).length, created_at: timestamp, updated_at: timestamp, origin: "saved", read_only: false }; this.snapshot.collections.push(item); return clone(item); }
   async updateCollection(collectionId: string, input: Partial<Pick<Collection, "name">>) { this.snapshot.collections = this.snapshot.collections.map((item) => item.id === collectionId ? { ...item, ...input, updated_at: stamp() } : item); }
   async deleteCollection(collectionId: string) { this.snapshot.collections = this.snapshot.collections.filter((item) => item.id !== collectionId); this.snapshot.links = this.snapshot.links.filter((item) => item.collection_id !== collectionId); }
-  async createLink(input: CreateLinkInput) { if (!isSaveableUrl(input.url)) throw new Error("Only http and https links can be saved."); const timestamp = stamp(); const item: SavedLink = { id: id(), user_id: this.userId, ...input, position: this.snapshot.links.filter((entry) => entry.collection_id === input.collection_id).length, created_at: timestamp, updated_at: timestamp }; this.snapshot.links.push(item); return clone(item); }
+  async createLink(input: CreateLinkInput) { if (!isSaveableUrl(input.url)) throw new Error("Only http and https links can be saved."); const timestamp = stamp(); const item: SavedLink = { id: id(), user_id: this.userId, ...input, position: this.snapshot.links.filter((entry) => entry.collection_id === input.collection_id).length, created_at: timestamp, updated_at: timestamp, origin: "saved", read_only: false, device_label: null }; this.snapshot.links.push(item); return clone(item); }
   async createLinks(input: CreateLinkInput[]) { for (const item of input) await this.createLink(item); }
   async updateLink(linkId: string, input: Partial<CreateLinkInput>) { if (input.url && !isSaveableUrl(input.url)) throw new Error("Only http and https links can be saved."); this.snapshot.links = this.snapshot.links.map((item) => item.id === linkId ? { ...item, ...input, updated_at: stamp() } : item); }
   async deleteLink(linkId: string) { this.snapshot.links = this.snapshot.links.filter((item) => item.id !== linkId); }
@@ -67,16 +69,20 @@ export class SupabaseWorkspaceRepository implements WorkspaceRepository {
       this.client.from("links").select("*").order("position"),
     ]);
     throwIfError(spaces.error); throwIfError(collections.error); throwIfError(links.error);
-    return { spaces: spaces.data as Space[], collections: collections.data as Collection[], links: links.data as SavedLink[] };
+    return {
+      spaces: (spaces.data ?? []).map((item) => markSaved(item) as Space),
+      collections: (collections.data ?? []).map((item) => markSaved(item) as Collection),
+      links: (links.data ?? []).map((item) => ({ ...markSaved(item), device_label: null }) as SavedLink),
+    };
   }
   private async insert<T>(table: string, value: Record<string, unknown>): Promise<T> { const result = await this.client.from(table).insert({ ...value, user_id: this.userId }).select().single(); throwIfError(result.error); return result.data as T; }
-  async createSpace(input: CreateSpaceInput) { const count = await this.client.from("spaces").select("id", { count: "exact", head: true }); throwIfError(count.error); return this.insert<Space>("spaces", { ...input, position: count.count ?? 0 }); }
+  async createSpace(input: CreateSpaceInput) { const count = await this.client.from("spaces").select("id", { count: "exact", head: true }); throwIfError(count.error); return markSaved(await this.insert<Omit<Space, keyof WorkspaceRecordMeta>>("spaces", { ...input, position: count.count ?? 0 })); }
   async updateSpace(spaceId: string, input: Partial<Pick<Space, "name" | "color">>) { const result = await this.client.from("spaces").update({ ...input, updated_at: stamp() }).eq("id", spaceId); throwIfError(result.error); }
   async deleteSpace(spaceId: string) { const result = await this.client.from("spaces").delete().eq("id", spaceId); throwIfError(result.error); }
-  async createCollection(input: CreateCollectionInput) { const count = await this.client.from("collections").select("id", { count: "exact", head: true }).eq("space_id", input.space_id); throwIfError(count.error); return this.insert<Collection>("collections", { ...input, position: count.count ?? 0 }); }
+  async createCollection(input: CreateCollectionInput) { const count = await this.client.from("collections").select("id", { count: "exact", head: true }).eq("space_id", input.space_id); throwIfError(count.error); return markSaved(await this.insert<Omit<Collection, keyof WorkspaceRecordMeta>>("collections", { ...input, position: count.count ?? 0 })); }
   async updateCollection(collectionId: string, input: Partial<Pick<Collection, "name">>) { const result = await this.client.from("collections").update({ ...input, updated_at: stamp() }).eq("id", collectionId); throwIfError(result.error); }
   async deleteCollection(collectionId: string) { const result = await this.client.from("collections").delete().eq("id", collectionId); throwIfError(result.error); }
-  async createLink(input: CreateLinkInput) { if (!isSaveableUrl(input.url)) throw new Error("Only http and https links can be saved."); const count = await this.client.from("links").select("id", { count: "exact", head: true }).eq("collection_id", input.collection_id); throwIfError(count.error); return this.insert<SavedLink>("links", { ...input, position: count.count ?? 0 }); }
+  async createLink(input: CreateLinkInput) { if (!isSaveableUrl(input.url)) throw new Error("Only http and https links can be saved."); const count = await this.client.from("links").select("id", { count: "exact", head: true }).eq("collection_id", input.collection_id); throwIfError(count.error); return { ...markSaved(await this.insert<Omit<SavedLink, keyof WorkspaceRecordMeta | "device_label">>("links", { ...input, position: count.count ?? 0 })), device_label: null }; }
   async createLinks(input: CreateLinkInput[]) {
     if (!input.every((item) => isSaveableUrl(item.url))) throw new Error("Only http and https links can be saved.");
     if (!input.length) return;
@@ -95,6 +101,6 @@ export class SupabaseWorkspaceRepository implements WorkspaceRepository {
   }
   async updateLink(linkId: string, input: Partial<CreateLinkInput>) { if (input.url && !isSaveableUrl(input.url)) throw new Error("Only http and https links can be saved."); const result = await this.client.from("links").update({ ...input, updated_at: stamp() }).eq("id", linkId); throwIfError(result.error); }
   async deleteLink(linkId: string) { const result = await this.client.from("links").delete().eq("id", linkId); throwIfError(result.error); }
-  async reorderCollections(spaceId: string, orderedIds: string[]) { const snapshot = await this.load(); const rows = snapshot.collections.filter((item) => item.space_id === spaceId && orderedIds.includes(item.id)).map((item) => ({ ...item, position: orderedIds.indexOf(item.id), updated_at: stamp() })); const result = await this.client.from("collections").upsert(rows); throwIfError(result.error); }
-  async reorderLinks(collectionId: string, orderedIds: string[]) { const snapshot = await this.load(); const rows = snapshot.links.filter((item) => orderedIds.includes(item.id)).map((item) => ({ ...item, collection_id: collectionId, position: orderedIds.indexOf(item.id), updated_at: stamp() })); const result = await this.client.from("links").upsert(rows); throwIfError(result.error); }
+  async reorderCollections(spaceId: string, orderedIds: string[]) { const snapshot = await this.load(); const rows = snapshot.collections.filter((item) => item.origin === "saved" && item.space_id === spaceId && orderedIds.includes(item.id)).map((item) => ({ id: item.id, user_id: item.user_id, space_id: item.space_id, name: item.name, position: orderedIds.indexOf(item.id), created_at: item.created_at, updated_at: stamp() })); const result = await this.client.from("collections").upsert(rows); throwIfError(result.error); }
+  async reorderLinks(collectionId: string, orderedIds: string[]) { const snapshot = await this.load(); const rows = snapshot.links.filter((item) => item.origin === "saved" && orderedIds.includes(item.id)).map((item) => ({ id: item.id, user_id: item.user_id, collection_id: collectionId, url: item.url, title: item.title, description: item.description, favicon_url: item.favicon_url, position: orderedIds.indexOf(item.id), created_at: item.created_at, updated_at: stamp() })); const result = await this.client.from("links").upsert(rows); throwIfError(result.error); }
 }
