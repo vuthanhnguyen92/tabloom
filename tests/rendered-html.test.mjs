@@ -53,4 +53,7 @@ test("privacy route explains Tabloom data handling", async () => {
   assert.match(html, /Privacy at Tabloom/);
   assert.match(html, /Supabase/);
   assert.match(html, /Chrome permissions/);
+  assert.match(html, /bookmark titles, URLs, folder paths, ordering/i);
+  assert.match(html, /only when you choose to sync/i);
+  assert.match(html, /device name and sync status/i);
 });

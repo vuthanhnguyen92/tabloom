@@ -23,6 +23,7 @@ Useful commands:
 
 ```bash
 npm run test:unit
+npm run test:supabase
 npm run build
 npm run build:extension
 npm run build:all
@@ -31,7 +32,7 @@ npm test
 
 ## Supabase and Google sign-in
 
-1. Create a Supabase project and run `supabase/migrations/202608190001_initial_workspace.sql` in the SQL editor or with the Supabase CLI.
+1. Create a Supabase project and apply every migration in `supabase/migrations/` with the Supabase CLI or SQL editor.
 2. In Google Cloud, create an OAuth 2.0 web client. Add the callback URL shown under Supabase **Authentication → Providers → Google** to Google’s authorized redirect URIs.
 3. Enable Google in Supabase and enter the Google client ID and secret there. The secret belongs only in Supabase and must never be added to this repository.
 4. Add `http://localhost:4173/app` and the production `/app` URL to Supabase **Authentication → URL Configuration → Redirect URLs**.
@@ -56,7 +57,9 @@ For Google sign-in:
 3. Add that exact URL to the Supabase redirect allow list.
 4. Rebuild after setting `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY`, and `VITE_TABLOOM_WEB_URL`.
 
-The extension requests only `tabs`, `storage`, and `identity`, plus network access to Supabase. It reads tab metadata only when the capture tray is opened. “Save & close” closes original tabs only after all selected records are persisted successfully.
+The extension requests only `tabs`, `storage`, and `identity`, plus network access to Supabase. Bookmark access is optional: Chrome prompts for it only when the user chooses **Sync browser bookmarks**. Tabloom reads bookmarks on demand, keeps Chrome authoritative, and never edits the browser bookmark tree.
+
+See [Manual bookmark synchronization](docs/bookmark-sync-setup.md) for local Supabase setup, permission behavior, device sources, and the two-device acceptance procedure.
 
 ## Project layout
 
