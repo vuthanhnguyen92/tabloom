@@ -48,6 +48,29 @@ describe("CollectionRows", () => {
     expect(source).toHaveClass("dragging");
   });
 
+  it("reveals saved-card drop zones while a current tab is dragged", () => {
+    const snapshot = createDemoSnapshot();
+    const repository = new MemoryWorkspaceRepository("demo-user", snapshot);
+    const view = render(<CollectionRows browserTabDragSession={1} collections={snapshot.collections} links={snapshot.links} repository={repository} onReload={vi.fn(async () => undefined)} />);
+
+    expect(view.container.querySelector(".ext-columns")).toHaveClass("browser-tab-dragging");
+    expect(view.container.querySelector(".ext-link-drop-preview")).not.toBeInTheDocument();
+  });
+
+  it("highlights the hovered collection for a current tab and clears on drag end", () => {
+    const snapshot = createDemoSnapshot();
+    const repository = new MemoryWorkspaceRepository("demo-user", snapshot);
+    const view = render(<CollectionRows browserTabDragSession={4} collections={snapshot.collections} links={snapshot.links} repository={repository} onReload={vi.fn(async () => undefined)} />);
+    const target = screen.getByRole("group", { name: "Design collection" });
+    fireEvent.dragOver(target, { dataTransfer: createDataTransfer(["application/x-tabloom-tab"]) });
+
+    expect(target).toHaveClass("drop-target");
+    expect(view.container.querySelector(".ext-link-drop-preview")).not.toBeInTheDocument();
+    view.rerender(<CollectionRows browserTabDragSession={0} collections={snapshot.collections} links={snapshot.links} repository={repository} onReload={vi.fn(async () => undefined)} />);
+    expect(target).not.toHaveClass("drop-target");
+    expect(view.container.querySelector(".ext-columns")).not.toHaveClass("browser-tab-dragging");
+  });
+
   it("inserts a preview before the hovered card without persisting", async () => {
     const { repository, onReload } = setup();
     const source = screen.getByRole("link", { name: /Product roadmap/i });

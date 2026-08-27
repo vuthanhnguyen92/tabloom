@@ -25,6 +25,7 @@ function setup() {
   const repository = new MemoryWorkspaceRepository("demo-user", snapshot);
   const onExpandedChange = vi.fn();
   const onMessage = vi.fn();
+  const onTabDragChange = vi.fn();
   render(<CurrentTabsSheet
     activeSpaceId="space-launch"
     collections={snapshot.collections}
@@ -33,10 +34,11 @@ function setup() {
     onError={vi.fn()}
     onExpandedChange={onExpandedChange}
     onMessage={onMessage}
+    onTabDragChange={onTabDragChange}
     onWorkspaceReload={vi.fn(async () => undefined)}
     listTabs={vi.fn(async () => browserTabs)}
   />);
-  return { repository, onExpandedChange, onMessage };
+  return { repository, onExpandedChange, onMessage, onTabDragChange };
 }
 
 describe("CurrentTabsSheet", () => {
@@ -59,13 +61,23 @@ describe("CurrentTabsSheet", () => {
   });
 
   it("places a saveable tab payload on drag start", async () => {
-    setup();
+    const { onTabDragChange } = setup();
     const tab = await screen.findByText("Roadmap");
     const setData = vi.fn();
     const dataTransfer = { setData, effectAllowed: "none" };
     fireEvent.dragStart(tab.closest("[draggable='true']")!, { dataTransfer });
     expect(setData).toHaveBeenCalledWith("application/x-tabloom-tab", expect.stringContaining("Roadmap"));
     expect(dataTransfer.effectAllowed).toBe("copy");
+    expect(onTabDragChange).toHaveBeenCalledWith(true);
+    fireEvent.dragEnd(tab.closest("[draggable='true']")!);
+    expect(onTabDragChange).toHaveBeenLastCalledWith(false);
+  });
+
+  it("does not activate saved-card drop zones for unsupported tabs", async () => {
+    const { onTabDragChange } = setup();
+    const tab = await screen.findByText("Settings");
+    fireEvent.dragStart(tab.closest(".disabled")!, { dataTransfer: { setData: vi.fn(), effectAllowed: "none" } });
+    expect(onTabDragChange).not.toHaveBeenCalled();
   });
 
   it("saves all supported tabs into a user-named collection", async () => {
