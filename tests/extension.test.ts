@@ -1,7 +1,16 @@
 import { describe, expect, it, vi } from "vitest";
+import { readFileSync } from "node:fs";
 import { createDemoSnapshot } from "../shared/domain";
 import { ChromeSnapshotCache } from "../extension/storage";
 import { listCurrentWindowTabs } from "../extension/chrome-api";
+
+describe("extension permissions", () => {
+  it("can request tab-group access at runtime without requiring it at installation", () => {
+    const manifest = JSON.parse(readFileSync("extension/public/manifest.json", "utf8")) as { permissions?: string[]; optional_permissions?: string[] };
+    expect(manifest.permissions).not.toContain("tabGroups");
+    expect(manifest.optional_permissions).toContain("tabGroups");
+  });
+});
 
 describe("ChromeSnapshotCache", () => {
   it("round-trips the latest workspace snapshot", async () => {

@@ -40,6 +40,30 @@ describe("CollectionRows", () => {
     expect(rule?.style.fontWeight).toBe("500");
   });
 
+  it("passes the collection name and ordered links to Open all", async () => {
+    const snapshot = createDemoSnapshot();
+    const onOpenCollection = vi.fn(async () => undefined);
+    render(<CollectionRows
+      collections={snapshot.collections}
+      links={snapshot.links}
+      onOpenCollection={onOpenCollection}
+      repository={new MemoryWorkspaceRepository("demo-user", snapshot)}
+      onReload={vi.fn(async () => undefined)}
+    />);
+
+    await userEvent.click(within(screen.getByRole("group", { name: "Plan collection" })).getByRole("button", { name: "Open all" }));
+
+    expect(onOpenCollection).toHaveBeenCalledOnce();
+    expect(onOpenCollection).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "collection-plan", name: "Plan" }),
+      [
+        expect.objectContaining({ title: "Product roadmap" }),
+        expect.objectContaining({ title: "Customer brief" }),
+        expect.objectContaining({ title: "Launch checklist" }),
+      ],
+    );
+  });
+
   it("reveals collection drop zones while a saved-link card is dragged", () => {
     const { container } = setup();
     const source = screen.getByRole("link", { name: /Product roadmap/i });
