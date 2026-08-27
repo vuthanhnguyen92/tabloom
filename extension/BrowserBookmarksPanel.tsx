@@ -57,7 +57,15 @@ export function BrowserBookmarksPanel({
   }
 
   useEffect(() => {
-    void refreshSources().catch((reason) => setState({ kind: "error", message: reason instanceof Error ? reason.message : "Could not load bookmark devices." }));
+    let cancelled = false;
+    void repository.listSources().then((next) => {
+      if (cancelled) return;
+      setSources(next);
+      setDraftNames(Object.fromEntries(next.map((source) => [source.id, source.device_name])));
+    }).catch((reason) => {
+      if (!cancelled) setState({ kind: "error", message: reason instanceof Error ? reason.message : "Could not load bookmark devices." });
+    });
+    return () => { cancelled = true; };
   }, [repository]);
 
   async function executeSync(device: BookmarkDevice) {

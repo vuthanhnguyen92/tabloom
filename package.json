@@ -13,9 +13,11 @@
     "test:unit": "vitest run",
     "test:unit:watch": "vitest",
     "test:supabase": "supabase db reset && supabase test db supabase/tests/browser_bookmark_sync.test.sql",
+    "test:e2e:bookmarks": "playwright test tests/e2e/browser-bookmarks.spec.ts --project=chromium",
     "build:extension": "vite build --config extension/vite.config.ts",
     "build:all": "npm run build && npm run build:extension",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern dist-extension --ignore-pattern .next",
+    "verify": "npm run lint && npx tsc --noEmit && npm run test:unit && npm run test:supabase && npm run build:all",
     "db:generate": "drizzle-kit generate"
   },
   "dependencies": {
@@ -32,6 +34,7 @@
     "@eslint/js": "9.39.4",
     "@next/eslint-plugin-next": "16.2.6",
     "@openai/sites-vite-plugin": "0.1.0",
+    "@playwright/test": "^1.62.1",
     "@tailwindcss/postcss": "4.2.1",
     "@testing-library/jest-dom": "^7.0.1",
     "@testing-library/react": "^16.3.2",
