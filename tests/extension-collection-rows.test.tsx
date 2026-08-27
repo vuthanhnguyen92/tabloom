@@ -80,6 +80,31 @@ describe("CollectionRows", () => {
     expect(onReload).toHaveBeenCalledOnce();
   });
 
+  it("reveals normal collection targets while dragging from the bookmark-only space", async () => {
+    const normal = createDemoSnapshot();
+    const bookmark = toBookmarkWorkspace("demo-user", mergeBookmarkEntries(
+      [{ id: "mac", device_name: "Work Mac", last_synced_at: null }],
+      [{ id: "entry", source_id: "mac", chrome_bookmark_id: "one", url: "https://example.com", normalized_url: "https://example.com/", title: "Browser example", folder_path: "Imported", syncing: false, position: 0 }],
+    ));
+    const onBookmarkDrop = vi.fn(async () => undefined);
+    render(<CollectionRows
+      collections={bookmark.collections}
+      links={bookmark.links}
+      allLinks={[...normal.links, ...bookmark.links]}
+      bookmarkDropCollections={[normal.collections[0]]}
+      repository={new MemoryWorkspaceRepository("demo-user", normal)}
+      onReload={vi.fn(async () => undefined)}
+      onBookmarkDrop={onBookmarkDrop}
+    />);
+    const transfer = createDataTransfer();
+    fireEvent.dragStart(screen.getByRole("link", { name: /Browser example/i }), { dataTransfer: transfer });
+    const target = screen.getByRole("group", { name: "Plan copy target" });
+    expect(target).toBeVisible();
+    fireEvent.dragOver(target, { dataTransfer: transfer });
+    fireEvent.drop(target, { dataTransfer: transfer });
+    await waitFor(() => expect(onBookmarkDrop).toHaveBeenCalledWith(expect.objectContaining({ title: "Browser example" }), "collection-plan"));
+  });
+
   it("renders each collection as a row containing compact link tiles", () => {
     setup();
     const rows = screen.getAllByRole("group", { name: /collection$/i });

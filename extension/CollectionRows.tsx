@@ -10,6 +10,7 @@ export type CollectionRowsProps = {
   collections: Collection[];
   links: SavedLink[];
   allLinks?: SavedLink[];
+  bookmarkDropCollections?: Collection[];
   browserTabDragSession?: number;
   repository: WorkspaceRepository;
   onReload: () => Promise<void>;
@@ -28,7 +29,7 @@ type DraggedItem =
 type LinkDropPreview = { collectionId: string; targetLinkId?: string } | null;
 type PendingDuplicateMove = { sourceId: string; collectionId: string; targetLinkId?: string; duplicate: SavedLink } | null;
 
-export function CollectionRows({ collections, links, allLinks = links, browserTabDragSession = 0, repository, onReload, onOpenCollection = async (collection, collectionLinks) => { await openCollectionTabs(collection.name, collectionLinks.map((link) => link.url)); }, onBrowserTabDrop, onBookmarkDrop, onError, highlightedLinkId }: CollectionRowsProps) {
+export function CollectionRows({ collections, links, allLinks = links, bookmarkDropCollections = [], browserTabDragSession = 0, repository, onReload, onOpenCollection = async (collection, collectionLinks) => { await openCollectionTabs(collection.name, collectionLinks.map((link) => link.url)); }, onBrowserTabDrop, onBookmarkDrop, onError, highlightedLinkId }: CollectionRowsProps) {
   const [dragged, setDragged] = useState<DraggedItem>(null);
   const [linkDropPreview, setLinkDropPreview] = useState<LinkDropPreview>(null);
   const [browserDropTarget, setBrowserDropTarget] = useState<{ collectionId: string; session: number } | null>(null);
@@ -129,6 +130,17 @@ export function CollectionRows({ collections, links, allLinks = links, browserTa
 
   const browserTabDragging = browserTabDragSession > 0;
   return <div className={`ext-columns ${dragged?.kind === "saved-link" || dragged?.kind === "browser-bookmark" ? "link-dragging" : ""} ${browserTabDragging ? "browser-tab-dragging" : ""}`}>
+    {dragged?.kind === "browser-bookmark" && !!bookmarkDropCollections.length && <aside className="bookmark-copy-tray" aria-label="Saved collection drop targets">
+      <p>Copy to a saved collection</p>
+      <div>{bookmarkDropCollections.filter(canMutateCollection).sort((left, right) => left.name.localeCompare(right.name)).map((collection) => <div
+        aria-label={`${collection.name} copy target`}
+        className={linkDropPreview?.collectionId === collection.id ? "bookmark-drop-target" : undefined}
+        key={collection.id}
+        onDragOver={(event) => { allowDrop(event); previewLinkDrop(collection); }}
+        onDrop={(event) => { event.preventDefault(); void copyBookmark(collection); }}
+        role="group"
+      >{collection.name}</div>)}</div>
+    </aside>}
     {orderedCollections.map((collection) => {
       const collectionLinks = links.filter((link) => link.collection_id === collection.id).sort((a, b) => a.position - b.position);
       const showsPreview = linkDropPreview?.collectionId === collection.id;

@@ -6,7 +6,7 @@ import { ChromeSnapshotCache, type StorageArea } from "./storage";
 
 const BOOKMARK_DEVICE_KEY = "tabloom-bookmark-device";
 
-export type BookmarkDevice = { key: string; name: string };
+export type BookmarkDevice = { key: string; name: string; sourceId?: string };
 export type BookmarkSyncResult = BookmarkSyncSummary & { skipped: number; deviceOnlyCount: number };
 
 export type SyncBrowserBookmarksInput = {
@@ -29,7 +29,8 @@ function isDevice(value: unknown): value is BookmarkDevice {
   if (!value || typeof value !== "object") return false;
   const candidate = value as Partial<BookmarkDevice>;
   return typeof candidate.key === "string" && candidate.key.length >= 16
-    && typeof candidate.name === "string" && candidate.name.trim().length > 0;
+    && typeof candidate.name === "string" && candidate.name.trim().length > 0
+    && (candidate.sourceId === undefined || typeof candidate.sourceId === "string");
 }
 
 export async function getOrCreateBookmarkDevice(
