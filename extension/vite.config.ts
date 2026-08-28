@@ -6,6 +6,7 @@ const target = process.env.TABLOOM_BROWSER_TARGET ?? "chromium";
 
 export default defineConfig({
   root: resolve(import.meta.dirname),
+  envDir: resolve(import.meta.dirname, ".."),
   publicDir: false,
   plugins: [react()],
   define: { __TABLOOM_BROWSER_TARGET__: JSON.stringify(target) },
