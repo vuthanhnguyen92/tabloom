@@ -22,7 +22,7 @@ describe("extension motion system", () => {
     const rules = Array.from(style.sheet!.cssRules).filter((rule): rule is CSSStyleRule => "selectorText" in rule);
     const rulesFor = (selector: string) => rules.filter((rule) => rule.selectorText === selector);
 
-    expect(rulesFor(".ext-message, .demo-note").some((rule) => rule.style.getPropertyValue("animation-name") === "motion-toast-in")).toBe(true);
+    expect(rulesFor(".ext-message").some((rule) => rule.style.getPropertyValue("animation-name") === "motion-toast-in")).toBe(true);
     expect(rulesFor(".current-tab-list > div").some((rule) => rule.style.getPropertyValue("transition").includes("180ms"))).toBe(true);
     expect(rulesFor(".drop-confirm-backdrop").some((rule) => rule.style.getPropertyValue("animation-name") === "motion-backdrop-in")).toBe(true);
     expect(rulesFor(".drop-confirm").some((rule) => rule.style.getPropertyValue("animation-name") === "motion-dialog-in")).toBe(true);
@@ -48,6 +48,18 @@ describe("extension motion system", () => {
     expect(cancelRule?.style.getPropertyValue("display")).toBe("grid");
     expect(cancelRule?.style.getPropertyValue("place-items")).toBe("center");
     expect(cancelRule?.style.getPropertyValue("padding")).toBe("0px");
+  });
+
+  it("aligns both sync-modal actions to the same comfortable button height", () => {
+    const style = mountExtensionStyles();
+    const rules = Array.from(style.sheet!.cssRules).filter((rule): rule is CSSStyleRule => "selectorText" in rule);
+    const actionRule = rules.find((rule) => rule.selectorText === ".sync-login-modal > div button");
+
+    expect(actionRule?.style.getPropertyValue("height")).toBe("42px");
+    expect(actionRule?.style.getPropertyValue("display")).toBe("inline-flex");
+    expect(actionRule?.style.getPropertyValue("align-items")).toBe("center");
+    expect(actionRule?.style.getPropertyValue("justify-content")).toBe("center");
+    expect(actionRule?.style.getPropertyValue("gap")).toBe("7px");
   });
 
 });

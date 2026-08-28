@@ -19,6 +19,27 @@ export type FirstSyncDecision =
   | { kind: "auto-import"; preview: WorkspaceMergePlan }
   | { kind: "confirm"; preview: WorkspaceMergePlan };
 
+export type AdvancedFirstSync =
+  | { kind: "synced" }
+  | {
+      kind: "confirmation";
+      coordinator: FirstSyncCoordinator;
+      preview: WorkspaceMergePlan;
+    };
+
+export async function advanceFirstSync(
+  coordinator: FirstSyncCoordinator,
+): Promise<AdvancedFirstSync> {
+  const decision = await coordinator.inspect();
+  if (decision.kind === "confirm") {
+    return { kind: "confirmation", coordinator, preview: decision.preview };
+  }
+  if (decision.kind === "auto-import") {
+    await coordinator.confirm(decision.preview);
+  }
+  return { kind: "synced" };
+}
+
 export class FirstSyncPreviewChangedError extends WorkspaceRevisionConflictError {
   constructor(public readonly preview: WorkspaceMergePlan) {
     super("The synced workspace changed. Review the updated merge summary.");

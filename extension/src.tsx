@@ -4,13 +4,15 @@ import "@fontsource/poppins/latin-400.css";
 import "@fontsource/poppins/latin-500.css";
 import "@fontsource/poppins/latin-600.css";
 import "@fontsource/poppins/latin-700.css";
-import { LogIn, Search, Sprout, X } from "lucide-react";
+import { Search, X } from "lucide-react";
 import { BROWSER_BOOKMARKS_SPACE_ID } from "../shared/bookmarks";
 import { CombinedWorkspaceRepository, SupabaseBookmarkRepository, copyBookmarkToCollection, type BookmarkRepository } from "../shared/bookmark-repository";
-import { createDemoSnapshot, filterWorkspace, findDuplicateLink, type SavedLink, type WorkspaceSnapshot } from "../shared/domain";
-import { MemoryWorkspaceRepository, SupabaseWorkspaceRepository, type WorkspaceRepository } from "../shared/repository";
+import { filterWorkspace, findDuplicateLink, type SavedLink, type WorkspaceSnapshot } from "../shared/domain";
+import { SupabaseWorkspaceRepository, type WorkspaceRepository } from "../shared/repository";
+import type { WorkspaceMergePlan } from "../shared/workspace-merge";
+import { SupabaseWorkspaceSyncRepository } from "../shared/workspace-sync-repository";
 import { openCollectionTabs, type CaptureTab } from "./chrome-api";
-import { ChromeSnapshotCache } from "./storage";
+import { ChromeSnapshotCache, createLocalWorkspaceRepository } from "./storage";
 import { extensionSupabase, signInExtensionWithGoogle } from "./supabase";
 import { CollectionRows } from "./CollectionRows";
 import { BrowserBookmarksPanel } from "./BrowserBookmarksPanel";
@@ -18,6 +20,10 @@ import { CurrentTabsSheet } from "./CurrentTabsSheet";
 import { saveDroppedTab } from "./dropped-tab";
 import { SpaceSidebar } from "./SpaceSidebar";
 import { browserAdapter } from "./browser";
+import { SyncLoginPrompt } from "./SyncLoginPrompt";
+import { CreateCollectionPrompt } from "./CreateCollectionPrompt";
+import { WorkspaceSyncPrompt } from "./WorkspaceSyncPrompt";
+import { advanceFirstSync, FirstSyncCoordinator, FirstSyncPreviewChangedError } from "./first-sync";
 import "./style.css";
 
 const cache = new ChromeSnapshotCache();
@@ -33,6 +39,10 @@ function ExtensionApp() {
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const [signedIn, setSignedIn] = useState(false);
+  const [syncStatus, setSyncStatus] = useState<"local" | "checking" | "pending" | "synced" | "error">("local");
+  const [workspaceSync, setWorkspaceSync] = useState<{ coordinator: FirstSyncCoordinator; preview: WorkspaceMergePlan } | null>(null);
+  const [workspaceSyncBusy, setWorkspaceSyncBusy] = useState(false);
+  const [workspaceSyncError, setWorkspaceSyncError] = useState<string | null>(null);
   const [tabsExpanded, setTabsExpanded] = useState(true);
   const [tabsRefreshVersion, setTabsRefreshVersion] = useState(0);
   const [pendingTab, setPendingTab] = useState<{ tab: CaptureTab; collectionId: string; duplicate?: SavedLink } | null>(null);
@@ -40,34 +50,82 @@ function ExtensionApp() {
   const [savingDroppedTab, setSavingDroppedTab] = useState(false);
   const [browserTabDrag, setBrowserTabDrag] = useState({ active: false, session: 0 });
   const savingDroppedTabRef = useRef(false);
+  const localRepositoryRef = useRef<WorkspaceRepository | null>(null);
+  const syncUserIdRef = useRef<string | null>(null);
+  const cloudAuthorityRef = useRef(false);
 
   async function load(repo: WorkspaceRepository) {
     try {
       const next = await repo.load();
       setSnapshot(next); setSelectedSpace((current) => current || next.spaces[0]?.id || "");
-      await cache.write(next); setError("");
+      setError("");
     } catch {
-      const cached = await cache.read();
+      const cached = cloudAuthorityRef.current && syncUserIdRef.current
+        ? (await cache.loadCloud(syncUserIdRef.current))?.snapshot ?? null
+        : await cache.read();
       if (cached) { setSnapshot(cached); setMessage("Offline · showing your last synced workspace"); }
       else setError("Connect to the internet to load your workspace.");
     }
   }
 
+  async function beginWorkspaceSync(userId: string, localRepository: WorkspaceRepository) {
+    if (!extensionSupabase) return;
+    setSignedIn(true);
+    setSyncStatus("checking");
+    syncUserIdRef.current = userId;
+    const normal = new SupabaseWorkspaceRepository(extensionSupabase, userId);
+    const bookmarks = new SupabaseBookmarkRepository(extensionSupabase, userId);
+    const cloudRepository = new CombinedWorkspaceRepository(normal, bookmarks);
+    const coordinator = new FirstSyncCoordinator({
+      userId,
+      localRepository,
+      cloudRepository,
+      syncRepository: new SupabaseWorkspaceSyncRepository(extensionSupabase),
+      cache,
+      activateCloud: async (nextRepository) => {
+        const next = await nextRepository.load();
+        cloudAuthorityRef.current = true;
+        setRepository(nextRepository);
+        setSnapshot(next);
+        setSelectedSpace((current) => next.spaces.some((space) => space.id === current) ? current : next.spaces[0]?.id ?? "");
+        setError("");
+      },
+    });
+    setBookmarkRepository(bookmarks);
+    try {
+      const advanced = await advanceFirstSync(coordinator);
+      if (advanced.kind === "confirmation") {
+        setWorkspaceSync({ coordinator, preview: advanced.preview });
+        setWorkspaceSyncError(null);
+        setSyncStatus("pending");
+        setMessage("Review how local and synced tabs should be combined");
+      } else {
+        setWorkspaceSync(null);
+        setSyncStatus("synced");
+        setMessage("Workspace sync is ready");
+      }
+    } catch (reason) {
+      cloudAuthorityRef.current = false;
+      setSyncStatus("error");
+      setMessage("Cloud sync is unavailable · your local workspace is still ready");
+      throw reason;
+    }
+  }
+
   useEffect(() => {
     void (async () => {
-      if (!extensionSupabase) {
-        const repo = new MemoryWorkspaceRepository("demo-user", createDemoSnapshot());
-        setRepository(repo); await load(repo); return;
-      }
-      const { data } = await extensionSupabase.auth.getSession();
-      if (data.session) {
-        const normal = new SupabaseWorkspaceRepository(extensionSupabase, data.session.user.id);
-        const bookmarks = new SupabaseBookmarkRepository(extensionSupabase, data.session.user.id);
-        const repo = new CombinedWorkspaceRepository(normal, bookmarks);
-        setBookmarkRepository(bookmarks);
-        setSignedIn(true); setRepository(repo); await load(repo);
-      } else {
-        const cached = await cache.read(); if (cached) setSnapshot(cached);
+      const local = await createLocalWorkspaceRepository();
+      localRepositoryRef.current = local;
+      setRepository(local);
+      await load(local);
+      if (!extensionSupabase) return;
+      try {
+        const { data } = await extensionSupabase.auth.getSession();
+        if (data.session) {
+          await beginWorkspaceSync(data.session.user.id, local);
+        }
+      } catch {
+        setMessage("Cloud sync is unavailable · your local workspace is still ready");
       }
     })();
   }, []);
@@ -148,31 +206,77 @@ function ExtensionApp() {
   }
 
   async function signIn() {
-    try {
-      const session = await signInExtensionWithGoogle();
-      if (!extensionSupabase) return;
-      const normal = new SupabaseWorkspaceRepository(extensionSupabase, session.user.id);
-      const bookmarks = new SupabaseBookmarkRepository(extensionSupabase, session.user.id);
-      const repo = new CombinedWorkspaceRepository(normal, bookmarks);
-      setBookmarkRepository(bookmarks);
-      setSignedIn(true); setRepository(repo); await load(repo);
-    } catch (reason) { setError(reason instanceof Error ? reason.message : "Could not sign in."); }
+    const session = await signInExtensionWithGoogle();
+    const local = localRepositoryRef.current;
+    if (!extensionSupabase || !local) return;
+    await beginWorkspaceSync(session.user.id, local);
   }
+
+  async function confirmWorkspaceSync() {
+    if (!workspaceSync || workspaceSyncBusy) return;
+    setWorkspaceSyncBusy(true);
+    setWorkspaceSyncError(null);
+    try {
+      await workspaceSync.coordinator.confirm(workspaceSync.preview);
+      setWorkspaceSync(null);
+      setSyncStatus("synced");
+      setMessage("Local and synced tabs were combined");
+    } catch (reason) {
+      if (reason instanceof FirstSyncPreviewChangedError) {
+        setWorkspaceSync({ coordinator: workspaceSync.coordinator, preview: reason.preview });
+        setWorkspaceSyncError(reason.message);
+        setSyncStatus("pending");
+      } else {
+        setWorkspaceSyncError(reason instanceof Error ? reason.message : "Could not synchronize this workspace.");
+        setSyncStatus("error");
+      }
+    } finally {
+      setWorkspaceSyncBusy(false);
+    }
+  }
+
+  async function cancelWorkspaceSync() {
+    if (!workspaceSync || workspaceSyncBusy) return;
+    await workspaceSync.coordinator.cancel();
+    setWorkspaceSync(null);
+    setWorkspaceSyncError(null);
+    setSyncStatus("pending");
+    setMessage("Sync pending · this browser is still using local storage");
+  }
+
+  async function retryWorkspaceSync() {
+    const local = localRepositoryRef.current;
+    const userId = syncUserIdRef.current;
+    if (!local || !userId || syncStatus === "checking") return;
+    try {
+      await beginWorkspaceSync(userId, local);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Could not retry workspace sync.");
+    }
+  }
+
+  const bookmarkCache = {
+    writeEnvelope: async (envelope: Parameters<ChromeSnapshotCache["writeEnvelope"]>[0]) => {
+      const userId = syncUserIdRef.current;
+      if (!userId) return cache.writeEnvelope(envelope);
+      const state = await cache.loadSyncState(userId);
+      await cache.saveCloud(userId, { snapshot: envelope.snapshot, revision: state?.revision ?? 0 });
+    },
+  };
 
   return <main className={`ext-shell ${tabsExpanded ? "sheet-open" : "sheet-collapsed"}`}>
     {snapshot ? <SpaceSidebar activeSpaceId={activeSpace?.id ?? ""} brand={<Mark />} repository={repository} snapshot={snapshot} onError={setError} onMessage={setMessage} onReload={() => repository ? load(repository) : Promise.resolve()} onSelect={(spaceId) => { setSelectedSpace(spaceId); setQuery(""); }} /> : <aside className="ext-sidebar"><Mark /></aside>}
-    <section className="ext-main"><header><div><small>{signedIn ? "SYNCED WORKSPACE" : "DEMO WORKSPACE"}</small><h1>{activeSpace?.name || "Your workspace"}</h1></div><label><Search size={17} /><input aria-label="Search your links" placeholder="Search your links" value={query} onChange={(event) => setQuery(event.target.value)} /></label></header>
+    <section className="ext-main"><header><div><small>{syncStatus === "synced" ? "SYNCED WORKSPACE" : syncStatus === "checking" ? "CHECKING WORKSPACE SYNC" : syncStatus === "pending" || syncStatus === "error" ? "LOCAL WORKSPACE · SYNC PENDING" : "LOCAL WORKSPACE"}</small><h1>{activeSpace?.name || "Your workspace"}</h1></div><div className="ext-header-tools">{repository && <CreateCollectionPrompt activeSpaceId={activeSpace?.origin === "saved" && !activeSpace.read_only ? activeSpace.id : undefined} repository={repository} onCreated={() => load(repository)} onError={setError} />}{!signedIn && <SyncLoginPrompt configured={Boolean(extensionSupabase)} onSignIn={signIn} />}{signedIn && (syncStatus === "pending" || syncStatus === "error") && <button className="sync-login-trigger sync-retry-trigger" onClick={() => void retryWorkspaceSync()}>Retry sync</button>}<label><Search size={17} /><input aria-label="Search your links" placeholder="Search your links" value={query} onChange={(event) => setQuery(event.target.value)} /></label></div></header>
       {message && <p className="ext-message">{message}</p>}{error && <p className="ext-message error">{error}<button onClick={() => setError("")}><X size={14} /></button></p>}
-      {!extensionSupabase && <p className="demo-note">Demo mode · add Supabase settings to synchronize this new-tab page.</p>}
-      {extensionSupabase && !signedIn && <div className="ext-signin"><Sprout size={32} /><h2>Your workspace is ready to bloom.</h2><p>Sign in to capture tabs and sync them with Tabloom on the web.</p><button onClick={() => void signIn()}><LogIn size={16} /> Sign in with Google</button></div>}
       {activeSpace?.id === BROWSER_BOOKMARKS_SPACE_ID && bookmarkRepository && repository && (browserAdapter.capabilities.bookmarks
-        ? <BrowserBookmarksPanel repository={bookmarkRepository} workspace={repository} cache={cache} onWorkspaceReload={() => load(repository)} />
+        ? <BrowserBookmarksPanel repository={bookmarkRepository} workspace={repository} cache={bookmarkCache} onWorkspaceReload={() => load(repository)} />
         : <section className="bookmark-sync-panel" aria-label="Browser bookmark sync unavailable"><p className="bookmark-sync-status">Safari cannot read local browser bookmarks. Collections synchronized from your other devices remain available here.</p></section>)}
-      {(!extensionSupabase || signedIn) && repository && visible && <CollectionRows bookmarkDropCollections={savedCollections} browserTabDragSession={browserTabDrag.active ? browserTabDrag.session : 0} collections={collections} links={visible.links} allLinks={snapshot?.links ?? visible.links} highlightedLinkId={pendingTab?.duplicate?.id ?? pendingBookmark?.duplicate.id} repository={repository} onError={setError} onReload={() => load(repository)} onOpenCollection={(collection, collectionLinks) => openCollection(collection.name, collectionLinks.map((link) => link.url))} onBookmarkDrop={handleBookmarkDrop} onBrowserTabDrop={(tab, collectionId) => { setBrowserTabDrag((current) => ({ ...current, active: false })); setPendingTab({ tab, collectionId, duplicate: findDuplicateLink((snapshot?.links ?? []).filter((item) => item.origin === "saved"), collectionId, tab.url ?? "") }); }} />}
+      {repository && visible && <CollectionRows bookmarkDropCollections={savedCollections} browserTabDragSession={browserTabDrag.active ? browserTabDrag.session : 0} collections={collections} links={visible.links} allLinks={snapshot?.links ?? visible.links} highlightedLinkId={pendingTab?.duplicate?.id ?? pendingBookmark?.duplicate.id} repository={repository} onError={setError} onReload={() => load(repository)} onOpenCollection={(collection, collectionLinks) => openCollection(collection.name, collectionLinks.map((link) => link.url))} onBookmarkDrop={handleBookmarkDrop} onBrowserTabDrop={(tab, collectionId) => { setBrowserTabDrag((current) => ({ ...current, active: false })); setPendingTab({ tab, collectionId, duplicate: findDuplicateLink((snapshot?.links ?? []).filter((item) => item.origin === "saved"), collectionId, tab.url ?? "") }); }} />}
     </section>
     <CurrentTabsSheet activeSpaceId={activeSpace?.origin === "saved" ? activeSpace.id : undefined} collections={snapshot?.collections.filter((item) => item.origin === "saved" && item.space_id === activeSpace?.id) ?? []} expanded={tabsExpanded} repository={repository} refreshVersion={tabsRefreshVersion} onError={setError} onExpandedChange={setTabsExpanded} onMessage={setMessage} onTabDragChange={(dragging) => setBrowserTabDrag((current) => dragging ? { active: true, session: current.session + 1 } : { ...current, active: false })} onWorkspaceReload={() => repository ? load(repository) : Promise.resolve()} />
     {pendingTab && <div className="drop-confirm-backdrop"><section className="drop-confirm" role="dialog" aria-modal="true" aria-label={pendingTab.duplicate ? "Duplicate current tab" : "Save dropped tab"}><button className="dialog-close" aria-label="Cancel dropped tab" disabled={savingDroppedTab} onClick={() => setPendingTab(null)}><X size={18} /></button>{pendingTab.duplicate ? <><small>DUPLICATE LINK</small><h2>Already saved in {snapshot?.collections.find((item) => item.id === pendingTab.collectionId)?.name ?? "this collection"}</h2><p>The existing saved card is highlighted. Keep or close the current tab without creating a duplicate, or save another copy.</p><div><button disabled={savingDroppedTab} onClick={keepDuplicateTabOpen}>Keep tab open</button><button disabled={savingDroppedTab || typeof pendingTab.tab.id !== "number"} onClick={() => void closeDuplicateTab()}>Close tab</button><button className="close-after-save" disabled={savingDroppedTab} onClick={() => void confirmDroppedTab(false)}>Save another copy</button></div></> : <><small>SAVE CURRENT TAB</small><h2>{pendingTab.tab.title || "Untitled tab"}</h2><p>Save this tab and keep it open, or close it after Tabloom confirms the link was saved?</p><div><button disabled={savingDroppedTab} onClick={() => setPendingTab(null)}>Cancel</button><button disabled={savingDroppedTab} onClick={() => void confirmDroppedTab(false)}>Save and keep tab open</button><button className="close-after-save" disabled={savingDroppedTab} onClick={() => void confirmDroppedTab(true)}>Save and close tab</button></div></>}</section></div>}
     {pendingBookmark && <div className="drop-confirm-backdrop"><section className="drop-confirm" role="dialog" aria-modal="true" aria-label="Duplicate browser bookmark"><button className="dialog-close" aria-label="Cancel bookmark copy" onClick={() => setPendingBookmark(null)}><X size={18} /></button><small>DUPLICATE LINK</small><h2>Already saved in this collection</h2><p>The existing saved card is highlighted. Keep the Chrome bookmark unchanged, or save another Tabloom copy.</p><div><button onClick={() => setPendingBookmark(null)}>Cancel</button><button className="close-after-save" onClick={() => void confirmBookmarkCopy()}>Save another copy</button></div></section></div>}
+    {workspaceSync && <WorkspaceSyncPrompt plan={workspaceSync.preview} busy={workspaceSyncBusy} error={workspaceSyncError} onConfirm={confirmWorkspaceSync} onCancel={cancelWorkspaceSync} />}
   </main>;
 }
 
