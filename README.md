@@ -17,7 +17,7 @@ cp .env.example .env.local
 npm run dev -- --port 4173
 ```
 
-Without Supabase values the web app and extension open in a fully interactive demo mode. Demo changes are in memory and reset on refresh.
+The extension is local-first: without Supabase it creates a persistent browser workspace and keeps every space, collection, and saved link in extension storage. Supabase is required only for account sign-in and cross-device synchronization.
 
 Useful commands:
 
@@ -40,6 +40,10 @@ npm test
 
 Row-level security ensures every user can read and change only rows whose `user_id` matches their authenticated Supabase user.
 
+The current local checkout is connected through ignored `.env.local` values to Supabase project `tctjlsvfufzxhauhywsm`. Its migrations, RLS policies, production site URL, and web redirect URLs have been configured. Google remains disabled until a Google OAuth client ID and client secret are entered in **Authentication → Sign In / Providers → Google**.
+
+On the first signed-in extension sync, Tabloom compares the persistent local workspace with the user's cloud workspace. An empty side is imported automatically. If both sides contain data, Tabloom previews the merge and requires confirmation; matching card IDs are merged first, URL matching is used only as a legacy fallback within the same collection, and cloud ordering wins before local-only items are appended. Cancelling or failing the merge leaves the local workspace untouched and retryable.
+
 ## Browser extensions
 
 Build the unpacked extension:
@@ -56,6 +60,8 @@ For Google sign-in:
 2. In the extension console run `chrome.identity.getRedirectURL("auth-callback")` (or `browser.identity.getRedirectURL("auth-callback")` in Firefox).
 3. Add that exact URL to the Supabase redirect allow list.
 4. Rebuild after setting `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY`, and `VITE_TABLOOM_WEB_URL`.
+
+Do not reuse the ID from another extension or add a broad `*.chromiumapp.org` wildcard. Each installed target must register the exact callback returned by its own identity API.
 
 The extension requests only `tabs`, `storage`, and `identity`, plus network access to Supabase. Bookmark access is optional: the browser prompts for it only when the user chooses **Sync browser bookmarks**. Tabloom reads bookmarks on demand, keeps the browser authoritative, and never edits the browser bookmark tree.
 
