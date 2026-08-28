@@ -12,7 +12,7 @@
     "test": "npm run test:unit && npm run build && node --test tests/rendered-html.test.mjs",
     "test:unit": "vitest run",
     "test:unit:watch": "vitest",
-    "test:supabase": "supabase db reset && supabase test db supabase/tests/browser_bookmark_sync.test.sql",
+    "test:supabase": "supabase db reset && supabase test db supabase/tests/*.test.sql",
     "test:e2e:bookmarks": "playwright test tests/e2e/browser-bookmarks.spec.ts --project=chromium",
     "build:extension": "node extension/scripts/build-extension.mjs",
     "build:extension:chromium": "node extension/scripts/build-extension.mjs --target=chromium",
