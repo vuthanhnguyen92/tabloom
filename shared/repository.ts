@@ -34,6 +34,19 @@ const id = () => globalThis.crypto.randomUUID();
 const clone = <T>(value: T): T => structuredClone(value);
 const markSaved = <T extends object>(value: T): T & WorkspaceRecordMeta => ({ ...value, origin: "saved", read_only: false });
 
+export function decodeWorkspaceSnapshot(value: unknown): WorkspaceSnapshot {
+  if (!value || typeof value !== "object") throw new Error("invalid workspace snapshot");
+  const candidate = value as Partial<WorkspaceSnapshot>;
+  if (!Array.isArray(candidate.spaces) || !Array.isArray(candidate.collections) || !Array.isArray(candidate.links)) {
+    throw new Error("invalid workspace snapshot");
+  }
+  return {
+    spaces: candidate.spaces.map((item) => markSaved(item) as Space),
+    collections: candidate.collections.map((item) => markSaved(item) as Collection),
+    links: candidate.links.map((item) => ({ ...markSaved(item), device_label: item.device_label ?? null }) as SavedLink),
+  };
+}
+
 export class MemoryWorkspaceRepository implements WorkspaceRepository {
   private snapshot: WorkspaceSnapshot;
   constructor(private readonly userId: string, initial: WorkspaceSnapshot) {
@@ -69,11 +82,7 @@ export class SupabaseWorkspaceRepository implements WorkspaceRepository {
       this.client.from("links").select("*").order("position"),
     ]);
     throwIfError(spaces.error); throwIfError(collections.error); throwIfError(links.error);
-    return {
-      spaces: (spaces.data ?? []).map((item) => markSaved(item) as Space),
-      collections: (collections.data ?? []).map((item) => markSaved(item) as Collection),
-      links: (links.data ?? []).map((item) => ({ ...markSaved(item), device_label: null }) as SavedLink),
-    };
+    return decodeWorkspaceSnapshot({ spaces: spaces.data ?? [], collections: collections.data ?? [], links: links.data ?? [] });
   }
   private async insert<T>(table: string, value: Record<string, unknown>): Promise<T> { const result = await this.client.from(table).insert({ ...value, user_id: this.userId }).select().single(); throwIfError(result.error); return result.data as T; }
   async createSpace(input: CreateSpaceInput) { const count = await this.client.from("spaces").select("id", { count: "exact", head: true }); throwIfError(count.error); return markSaved(await this.insert<Omit<Space, keyof WorkspaceRecordMeta>>("spaces", { ...input, position: count.count ?? 0 })); }
