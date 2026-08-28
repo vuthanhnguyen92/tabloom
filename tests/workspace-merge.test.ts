@@ -23,6 +23,8 @@ function space(overrides: Partial<Space> = {}): Space {
     position: 0,
     created_at: createdAt,
     updated_at: createdAt,
+    origin: "saved",
+    read_only: false,
     ...overrides,
   };
 }
@@ -36,6 +38,8 @@ function collection(overrides: Partial<Collection> = {}): Collection {
     position: 0,
     created_at: createdAt,
     updated_at: createdAt,
+    origin: "saved",
+    read_only: false,
     ...overrides,
   };
 }
@@ -52,6 +56,8 @@ function link(overrides: Partial<SavedLink> = {}): SavedLink {
     position: 0,
     created_at: createdAt,
     updated_at: createdAt,
+    origin: "saved",
+    read_only: false,
     ...overrides,
   };
 }
