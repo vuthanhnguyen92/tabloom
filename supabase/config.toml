@@ -14,7 +14,7 @@ major_version = 15
 [auth]
 enabled = true
 site_url = "http://localhost:4173"
-additional_redirect_urls = ["http://localhost:4173/app", "https://tabloom-workspace.nickvu612206.chatgpt.site/app"]
+additional_redirect_urls = ["http://localhost:4173/app", "https://tabloom-workspace.nickvu92.chatgpt.site/app"]
 jwt_expiry = 3600
 enable_signup = true
 
