@@ -1,0 +1,18 @@
+{
+  "manifest_version": 3,
+  "name": "Tabloom — Calm tab workspace",
+  "description": "Capture open tabs into organized, synchronized spaces.",
+  "version": "0.7.0",
+  "permissions": ["tabs", "storage"],
+  "host_permissions": ["https://*.supabase.co/*"],
+  "chrome_url_overrides": { "newtab": "index.html" },
+  "web_accessible_resources": [
+    {
+      "resources": ["auth-callback.html"],
+      "matches": ["https://*.supabase.co/*"]
+    }
+  ],
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'self'; connect-src 'self' https://*.supabase.co"
+  }
+}

@@ -7,13 +7,13 @@ import * as chromeApi from "../extension/chrome-api";
 
 describe("extension permissions", () => {
   it("can request tab-group access at runtime without requiring it at installation", () => {
-    const manifest = JSON.parse(readFileSync("extension/public/manifest.json", "utf8")) as { permissions?: string[]; optional_permissions?: string[] };
+    const manifest = JSON.parse(readFileSync("extension/manifests/chromium.json", "utf8")) as { permissions?: string[]; optional_permissions?: string[] };
     expect(manifest.permissions).not.toContain("tabGroups");
     expect(manifest.optional_permissions).toContain("tabGroups");
   });
 
   it("requests bookmark access at runtime without requiring it at installation", () => {
-    const manifest = JSON.parse(readFileSync("extension/public/manifest.json", "utf8")) as { permissions?: string[]; optional_permissions?: string[] };
+    const manifest = JSON.parse(readFileSync("extension/manifests/chromium.json", "utf8")) as { permissions?: string[]; optional_permissions?: string[] };
     expect(manifest.permissions).not.toContain("bookmarks");
     expect(manifest.optional_permissions).toContain("bookmarks");
   });

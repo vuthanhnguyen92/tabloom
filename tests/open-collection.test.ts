@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import * as chromeApi from "../extension/chrome-api";
+import { createWebExtensionAdapter } from "../extension/browser/webextension";
 
 type OpenCollection = (
   collectionName: string,
@@ -16,11 +17,16 @@ function createApi(permissionGranted: boolean) {
   return {
     permissions: { request: vi.fn(async () => permissionGranted) },
     tabs: {
+      query: vi.fn(async () => []),
       create: vi.fn(async () => ({ id: nextTabId++ })),
+      remove: vi.fn(async () => undefined),
       group: vi.fn(async () => 27),
       ungroup: vi.fn(async () => undefined),
     },
     tabGroups: { update: vi.fn(async () => ({ id: 27 })) },
+    bookmarks: { getTree: vi.fn(async () => []) },
+    storage: { local: { get: vi.fn(async () => ({})), set: vi.fn(async () => undefined), remove: vi.fn(async () => undefined) } },
+    identity: { getRedirectURL: vi.fn(() => "https://example.com"), launchWebAuthFlow: vi.fn(async () => undefined) },
   };
 }
 
@@ -30,7 +36,7 @@ describe("openCollectionTabs", () => {
     expect(openCollection).toBeTypeOf("function");
     const api = createApi(true);
 
-    const result = await openCollection!("Design", ["https://figma.com/brand", "https://figma.com/prototype"], api);
+    const result = await openCollection!("Design", ["https://figma.com/brand", "https://figma.com/prototype"], createWebExtensionAdapter("chromium", api));
 
     expect(result).toEqual({ opened: 2, grouped: true });
     expect(api.permissions.request).toHaveBeenCalledWith({ permissions: ["tabGroups"] });
@@ -43,7 +49,7 @@ describe("openCollectionTabs", () => {
     expect(openCollection).toBeTypeOf("function");
     const api = createApi(false);
 
-    const result = await openCollection!("Plan", ["https://linear.app/roadmap"], api);
+    const result = await openCollection!("Plan", ["https://linear.app/roadmap"], createWebExtensionAdapter("chromium", api));
 
     expect(result).toEqual({ opened: 1, grouped: false });
     expect(api.tabs.group).not.toHaveBeenCalled();
@@ -56,7 +62,7 @@ describe("openCollectionTabs", () => {
     const api = createApi(true);
     api.tabGroups.update.mockRejectedValueOnce(new Error("Group naming failed"));
 
-    const result = await openCollection!("Learn", ["https://example.com/notes"], api);
+    const result = await openCollection!("Learn", ["https://example.com/notes"], createWebExtensionAdapter("chromium", api));
 
     expect(result).toEqual({ opened: 1, grouped: false });
     expect(api.tabs.ungroup).toHaveBeenCalledWith([100]);

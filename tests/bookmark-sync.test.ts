@@ -37,7 +37,7 @@ describe("getOrCreateBookmarkDevice", () => {
     };
     const first = await getOrCreateBookmarkDevice(area, "MacIntel", () => "device-random-0001");
     const second = await getOrCreateBookmarkDevice(area, "MacIntel", () => "different");
-    expect(first).toEqual({ key: "device-random-0001", name: "Chrome on macOS" });
+    expect(first).toEqual({ key: "device-random-0001", name: "Chromium on macOS" });
     expect(second).toEqual(first);
     expect(area.set).toHaveBeenCalledOnce();
   });

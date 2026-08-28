@@ -1,5 +1,6 @@
 import type { WorkspaceSnapshot } from "../shared/domain";
 import type { BookmarkSource } from "../shared/bookmarks";
+import { browserAdapter } from "./browser";
 
 const SNAPSHOT_KEY = "tabloom-workspace-snapshot";
 
@@ -28,7 +29,7 @@ function isEnvelope(value: unknown): value is WorkspaceCacheEnvelope {
 }
 
 export class ChromeSnapshotCache {
-  constructor(private readonly area: StorageArea = chrome.storage.local) {}
+  constructor(private readonly area: StorageArea = browserAdapter.storage) {}
   async read(): Promise<WorkspaceSnapshot | null> {
     return (await this.readEnvelope())?.snapshot ?? null;
   }
@@ -53,11 +54,13 @@ export class ChromeSnapshotCache {
   }
 }
 
-export const chromeAuthStorage = {
+export const browserAuthStorage = {
   async getItem(key: string) {
-    const result = await chrome.storage.local.get(key);
+    const result = await browserAdapter.storage.get(key);
     return typeof result[key] === "string" ? result[key] : null;
   },
-  async setItem(key: string, value: string) { await chrome.storage.local.set({ [key]: value }); },
-  async removeItem(key: string) { await chrome.storage.local.remove(key); },
+  async setItem(key: string, value: string) { await browserAdapter.storage.set({ [key]: value }); },
+  async removeItem(key: string) { await browserAdapter.storage.remove(key); },
 };
+
+export const chromeAuthStorage = browserAuthStorage;

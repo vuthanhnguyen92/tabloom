@@ -27,6 +27,19 @@ function setup() {
 const createDataTransfer = (types: string[] = []) => ({ effectAllowed: "none", dropEffect: "none", types, getData: () => "" });
 
 describe("CollectionRows", () => {
+  it("shows a saved-card favicon and falls back to its first letter when loading fails", () => {
+    const snapshot = createDemoSnapshot();
+    snapshot.links[0].favicon_url = "https://linear.app/favicon.ico";
+    render(<CollectionRows collections={snapshot.collections} links={snapshot.links} repository={new MemoryWorkspaceRepository("demo-user", snapshot)} onReload={vi.fn(async () => undefined)} />);
+
+    const card = screen.getByRole("link", { name: /Product roadmap/i });
+    const favicon = card.querySelector("img");
+    expect(favicon).toHaveAttribute("src", "https://linear.app/favicon.ico");
+    fireEvent.error(favicon!);
+    expect(card.querySelector("img")).not.toBeInTheDocument();
+    expect(within(card).getByText("P", { exact: true })).toBeVisible();
+  });
+
   it("renders bookmark collections as locked and bookmark cards as copy drag sources", () => {
     const normal = createDemoSnapshot();
     const bookmark = toBookmarkWorkspace("demo-user", mergeBookmarkEntries(

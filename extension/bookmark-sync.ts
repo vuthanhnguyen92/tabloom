@@ -3,6 +3,7 @@ import type { BookmarkSyncSummary } from "../shared/bookmarks";
 import type { WorkspaceRepository } from "../shared/repository";
 import type { FlattenResult } from "./bookmarks-api";
 import { ChromeSnapshotCache, type StorageArea } from "./storage";
+import { browserAdapter, browserTarget } from "./browser";
 
 const BOOKMARK_DEVICE_KEY = "tabloom-bookmark-device";
 
@@ -19,10 +20,11 @@ export type SyncBrowserBookmarksInput = {
 };
 
 function suggestedDeviceName(platform: string): string {
-  if (/mac/i.test(platform)) return "Chrome on macOS";
-  if (/win/i.test(platform)) return "Chrome on Windows";
-  if (/linux/i.test(platform)) return "Chrome on Linux";
-  return "Chrome on this device";
+  const browserName = browserTarget === "firefox" ? "Firefox" : browserTarget === "safari" ? "Safari" : "Chromium";
+  if (/mac/i.test(platform)) return `${browserName} on macOS`;
+  if (/win/i.test(platform)) return `${browserName} on Windows`;
+  if (/linux/i.test(platform)) return `${browserName} on Linux`;
+  return `${browserName} on this device`;
 }
 
 function isDevice(value: unknown): value is BookmarkDevice {
@@ -34,7 +36,7 @@ function isDevice(value: unknown): value is BookmarkDevice {
 }
 
 export async function getOrCreateBookmarkDevice(
-  area: StorageArea = chrome.storage.local,
+  area: StorageArea = browserAdapter.storage,
   platform = navigator.platform,
   createId: () => string = () => crypto.randomUUID(),
 ): Promise<BookmarkDevice> {
@@ -45,7 +47,7 @@ export async function getOrCreateBookmarkDevice(
   return device;
 }
 
-export async function saveBookmarkDevice(device: BookmarkDevice, area: StorageArea = chrome.storage.local): Promise<void> {
+export async function saveBookmarkDevice(device: BookmarkDevice, area: StorageArea = browserAdapter.storage): Promise<void> {
   if (!isDevice(device)) throw new Error("A valid bookmark device name and key are required.");
   await area.set({ [BOOKMARK_DEVICE_KEY]: { ...device, name: device.name.trim() } });
 }

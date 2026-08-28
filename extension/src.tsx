@@ -4,7 +4,7 @@ import "@fontsource/poppins/latin-400.css";
 import "@fontsource/poppins/latin-500.css";
 import "@fontsource/poppins/latin-600.css";
 import "@fontsource/poppins/latin-700.css";
-import { ExternalLink, LogIn, Search, Sprout, X } from "lucide-react";
+import { LogIn, Search, Sprout, X } from "lucide-react";
 import { BROWSER_BOOKMARKS_SPACE_ID } from "../shared/bookmarks";
 import { CombinedWorkspaceRepository, SupabaseBookmarkRepository, copyBookmarkToCollection, type BookmarkRepository } from "../shared/bookmark-repository";
 import { createDemoSnapshot, filterWorkspace, findDuplicateLink, type SavedLink, type WorkspaceSnapshot } from "../shared/domain";
@@ -16,6 +16,8 @@ import { CollectionRows } from "./CollectionRows";
 import { BrowserBookmarksPanel } from "./BrowserBookmarksPanel";
 import { CurrentTabsSheet } from "./CurrentTabsSheet";
 import { saveDroppedTab } from "./dropped-tab";
+import { SpaceSidebar } from "./SpaceSidebar";
+import { browserAdapter } from "./browser";
 import "./style.css";
 
 const cache = new ChromeSnapshotCache();
@@ -80,7 +82,7 @@ function ExtensionApp() {
     savingDroppedTabRef.current = true;
     setSavingDroppedTab(true);
     try {
-      const result = await saveDroppedTab({ tab: pendingTab.tab, collectionId: pendingTab.collectionId, closeAfterSave, repository, closeTabs: (ids) => chrome.tabs.remove(ids) });
+      const result = await saveDroppedTab({ tab: pendingTab.tab, collectionId: pendingTab.collectionId, closeAfterSave, repository, closeTabs: browserAdapter.tabs.close });
       await load(repository);
       if (closeAfterSave && !result.closeError) setTabsRefreshVersion((value) => value + 1);
       setMessage(result.closeError ? "1 saved · tab could not be closed" : closeAfterSave ? "1 saved · tab closed" : "1 saved · tab kept open");
@@ -100,7 +102,7 @@ function ExtensionApp() {
     savingDroppedTabRef.current = true;
     setSavingDroppedTab(true);
     try {
-      await chrome.tabs.remove([pendingTab.tab.id]);
+      await browserAdapter.tabs.close([pendingTab.tab.id]);
       setTabsRefreshVersion((value) => value + 1);
       setMessage("Already saved · tab closed");
       setPendingTab(null);
@@ -158,12 +160,14 @@ function ExtensionApp() {
   }
 
   return <main className={`ext-shell ${tabsExpanded ? "sheet-open" : "sheet-collapsed"}`}>
-    <aside className="ext-sidebar"><Mark /><span>MY SPACES</span>{snapshot?.spaces.map((space) => <button key={space.id} className={space.id === activeSpace?.id ? "active" : ""} onClick={() => { setSelectedSpace(space.id); setQuery(""); }}><i style={{ background: space.color }} />{space.name}</button>)}<a href={`${import.meta.env.VITE_TABLOOM_WEB_URL || "http://localhost:4173"}/app`} target="_blank" rel="noreferrer">Manage workspace <ExternalLink size={13} /></a></aside>
+    {snapshot ? <SpaceSidebar activeSpaceId={activeSpace?.id ?? ""} brand={<Mark />} repository={repository} snapshot={snapshot} onError={setError} onMessage={setMessage} onReload={() => repository ? load(repository) : Promise.resolve()} onSelect={(spaceId) => { setSelectedSpace(spaceId); setQuery(""); }} /> : <aside className="ext-sidebar"><Mark /></aside>}
     <section className="ext-main"><header><div><small>{signedIn ? "SYNCED WORKSPACE" : "DEMO WORKSPACE"}</small><h1>{activeSpace?.name || "Your workspace"}</h1></div><label><Search size={17} /><input aria-label="Search your links" placeholder="Search your links" value={query} onChange={(event) => setQuery(event.target.value)} /></label></header>
       {message && <p className="ext-message">{message}</p>}{error && <p className="ext-message error">{error}<button onClick={() => setError("")}><X size={14} /></button></p>}
       {!extensionSupabase && <p className="demo-note">Demo mode · add Supabase settings to synchronize this new-tab page.</p>}
       {extensionSupabase && !signedIn && <div className="ext-signin"><Sprout size={32} /><h2>Your workspace is ready to bloom.</h2><p>Sign in to capture tabs and sync them with Tabloom on the web.</p><button onClick={() => void signIn()}><LogIn size={16} /> Sign in with Google</button></div>}
-      {activeSpace?.id === BROWSER_BOOKMARKS_SPACE_ID && bookmarkRepository && repository && <BrowserBookmarksPanel repository={bookmarkRepository} workspace={repository} cache={cache} onWorkspaceReload={() => load(repository)} />}
+      {activeSpace?.id === BROWSER_BOOKMARKS_SPACE_ID && bookmarkRepository && repository && (browserAdapter.capabilities.bookmarks
+        ? <BrowserBookmarksPanel repository={bookmarkRepository} workspace={repository} cache={cache} onWorkspaceReload={() => load(repository)} />
+        : <section className="bookmark-sync-panel" aria-label="Browser bookmark sync unavailable"><p className="bookmark-sync-status">Safari cannot read local browser bookmarks. Collections synchronized from your other devices remain available here.</p></section>)}
       {(!extensionSupabase || signedIn) && repository && visible && <CollectionRows bookmarkDropCollections={savedCollections} browserTabDragSession={browserTabDrag.active ? browserTabDrag.session : 0} collections={collections} links={visible.links} allLinks={snapshot?.links ?? visible.links} highlightedLinkId={pendingTab?.duplicate?.id ?? pendingBookmark?.duplicate.id} repository={repository} onError={setError} onReload={() => load(repository)} onOpenCollection={(collection, collectionLinks) => openCollection(collection.name, collectionLinks.map((link) => link.url))} onBookmarkDrop={handleBookmarkDrop} onBrowserTabDrop={(tab, collectionId) => { setBrowserTabDrag((current) => ({ ...current, active: false })); setPendingTab({ tab, collectionId, duplicate: findDuplicateLink((snapshot?.links ?? []).filter((item) => item.origin === "saved"), collectionId, tab.url ?? "") }); }} />}
     </section>
     <CurrentTabsSheet activeSpaceId={activeSpace?.origin === "saved" ? activeSpace.id : undefined} collections={snapshot?.collections.filter((item) => item.origin === "saved" && item.space_id === activeSpace?.id) ?? []} expanded={tabsExpanded} repository={repository} refreshVersion={tabsRefreshVersion} onError={setError} onExpandedChange={setTabsExpanded} onMessage={setMessage} onTabDragChange={(dragging) => setBrowserTabDrag((current) => dragging ? { active: true, session: current.session + 1 } : { ...current, active: false })} onWorkspaceReload={() => repository ? load(repository) : Promise.resolve()} />

@@ -1,5 +1,6 @@
 import { normalizeBookmarkUrl, UNFILED_BOOKMARKS, type BookmarkUploadEntry } from "../shared/bookmarks";
 import { isSaveableUrl } from "../shared/domain";
+import { browserAdapter } from "./browser";
 
 export type BookmarkNode = {
   id: string;
@@ -26,8 +27,8 @@ export type BookmarksApi = {
   getTree(): Promise<BookmarkNode[]>;
 };
 
-export async function requestBookmarksPermission(api: PermissionsApi = chrome.permissions as unknown as PermissionsApi): Promise<boolean> {
-  return api.request({ permissions: ["bookmarks"] });
+export async function requestBookmarksPermission(api?: PermissionsApi): Promise<boolean> {
+  return api ? api.request({ permissions: ["bookmarks"] }) : browserAdapter.permissions.request("bookmarks");
 }
 
 function isHiddenRoot(folderType: string | undefined, title: string): boolean {
@@ -42,8 +43,8 @@ function visiblePath(path: string[]): string {
   return path.length ? path.join(" / ") : UNFILED_BOOKMARKS;
 }
 
-export async function readBrowserBookmarks(api: BookmarksApi = chrome.bookmarks as unknown as BookmarksApi): Promise<FlattenResult> {
-  const roots = await api.getTree();
+export async function readBrowserBookmarks(api?: BookmarksApi): Promise<FlattenResult> {
+  const roots = await (api ?? browserAdapter.bookmarks).getTree();
   const entries: BookmarkUploadEntry[] = [];
   let skipped = 0;
 

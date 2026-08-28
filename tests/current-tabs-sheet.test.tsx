@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { readFileSync } from "node:fs";
 import userEvent from "@testing-library/user-event";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
@@ -42,6 +42,28 @@ function setup() {
 }
 
 describe("CurrentTabsSheet", () => {
+  it("shows a current tab favicon and falls back to its first letter when loading fails", async () => {
+    const snapshot = createDemoSnapshot();
+    render(<CurrentTabsSheet
+      activeSpaceId="space-launch"
+      collections={snapshot.collections}
+      expanded
+      repository={new MemoryWorkspaceRepository("demo-user", snapshot)}
+      onError={vi.fn()}
+      onExpandedChange={vi.fn()}
+      onMessage={vi.fn()}
+      onWorkspaceReload={vi.fn(async () => undefined)}
+      listTabs={vi.fn(async () => [{ ...browserTabs[0], favIconUrl: "https://linear.app/favicon.ico" }])}
+    />);
+
+    const card = (await screen.findByText("Roadmap")).closest<HTMLElement>("[draggable='true']")!;
+    const favicon = card.querySelector("img");
+    expect(favicon).toHaveAttribute("src", "https://linear.app/favicon.ico");
+    fireEvent.error(favicon!);
+    expect(card.querySelector("img")).not.toBeInTheDocument();
+    expect(within(card).getByText("R", { exact: true })).toBeVisible();
+  });
+
   it("loads current tabs expanded and exposes drag-only controls", async () => {
     const { onExpandedChange } = setup();
     expect(await screen.findByText("Roadmap")).toBeInTheDocument();

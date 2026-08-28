@@ -5,6 +5,7 @@ import type { WorkspaceRepository } from "../shared/repository";
 import type { CaptureTab } from "./chrome-api";
 import { openCollectionTabs } from "./chrome-api";
 import { BROWSER_TAB_MIME } from "./CurrentTabsSheet";
+import { FaviconTile } from "./FaviconTile";
 
 export type CollectionRowsProps = {
   collections: Collection[];
@@ -174,7 +175,7 @@ export function CollectionRows({ collections, links, allLinks = links, bookmarkD
             onDragEnd={clearDrag}
             onDragOver={(event) => { event.stopPropagation(); if (!canMutate) return; allowDrop(event); if (!previewBrowserTabDrop(event, collection)) previewLinkDrop(collection, link.id); }}
             onDrop={(event) => { event.preventDefault(); event.stopPropagation(); if (!canMutate) return clearDrag(); if (acceptBrowserTab(event, collection)) return; if (dragged?.kind === "browser-bookmark") void copyBookmark(collection); else void moveLink(collection.id, link.id); }}
-          ><i>{link.title[0]?.toUpperCase()}</i><span><b>{link.title}</b><small>{hostnameFor(link.url)}</small>{link.device_label && <small className="bookmark-device-label">{link.device_label}</small>}</span></a>
+          ><FaviconTile src={link.favicon_url} title={link.title} /><span><b>{link.title}</b><small>{hostnameFor(link.url)}</small>{link.device_label && <small className="bookmark-device-label">{link.device_label}</small>}</span></a>
           </Fragment>)}
           {showsPreview && !linkDropPreview.targetLinkId && <div aria-hidden="true" className="ext-link-drop-preview"><span>Drop here</span></div>}
         </div>
