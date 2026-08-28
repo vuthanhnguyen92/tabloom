@@ -1,9 +1,4 @@
-import type {
-  Collection,
-  SavedLink,
-  Space,
-  WorkspaceSnapshot,
-} from "./domain";
+import type { WorkspaceSnapshot } from "./domain";
 import { isSaveableUrl, normalizeUrlForDuplicate } from "./domain";
 
 export type VersionedWorkspaceSnapshot = {
