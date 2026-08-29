@@ -6,7 +6,10 @@ import "@fontsource/poppins/700.css";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { OAuthAuthorizationDetails } from "@supabase/supabase-js";
 import { Brand } from "../../components/Brand";
-import { getSupabaseBrowserClient } from "../../lib/supabase-browser";
+import {
+  getSupabaseBrowserClient,
+  type SupabaseBrowserConfig,
+} from "../../lib/supabase-browser";
 
 type OAuthConsentClient = {
   auth: {
@@ -44,8 +47,13 @@ function safeMessage(message: string) {
   return <main className="oauth-consent-page"><section className="oauth-consent-card oauth-consent-message" aria-live="polite"><Brand /><h1>{message}</h1><p>Start the connection from the app that requested access, then try again.</p></section></main>;
 }
 
-export function OAuthConsent({ authorizationId, client = getSupabaseBrowserClient() }: {
+export function OAuthConsent({
+  authorizationId,
+  supabaseConfig,
+  client = getSupabaseBrowserClient(supabaseConfig),
+}: {
   authorizationId: string;
+  supabaseConfig?: SupabaseBrowserConfig;
   client?: OAuthConsentClient | null;
 }) {
   const [state, setState] = useState<ConsentState>(() => authorizationId ? { requestId: authorizationId, kind: "checking-session" } : { requestId: "", kind: "error", message: "Authorization request unavailable" });

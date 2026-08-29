@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import type { OAuthAuthorizationDetails } from "@supabase/supabase-js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { OAuthConsent } from "../app/oauth/consent/OAuthConsent";
+import ConsentPage from "../app/oauth/consent/page";
 
 const details: OAuthAuthorizationDetails = {
   authorization_id: "authorization-1",
@@ -60,6 +61,7 @@ function signedInOAuthClient(authorizationDetails: OAuthAuthorizationDetails, re
 
 describe("OAuthConsent", () => {
   afterEach(() => {
+    vi.unstubAllEnvs();
     if (locationDescriptor) Object.defineProperty(window, "location", locationDescriptor);
   });
 
@@ -68,6 +70,81 @@ describe("OAuthConsent", () => {
 
     expect(screen.getByRole("heading", { name: "Authorization request unavailable" })).toBeInTheDocument();
     expect(screen.getByText(/start the connection from the app that requested access/i)).toBeInTheDocument();
+  });
+
+  it("keeps consent unavailable when public Supabase configuration is missing", async () => {
+    vi.stubEnv("NEXT_PUBLIC_SUPABASE_URL", "");
+    vi.stubEnv("NEXT_PUBLIC_SUPABASE_ANON_KEY", "");
+    render(<OAuthConsent authorizationId="authorization-1" />);
+
+    expect(
+      await screen.findByRole("heading", {
+        name: "Authorization request unavailable",
+      }),
+    ).toBeInTheDocument();
+  });
+
+  it("creates the consent client from explicit runtime configuration", async () => {
+    render(
+      <OAuthConsent
+        authorizationId="authorization-1"
+        supabaseConfig={{
+          url: "https://runtime-config.supabase.co",
+          anonKey: "runtime-public-anon-key",
+        }}
+      />,
+    );
+
+    expect(
+      await screen.findByRole("heading", { name: "Sign in to continue" }),
+    ).toBeInTheDocument();
+  });
+
+  it("passes public Supabase runtime configuration from the server page", async () => {
+    vi.stubEnv("NEXT_PUBLIC_SUPABASE_URL", "https://runtime-config.supabase.co");
+    vi.stubEnv("NEXT_PUBLIC_SUPABASE_ANON_KEY", "runtime-public-anon-key");
+
+    const page = await ConsentPage({
+      searchParams: Promise.resolve({ authorization_id: "authorization-1" }),
+    });
+
+    expect(page.props).toEqual({
+      authorizationId: "authorization-1",
+      supabaseConfig: {
+        url: "https://runtime-config.supabase.co",
+        anonKey: "runtime-public-anon-key",
+      },
+    });
+  });
+
+  it("omits incomplete public runtime configuration from the server page", async () => {
+    vi.stubEnv("NEXT_PUBLIC_SUPABASE_URL", "https://runtime-config.supabase.co");
+    vi.stubEnv("NEXT_PUBLIC_SUPABASE_ANON_KEY", "");
+
+    const page = await ConsentPage({ searchParams: Promise.resolve({}) });
+
+    expect(page.props).toEqual({
+      authorizationId: "",
+      supabaseConfig: undefined,
+    });
+  });
+
+  it("rejects template-valued explicit runtime configuration", async () => {
+    render(
+      <OAuthConsent
+        authorizationId="authorization-1"
+        supabaseConfig={{
+          url: "https://your-project.supabase.co",
+          anonKey: "your-public-anon-key",
+        }}
+      />,
+    );
+
+    expect(
+      await screen.findByRole("heading", {
+        name: "Authorization request unavailable",
+      }),
+    ).toBeInTheDocument();
   });
 
   it("shows the requesting client and whole-workspace permission", async () => {
