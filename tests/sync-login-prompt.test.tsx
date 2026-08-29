@@ -6,7 +6,7 @@ import { SyncLoginPrompt } from "../extension/SyncLoginPrompt";
 describe("SyncLoginPrompt", () => {
   it("opens a login modal without blocking local workspace use when Supabase is unavailable", async () => {
     render(<header style={{ transform: "translateY(0)" }}>
-      <SyncLoginPrompt configured={false} onSignIn={vi.fn()} />
+      <SyncLoginPrompt callbackUrl="https://stable.chromiumapp.org/auth-callback" configured={false} onSignIn={vi.fn()} target="chromium" />
     </header>);
 
     await userEvent.click(screen.getByRole("button", { name: "Sign in to sync" }));
@@ -20,7 +20,7 @@ describe("SyncLoginPrompt", () => {
 
   it("runs the configured login flow and closes after success", async () => {
     const onSignIn = vi.fn(async () => undefined);
-    render(<SyncLoginPrompt configured onSignIn={onSignIn} />);
+    render(<SyncLoginPrompt callbackUrl="https://stable.chromiumapp.org/auth-callback" configured onSignIn={onSignIn} target="chromium" />);
     await userEvent.click(screen.getByRole("button", { name: "Sign in to sync" }));
 
     await userEvent.click(screen.getByRole("button", { name: "Continue with Google" }));

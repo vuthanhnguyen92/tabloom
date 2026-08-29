@@ -39,6 +39,19 @@ describe("extension identity reports", () => {
     });
   });
 
+  it("reports a previously verified Firefox callback as stable", () => {
+    expect(createAuthReport("firefox", {
+      browser_specific_settings: { gecko: { id: "tabloom@tabloom.app" } },
+    }, {
+      firefox: "https://stable.extensions.allizom.org/auth-callback",
+    })).toEqual({
+      target: "firefox",
+      extensionId: "tabloom@tabloom.app",
+      callbackUrl: "https://stable.extensions.allizom.org/auth-callback",
+      requiresRuntime: false,
+    });
+  });
+
   it("reports Safari's fixed native callback", () => {
     expect(createAuthReport("safari", {})).toEqual({
       target: "safari",

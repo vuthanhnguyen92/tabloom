@@ -4,6 +4,7 @@ import { spawnSync } from "node:child_process";
 import { writeAuthReport } from "./extension-identity.mjs";
 
 const root = resolve(import.meta.dirname, "../..");
+const authCallbacks = JSON.parse(readFileSync(resolve(root, "extension/manifests/auth-callbacks.json"), "utf8"));
 const supportedTargets = ["chromium", "firefox", "safari"];
 const targetArg = process.argv.find((argument) => argument.startsWith("--target="))?.split("=")[1];
 const targets = targetArg ? [targetArg] : supportedTargets;
@@ -26,7 +27,7 @@ for (const target of targets) {
   copyFileSync(manifestSource, resolve(output, "manifest.json"));
   copyFileSync(resolve(root, "extension/auth-callback.html"), resolve(output, "auth-callback.html"));
   const manifest = JSON.parse(readFileSync(manifestSource, "utf8"));
-  writeAuthReport(resolve(root, "dist-extension/reports"), target, manifest);
+  writeAuthReport(resolve(root, "dist-extension/reports"), target, manifest, authCallbacks);
 }
 
 if (process.argv.includes("--safari-project")) {

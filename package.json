@@ -17,6 +17,8 @@
     "build:extension": "node extension/scripts/build-extension.mjs",
     "build:extension:chromium": "node extension/scripts/build-extension.mjs --target=chromium",
     "build:extension:firefox": "node extension/scripts/build-extension.mjs --target=firefox",
+    "package:firefox": "npm run build:extension:firefox && web-ext build --source-dir dist-extension/firefox --artifacts-dir dist-extension/packages --overwrite-dest",
+    "run:firefox": "npm run build:extension:firefox && web-ext run --source-dir dist-extension/firefox --firefox /Applications/Firefox.app/Contents/MacOS/firefox",
     "build:extension:safari": "node extension/scripts/build-extension.mjs --target=safari",
     "package:safari": "node extension/scripts/build-extension.mjs --target=safari --safari-project",
     "build:all": "npm run build && npm run build:extension",
@@ -64,6 +66,7 @@
     "vinext": "1.0.0-beta.2",
     "vite": "8.0.13",
     "vitest": "^4.1.11",
+    "web-ext": "^10.6.0",
     "wrangler": "4.92.0"
   },
   "type": "module"

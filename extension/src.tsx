@@ -19,7 +19,8 @@ import { BrowserBookmarksPanel } from "./BrowserBookmarksPanel";
 import { CurrentTabsSheet } from "./CurrentTabsSheet";
 import { saveDroppedTab } from "./dropped-tab";
 import { SpaceSidebar } from "./SpaceSidebar";
-import { browserAdapter } from "./browser";
+import { browserAdapter, browserTarget } from "./browser";
+import { callbackForTarget } from "./auth/oauth";
 import { SyncLoginPrompt } from "./SyncLoginPrompt";
 import { CreateCollectionPrompt } from "./CreateCollectionPrompt";
 import { WorkspaceSyncPrompt } from "./WorkspaceSyncPrompt";
@@ -27,6 +28,7 @@ import { advanceFirstSync, FirstSyncCoordinator, FirstSyncPreviewChangedError } 
 import "./style.css";
 
 const cache = new ChromeSnapshotCache();
+const oauthCallbackUrl = callbackForTarget(browserTarget, browserAdapter.identity);
 
 function Mark() { return <span className="ext-brand"><i>✦</i>tabloom</span>; }
 
@@ -266,7 +268,7 @@ function ExtensionApp() {
 
   return <main className={`ext-shell ${tabsExpanded ? "sheet-open" : "sheet-collapsed"}`}>
     {snapshot ? <SpaceSidebar activeSpaceId={activeSpace?.id ?? ""} brand={<Mark />} repository={repository} snapshot={snapshot} onError={setError} onMessage={setMessage} onReload={() => repository ? load(repository) : Promise.resolve()} onSelect={(spaceId) => { setSelectedSpace(spaceId); setQuery(""); }} /> : <aside className="ext-sidebar"><Mark /></aside>}
-    <section className="ext-main"><header><div><small>{syncStatus === "synced" ? "SYNCED WORKSPACE" : syncStatus === "checking" ? "CHECKING WORKSPACE SYNC" : syncStatus === "pending" || syncStatus === "error" ? "LOCAL WORKSPACE · SYNC PENDING" : "LOCAL WORKSPACE"}</small><h1>{activeSpace?.name || "Your workspace"}</h1></div><div className="ext-header-tools">{repository && <CreateCollectionPrompt activeSpaceId={activeSpace?.origin === "saved" && !activeSpace.read_only ? activeSpace.id : undefined} repository={repository} onCreated={() => load(repository)} onError={setError} />}{!signedIn && <SyncLoginPrompt configured={Boolean(extensionSupabase)} onSignIn={signIn} />}{signedIn && (syncStatus === "pending" || syncStatus === "error") && <button className="sync-login-trigger sync-retry-trigger" onClick={() => void retryWorkspaceSync()}>Retry sync</button>}<label><Search size={17} /><input aria-label="Search your links" placeholder="Search your links" value={query} onChange={(event) => setQuery(event.target.value)} /></label></div></header>
+    <section className="ext-main"><header><div><small>{syncStatus === "synced" ? "SYNCED WORKSPACE" : syncStatus === "checking" ? "CHECKING WORKSPACE SYNC" : syncStatus === "pending" || syncStatus === "error" ? "LOCAL WORKSPACE · SYNC PENDING" : "LOCAL WORKSPACE"}</small><h1>{activeSpace?.name || "Your workspace"}</h1></div><div className="ext-header-tools">{repository && <CreateCollectionPrompt activeSpaceId={activeSpace?.origin === "saved" && !activeSpace.read_only ? activeSpace.id : undefined} repository={repository} onCreated={() => load(repository)} onError={setError} />}{!signedIn && <SyncLoginPrompt callbackUrl={oauthCallbackUrl} configured={Boolean(extensionSupabase)} onSignIn={signIn} target={browserTarget} />}{signedIn && (syncStatus === "pending" || syncStatus === "error") && <button className="sync-login-trigger sync-retry-trigger" onClick={() => void retryWorkspaceSync()}>Retry sync</button>}<label><Search size={17} /><input aria-label="Search your links" placeholder="Search your links" value={query} onChange={(event) => setQuery(event.target.value)} /></label></div></header>
       {message && <p className="ext-message">{message}</p>}{error && <p className="ext-message error">{error}<button onClick={() => setError("")}><X size={14} /></button></p>}
       {activeSpace?.id === BROWSER_BOOKMARKS_SPACE_ID && bookmarkRepository && repository && (browserAdapter.capabilities.bookmarks
         ? <BrowserBookmarksPanel repository={bookmarkRepository} workspace={repository} cache={bookmarkCache} onWorkspaceReload={() => load(repository)} />

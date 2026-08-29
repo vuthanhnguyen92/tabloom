@@ -1,13 +1,17 @@
 import { Cloud, LogIn, X } from "lucide-react";
 import { useState } from "react";
 import { createPortal } from "react-dom";
+import type { BrowserTarget } from "./browser";
+import { AuthCallbackDetails } from "./AuthCallbackDetails";
 
 export type SyncLoginPromptProps = {
+  callbackUrl: string;
   configured: boolean;
   onSignIn: () => Promise<void>;
+  target: BrowserTarget;
 };
 
-export function SyncLoginPrompt({ configured, onSignIn }: SyncLoginPromptProps) {
+export function SyncLoginPrompt({ callbackUrl, configured, onSignIn, target }: SyncLoginPromptProps) {
   const [open, setOpen] = useState(false);
   const [connecting, setConnecting] = useState(false);
   const [error, setError] = useState("");
@@ -36,6 +40,7 @@ export function SyncLoginPrompt({ configured, onSignIn }: SyncLoginPromptProps) 
         <p>Your local workspace stays available on this browser. Sign in to keep spaces, collections, and saved tabs synchronized across devices.</p>
         {!configured && <p className="sync-login-notice">Cloud sign-in is not connected yet. You can continue using every local workspace feature.</p>}
         {error && <p className="sync-login-error" role="alert">{error}</p>}
+        <AuthCallbackDetails callbackUrl={callbackUrl} target={target} />
         <div>
           <button disabled={connecting} onClick={() => setOpen(false)}>Not now</button>
           <button className="close-after-save" disabled={!configured || connecting} onClick={() => void connect()}><LogIn size={16} /> {connecting ? "Connecting…" : "Continue with Google"}</button>

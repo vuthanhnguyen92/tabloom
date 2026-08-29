@@ -15,7 +15,7 @@ export function deriveChromiumExtensionId(publicKeyBase64) {
     .join("");
 }
 
-export function createAuthReport(target, manifest) {
+export function createAuthReport(target, manifest, callbacks = {}) {
   if (target === "chromium") {
     const extensionId = deriveChromiumExtensionId(manifest.key);
     return {
@@ -29,6 +29,9 @@ export function createAuthReport(target, manifest) {
   if (target === "firefox") {
     const extensionId = manifest.browser_specific_settings?.gecko?.id;
     if (!extensionId) throw new Error("The Firefox manifest requires a Gecko ID.");
+    if (callbacks.firefox) {
+      return { target, extensionId, callbackUrl: callbacks.firefox, requiresRuntime: false };
+    }
     return { target, extensionId, callbackUrl: null, requiresRuntime: true };
   }
 
@@ -44,11 +47,11 @@ export function createAuthReport(target, manifest) {
   throw new Error(`Unsupported extension target: ${target}.`);
 }
 
-export function writeAuthReport(reportsDirectory, target, manifest) {
+export function writeAuthReport(reportsDirectory, target, manifest, callbacks) {
   mkdirSync(reportsDirectory, { recursive: true });
   const destination = join(reportsDirectory, `${target}-auth.json`);
   const temporary = `${destination}.${process.pid}.tmp`;
-  writeFileSync(temporary, `${JSON.stringify(createAuthReport(target, manifest), null, 2)}\n`);
+  writeFileSync(temporary, `${JSON.stringify(createAuthReport(target, manifest, callbacks), null, 2)}\n`);
   renameSync(temporary, destination);
   return destination;
 }
