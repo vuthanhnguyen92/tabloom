@@ -9,7 +9,37 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+
+const pgTestState = vi.hoisted(() => ({
+  connectError: undefined as Error | undefined,
+  clients: [] as Array<{
+    endCalls: number;
+    errorListeners: Array<(error: Error) => void>;
+  }>,
+}));
+
+vi.mock("pg", () => ({
+  Client: class {
+    endCalls = 0;
+    errorListeners: Array<(error: Error) => void> = [];
+
+    constructor(_options: { connectionString: string }) {
+      pgTestState.clients.push(this);
+    }
+
+    on(event: string, listener: (error: Error) => void) {
+      if (event === "error") this.errorListeners.push(listener);
+      return this;
+    }
+
+    async connect() {
+      if (pgTestState.connectError) throw pgTestState.connectError;
+    }
+
+    async end() { this.endCalls += 1; }
+  },
+}));
 
 import {
   installOAuthDatabaseSecret,
@@ -207,6 +237,37 @@ returning encode(extensions.digest(secret, 'sha256'), 'hex') as fingerprint`,
       expect(JSON.stringify(errors)).not.toContain(SECRET);
       expect(JSON.stringify(errors)).not.toContain(DATABASE_URL);
     } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("closes a rejecting default pg client and normalizes its connection error", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "tabloom-oauth-db-secret-"));
+    const secretPath = join(directory, "database-proof-v1.txt");
+    const stdout: string[] = [];
+    const stderr: string[] = [];
+    pgTestState.clients.length = 0;
+    pgTestState.connectError = new Error(`${DATABASE_URL} ${SECRET}`);
+    try {
+      await writeFile(secretPath, SECRET, { mode: 0o600 });
+      const exitCode = await runOAuthDatabaseSecretInstallerCli({
+        argv: ["--secret-file", secretPath],
+        env: { TABLOOM_OAUTH_DATABASE_URL: DATABASE_URL },
+        stdout: (message: string) => { stdout.push(message); },
+        stderr: (message: string) => { stderr.push(message); },
+      });
+      expect(exitCode).toBe(1);
+      expect(stdout).toEqual([]);
+      expect(stderr).toEqual(["OAuth database secret installation failed."]);
+      expect(JSON.stringify(stderr)).not.toContain(SECRET);
+      expect(JSON.stringify(stderr)).not.toContain(DATABASE_URL);
+      expect(pgTestState.clients).toHaveLength(1);
+      expect(pgTestState.clients[0]).toMatchObject({
+        endCalls: 1,
+        errorListeners: [expect.any(Function)],
+      });
+    } finally {
+      pgTestState.connectError = undefined;
       await rm(directory, { recursive: true, force: true });
     }
   });

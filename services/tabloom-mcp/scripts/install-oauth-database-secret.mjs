@@ -81,8 +81,20 @@ async function readCanonicalSecret(secretPath, repositoryRoot) {
 
 async function connectPostgres(databaseUrl) {
   const client = new Client({ connectionString: databaseUrl });
-  await client.connect();
-  return client;
+  client.on("error", () => {
+    // pg emits connection errors asynchronously; never let it emit unhandled.
+  });
+  try {
+    await client.connect();
+    return client;
+  } catch {
+    try {
+      await client.end();
+    } catch {
+      // The caller receives one fixed, non-sensitive installation failure.
+    }
+    throw installationFailure();
+  }
 }
 
 /**
