@@ -2,6 +2,8 @@ import { createPrivateKey } from "node:crypto";
 import { createServer } from "node:http";
 import {
   chmod,
+  link,
+  mkdir,
   mkdtemp,
   readFile,
   rm,
@@ -11,6 +13,7 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { exportJWK, generateKeyPair, SignJWT } from "jose";
 import { describe, expect, it } from "vitest";
 import * as probeModule from "../../scripts/probe-mcp-oauth.mjs";
 import {
@@ -18,6 +21,7 @@ import {
   buildDynamicClientRegistration,
   classifyHttpStatus,
   createCallbackListener,
+  createPrivateProbeResultChannel,
   derivePkceChallenge,
   evaluateDiscovery,
   parseOAuthCallback,
@@ -30,8 +34,10 @@ import {
   runKeyGeneratorCli,
 } from "../../services/tabloom-mcp/scripts/generate-oauth-keys.mjs";
 import {
+  createExactSupabaseFetch,
   loadLiveAcceptanceFixture,
   parseLiveAcceptanceFixture,
+  verifySubjectMismatchBearer,
 } from "../e2e/helpers/mcp-facade-live";
 
 const RESOURCE = "https://tabloom-mcp.example.com";
@@ -69,6 +75,7 @@ const REPORT_KEYS = [
   "scope",
   "scopeMatch",
   "refreshRotated",
+  "refreshReplayRejected",
   "mcpContractMatch",
   "mcpBeforeRevocationResult",
   "revocationResult",
@@ -320,8 +327,10 @@ describe("MCP OAuth readiness probe", () => {
     const rotatedAccessToken = "private-rotated-access-token";
     const rotatedRefreshToken = "private-rotated-refresh-token";
     const reports: Array<Record<string, unknown>> = [];
+    const privateResults = createPrivateProbeResultChannel();
     const logs: string[] = [];
     const requests: Array<{ url: string; init?: RequestInit }> = [];
+    let refreshCalls = 0;
     let handoffUrl = "";
 
     const request = async (url: string, init?: RequestInit) => {
@@ -340,15 +349,19 @@ describe("MCP OAuth readiness probe", () => {
       }
       if (url.endsWith("/oauth/token")) {
         const form = new URLSearchParams(String(init?.body));
-        return form.get("grant_type") === "authorization_code"
-          ? jsonResponse(200, {
+        if (form.get("grant_type") === "authorization_code") {
+          return jsonResponse(200, {
             access_token: firstAccessToken,
             refresh_token: firstRefreshToken,
-          })
-          : jsonResponse(200, {
+          });
+        }
+        refreshCalls += 1;
+        return refreshCalls === 1
+          ? jsonResponse(200, {
             access_token: rotatedAccessToken,
             refresh_token: rotatedRefreshToken,
-          });
+          })
+          : jsonResponse(400, { error: "invalid_grant" });
       }
       if (url.endsWith("/oauth/revoke")) return jsonResponse(200);
       if (url.endsWith("/api/mcp")) {
@@ -365,6 +378,7 @@ describe("MCP OAuth readiness probe", () => {
     await runProbe({
       env: { NODE_ENV: "test", TABLOOM_MCP_RESOURCE_URL: RESOURCE },
       request,
+      privateResultChannel: privateResults.channel,
       createPkce: () => ({
         state: "private-state",
         verifier,
@@ -424,10 +438,29 @@ describe("MCP OAuth readiness probe", () => {
         resource: RESOURCE,
         scope: SCOPE,
       },
+      {
+        grant_type: "refresh_token",
+        refresh_token: firstRefreshToken,
+        client_id: "public-client",
+        resource: RESOURCE,
+        scope: SCOPE,
+      },
     ]);
     expect(requests.every((entry) => entry.init?.redirect === "manual"))
       .toBe(true);
     const report = reports.at(-1)!;
+    expect(privateResults.take()).toMatchObject({
+      first: {
+        accessToken: firstAccessToken,
+        verified: { payload: { sub: "private-user-a" } },
+      },
+      rotated: {
+        accessToken: rotatedAccessToken,
+        verified: { payload: { sub: "private-user-a" } },
+      },
+      jwks: { keys: [] },
+    });
+    expect(() => privateResults.take()).toThrow();
     expect(report).toEqual({
       discoverySupported: true,
       resource: RESOURCE,
@@ -440,6 +473,7 @@ describe("MCP OAuth readiness probe", () => {
       scope: SCOPE,
       scopeMatch: true,
       refreshRotated: true,
+      refreshReplayRejected: true,
       mcpContractMatch: true,
       mcpBeforeRevocationResult: "success",
       revocationResult: "success",
@@ -505,6 +539,7 @@ describe("MCP OAuth readiness probe", () => {
     })).rejects.toThrow("readiness gate");
     expect(mcpCalls).toBe(2);
     expect(reports.at(-1)).toMatchObject({
+      refreshReplayRejected: false,
       revocationEnforced: false,
       mcpAfterRevocationResult: "success",
       pass: false,
@@ -527,7 +562,13 @@ describe("MCP OAuth readiness probe", () => {
   it("writes only the report allowlist with mode 0600", async () => {
     const directory = await mkdtemp(join(tmpdir(), "tabloom-oauth-probe-"));
     const path = join(directory, "readiness.json");
-    const report = { pass: false, access_token: "private-access-token" };
+    const report = {
+      pass: false,
+      access_token: "private-access-token",
+      privateResult: {
+        first: { accessToken: "private-first", verified: { payload: { sub: "private-sub" } } },
+      },
+    };
     try {
       await writeFile(path, "loose", { mode: 0o644 });
       await chmod(path, 0o644);
@@ -536,6 +577,8 @@ describe("MCP OAuth readiness probe", () => {
       const written = JSON.parse(await readFile(path, "utf8"));
       expect(Object.keys(written)).toEqual(REPORT_KEYS);
       expect(JSON.stringify(written)).not.toContain("private-access-token");
+      expect(JSON.stringify(written)).not.toContain("private-first");
+      expect(JSON.stringify(written)).not.toContain("private-sub");
     } finally {
       await rm(directory, { recursive: true, force: true });
     }
@@ -543,6 +586,78 @@ describe("MCP OAuth readiness probe", () => {
 });
 
 describe("OAuth facade key generator", () => {
+  it("requires an existing mode-0700 parent owned by the current user", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "tabloom-oauth-parent-"));
+    const signingPath = join(directory, "signing.json");
+    const encryptionPath = join(directory, "encryption.json");
+    try {
+      await chmod(directory, 0o755);
+      await expect(generateOAuthKeys({
+        signingPath,
+        encryptionPath,
+        repositoryRoot: resolve("."),
+      })).rejects.toThrow();
+      await expect(stat(signingPath)).rejects.toThrow();
+      await expect(stat(encryptionPath)).rejects.toThrow();
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("cleans both exclusive outputs when the parent identity changes before any secret write", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "tabloom-oauth-parent-race-"));
+    const signingPath = join(directory, "signing.json");
+    const encryptionPath = join(directory, "encryption.json");
+    let inspections = 0;
+    try {
+      await expect(generateOAuthKeys({
+        signingPath,
+        encryptionPath,
+        repositoryRoot: resolve("."),
+        inspectParent: async (path: string) => {
+          const metadata = await stat(path, { bigint: true });
+          inspections += 1;
+          return {
+            dev: metadata.dev,
+            ino: inspections > 2 ? metadata.ino + BigInt(1) : metadata.ino,
+          };
+        },
+      })).rejects.toThrow();
+      expect(inspections).toBeGreaterThanOrEqual(4);
+      await expect(stat(signingPath)).rejects.toThrow();
+      await expect(stat(encryptionPath)).rejects.toThrow();
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("cleans both exclusive outputs when an output path identity changes before writing", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "tabloom-oauth-output-race-"));
+    const signingPath = join(directory, "signing.json");
+    const encryptionPath = join(directory, "encryption.json");
+    let inspections = 0;
+    try {
+      await expect(generateOAuthKeys({
+        signingPath,
+        encryptionPath,
+        repositoryRoot: resolve("."),
+        inspectOutput: async (handle: { stat(options: { bigint: true }): Promise<{ dev: bigint; ino: bigint }> }) => {
+          const metadata = await handle.stat({ bigint: true });
+          inspections += 1;
+          return {
+            dev: metadata.dev,
+            ino: inspections > 2 ? metadata.ino + BigInt(1) : metadata.ino,
+          };
+        },
+      })).rejects.toThrow();
+      expect(inspections).toBeGreaterThanOrEqual(4);
+      await expect(stat(signingPath)).rejects.toThrow();
+      await expect(stat(encryptionPath)).rejects.toThrow();
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
   it("writes one active ES256 private JWK and one 32-byte root only to explicit external files", async () => {
     const directory = await mkdtemp(join(tmpdir(), "tabloom-oauth-keys-"));
     const signingPath = join(directory, "signing.json");
@@ -578,13 +693,22 @@ describe("OAuth facade key generator", () => {
     const existing = join(directory, "existing.json");
     const symlinkPath = join(directory, "linked.json");
     const other = join(directory, "other.json");
+    const realParent = join(directory, "real-parent");
+    const linkedParent = join(directory, "linked-parent");
     await writeFile(existing, "keep", { mode: 0o600 });
     await symlink(existing, symlinkPath);
+    await mkdir(realParent, { mode: 0o700 });
+    await symlink(realParent, linkedParent);
     try {
       await expect(generateOAuthKeys({ signingPath: "-", encryptionPath: other, repositoryRoot: resolve(".") })).rejects.toThrow();
       await expect(generateOAuthKeys({ signingPath: resolve("generated-signing.json"), encryptionPath: other, repositoryRoot: resolve(".") })).rejects.toThrow();
       await expect(generateOAuthKeys({ signingPath: existing, encryptionPath: other, repositoryRoot: resolve(".") })).rejects.toThrow();
       await expect(generateOAuthKeys({ signingPath: symlinkPath, encryptionPath: other, repositoryRoot: resolve(".") })).rejects.toThrow();
+      await expect(generateOAuthKeys({
+        signingPath: join(linkedParent, "signing.json"),
+        encryptionPath: join(linkedParent, "encryption.json"),
+        repositoryRoot: resolve("."),
+      })).rejects.toThrow();
       expect(await readFile(existing, "utf8")).toBe("keep");
       await expect(stat(other)).rejects.toThrow();
     } finally {
@@ -646,7 +770,7 @@ describe("live MCP facade acceptance fixture schema", () => {
     return {
       version: 1,
       resource: "https://tabloom-mcp.vercel.app",
-      supabaseUrl: "https://example.supabase.co",
+      supabaseUrl: "https://tctjlsvfufzxhauhywsm.supabase.co",
       supabaseAnonKey: "public-anon-key",
       subjectMismatchBearer: "mismatch-bearer-credential",
       users: [
@@ -677,6 +801,11 @@ describe("live MCP facade acceptance fixture schema", () => {
 
     expect(() => parseLiveAcceptanceFixture({
       ...validFixture(directory),
+      supabaseUrl: "https://other-project.supabase.co",
+    }, { repositoryRoot: resolve(".") })).toThrow();
+
+    expect(() => parseLiveAcceptanceFixture({
+      ...validFixture(directory),
       fixtureModule: "/tmp/untrusted-code.mjs",
     }, { repositoryRoot: resolve(".") })).toThrow();
     expect(() => parseLiveAcceptanceFixture({
@@ -688,6 +817,114 @@ describe("live MCP facade acceptance fixture schema", () => {
     expect(() => parseLiveAcceptanceFixture(duplicate, {
       repositoryRoot: resolve("."),
     })).toThrow();
+  });
+
+  it("confines Supabase SDK fetches to the exact production origin and rejects redirects", async () => {
+    const calls: Array<{ input: RequestInfo | URL; init?: RequestInit }> = [];
+    const baseFetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+      calls.push({ input, init });
+      return new Response("", { status: 307, headers: { location: "https://evil.example/stolen" } });
+    };
+    const hardened = createExactSupabaseFetch(baseFetch);
+    await expect(hardened("https://evil.example/rest/v1/spaces", {
+      headers: { authorization: "Bearer private-token" },
+    })).rejects.toThrow();
+    expect(calls).toHaveLength(0);
+    await expect(hardened(
+      "https://tctjlsvfufzxhauhywsm.supabase.co/rest/v1/spaces",
+    )).rejects.toThrow();
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.init?.redirect).toBe("manual");
+  });
+
+  it("accepts only a valid signed A-subject token carrying B's fresh nested ciphertext", async () => {
+    const now = 1_800_000_000;
+    const { privateKey, publicKey } = await generateKeyPair("ES256");
+    const publicJwk = {
+      ...await exportJWK(publicKey),
+      alg: "ES256",
+      use: "sig",
+      kid: "signing-v1-live",
+    };
+    const sign = (claims: {
+      sub: string;
+      clientId: string;
+      grantId: string;
+      inner: string;
+      jti: string;
+      issuedAt?: number;
+      expiresAt?: number;
+    }) => new SignJWT({
+      sub: claims.sub,
+      client_id: claims.clientId,
+      scope: SCOPE,
+      grant_id: claims.grantId,
+      supabase_token: claims.inner,
+    })
+      .setProtectedHeader({ alg: "ES256", kid: publicJwk.kid, typ: "at+jwt" })
+      .setIssuer(RESOURCE)
+      .setAudience(RESOURCE)
+      .setIssuedAt(claims.issuedAt ?? now)
+      .setNotBefore(claims.issuedAt ?? now)
+      .setExpirationTime(claims.expiresAt ?? now + 300)
+      .setJti(claims.jti)
+      .sign(privateKey);
+    const userAId = "11111111-1111-4111-8111-111111111111";
+    const userBId = "22222222-2222-4222-8222-222222222222";
+    const clientA = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    const clientB = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+    const grantA = "A".repeat(43);
+    const grantB = "B".repeat(43);
+    const innerA = "a.b.c.d.e";
+    const innerB = "f.g.h.i.j";
+    const userAAccessToken = await sign({
+      sub: userAId,
+      clientId: clientA,
+      grantId: grantA,
+      inner: innerA,
+      jti: "C".repeat(43),
+    });
+    const userBAccessToken = await sign({
+      sub: userBId,
+      clientId: clientB,
+      grantId: grantB,
+      inner: innerB,
+      jti: "D".repeat(43),
+    });
+    const mismatchBearer = await sign({
+      sub: userAId,
+      clientId: clientA,
+      grantId: grantA,
+      inner: innerB,
+      jti: "E".repeat(43),
+    });
+    const input = {
+      mismatchBearer,
+      userAAccessToken,
+      userBAccessToken,
+      expectedUserAId: userAId,
+      expectedUserBId: userBId,
+      jwks: { keys: [publicJwk] },
+      resource: RESOURCE,
+      now,
+    };
+    await expect(verifySubjectMismatchBearer(input)).resolves.toBeUndefined();
+    await expect(verifySubjectMismatchBearer({
+      ...input,
+      mismatchBearer: "random-malformed-bearer",
+    })).rejects.toThrow();
+    await expect(verifySubjectMismatchBearer({
+      ...input,
+      mismatchBearer: await sign({
+        sub: userAId,
+        clientId: clientA,
+        grantId: grantA,
+        inner: innerB,
+        jti: "F".repeat(43),
+        issuedAt: now - 600,
+        expiresAt: now - 1,
+      }),
+    })).rejects.toThrow();
   });
 
   it("loads only private regular JSON fixture and storage-state files outside the repository", async () => {
@@ -707,9 +944,15 @@ describe("live MCP facade acceptance fixture schema", () => {
         repositoryRoot: resolve("."),
       })).rejects.toThrow();
       await chmod(fixturePath, 0o600);
-      await expect(loadLiveAcceptanceFixture(fixturePath, {
+      const loaded = await loadLiveAcceptanceFixture(fixturePath, {
         repositoryRoot: resolve("."),
-      })).resolves.toMatchObject({ version: 1, resource: fixture.resource });
+      });
+      expect(loaded).toMatchObject({ version: 1, resource: fixture.resource });
+      expect(loaded.users.map((user) => user.storageState)).toEqual([
+        { cookies: [], origins: [] },
+        { cookies: [], origins: [] },
+      ]);
+      expect(loaded.users.some((user) => "storageStatePath" in user)).toBe(false);
       await writeFile(fixture.users[0]!.storageStatePath, JSON.stringify({
         cookies: [{
           name: "session",
@@ -724,6 +967,29 @@ describe("live MCP facade acceptance fixture schema", () => {
         }],
         origins: [],
       }), { mode: 0o600 });
+      await expect(loadLiveAcceptanceFixture(fixturePath, {
+        repositoryRoot: resolve("."),
+      })).rejects.toThrow();
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects storage-state aliases that resolve to the same file identity", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "tabloom-live-alias-"));
+    const fixturePath = join(directory, "fixture.json");
+    const fixture = validFixture(directory);
+    try {
+      await writeFile(
+        fixture.users[0]!.storageStatePath,
+        JSON.stringify({ cookies: [], origins: [] }),
+        { mode: 0o600 },
+      );
+      await link(
+        fixture.users[0]!.storageStatePath,
+        fixture.users[1]!.storageStatePath,
+      );
+      await writeFile(fixturePath, JSON.stringify(fixture), { mode: 0o600 });
       await expect(loadLiveAcceptanceFixture(fixturePath, {
         repositoryRoot: resolve("."),
       })).rejects.toThrow();

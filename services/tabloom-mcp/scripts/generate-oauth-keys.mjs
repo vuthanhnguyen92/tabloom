@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { randomBytes } from "node:crypto";
+import { constants } from "node:fs";
 import {
   lstat,
   open,
@@ -26,7 +27,7 @@ function isInside(parent, candidate) {
   return path === "" || (!path.startsWith(`..${sep}`) && path !== "..");
 }
 
-async function targetPath(value, repositoryRoot) {
+async function prepareTarget(value, repositoryRoot, inspectParent) {
   if (typeof value !== "string" || !value || value === "-") {
     throw new Error("An explicit file path is required");
   }
@@ -36,8 +37,10 @@ async function targetPath(value, repositoryRoot) {
 
   const root = await realpath(repositoryRoot);
   const lexicalTarget = resolve(value);
-  const parent = await realpath(dirname(lexicalTarget));
-  const canonicalTarget = resolve(parent, basename(lexicalTarget));
+  const parentPath = dirname(lexicalTarget);
+  const parentIdentity = await inspectParent(parentPath);
+  const canonicalParent = await realpath(parentPath);
+  const canonicalTarget = resolve(canonicalParent, basename(lexicalTarget));
   if (isInside(root, lexicalTarget) || isInside(root, canonicalTarget)) {
     throw new Error("OAuth key output paths must be outside the repository");
   }
@@ -46,7 +49,11 @@ async function targetPath(value, repositoryRoot) {
     throw new Error("OAuth key output files must not already exist");
   } catch (error) {
     if (error && typeof error === "object" && error.code === "ENOENT") {
-      return canonicalTarget;
+      return {
+        target: lexicalTarget,
+        parentPath,
+        parentIdentity,
+      };
     }
     throw error;
   }
@@ -54,6 +61,46 @@ async function targetPath(value, repositoryRoot) {
 
 function versionedKid(purpose) {
   return `${purpose}-v1-${randomBytes(12).toString("base64url")}`;
+}
+
+async function inspectPrivateParent(path) {
+  const metadata = await lstat(path, { bigint: true });
+  const expectedUid = BigInt(process.getuid?.() ?? -1);
+  if (!metadata.isDirectory() || metadata.isSymbolicLink() ||
+      metadata.uid !== expectedUid || (metadata.mode & 0o777n) !== 0o700n) {
+    throw new Error("OAuth key output parent must be an owned mode-0700 directory");
+  }
+  return { dev: metadata.dev, ino: metadata.ino };
+}
+
+function sameIdentity(left, right) {
+  return left?.dev === right?.dev && left?.ino === right?.ino;
+}
+
+async function inspectCreatedOutput(handle, path) {
+  const [handleMetadata, pathMetadata] = await Promise.all([
+    handle.stat({ bigint: true }),
+    lstat(path, { bigint: true }),
+  ]);
+  const expectedUid = BigInt(process.getuid?.() ?? -1);
+  if (!handleMetadata.isFile() || !pathMetadata.isFile() ||
+      handleMetadata.uid !== expectedUid || pathMetadata.uid !== expectedUid ||
+      (handleMetadata.mode & 0o777n) !== 0o600n ||
+      (pathMetadata.mode & 0o777n) !== 0o600n ||
+      !sameIdentity(handleMetadata, pathMetadata)) {
+    throw new Error("OAuth key output identity changed");
+  }
+  return { dev: handleMetadata.dev, ino: handleMetadata.ino };
+}
+
+async function inspectCreatedHandle(handle) {
+  const metadata = await handle.stat({ bigint: true });
+  const expectedUid = BigInt(process.getuid?.() ?? -1);
+  if (!metadata.isFile() || metadata.uid !== expectedUid ||
+      (metadata.mode & 0o777n) !== 0o600n) {
+    throw new Error("OAuth key output handle was invalid");
+  }
+  return { dev: metadata.dev, ino: metadata.ino };
 }
 
 async function closeQuietly(handle) {
@@ -64,8 +111,10 @@ async function closeQuietly(handle) {
   }
 }
 
-async function unlinkQuietly(path) {
+async function unlinkCreatedQuietly(path, expectedIdentity) {
   try {
+    const metadata = await lstat(path, { bigint: true });
+    if (!sameIdentity(metadata, expectedIdentity)) return;
     await unlink(path);
   } catch {
     // Only files created exclusively by this invocation are cleanup targets.
@@ -77,23 +126,55 @@ export async function generateOAuthKeys({
   encryptionPath,
   repositoryRoot = DEFAULT_REPOSITORY_ROOT,
   closeHandle = (handle) => handle.close(),
+  inspectParent = inspectPrivateParent,
+  inspectOutput = inspectCreatedOutput,
 }) {
-  const signingTarget = await targetPath(signingPath, repositoryRoot);
-  const encryptionTarget = await targetPath(encryptionPath, repositoryRoot);
-  if (signingTarget === encryptionTarget) {
+  const signing = await prepareTarget(signingPath, repositoryRoot, inspectParent);
+  const encryption = await prepareTarget(encryptionPath, repositoryRoot, inspectParent);
+  if (signing.target === encryption.target) {
     throw new Error("Signing and encryption outputs must be different files");
   }
 
   let signingHandle;
   let encryptionHandle;
-  let signingCreated = false;
-  let encryptionCreated = false;
+  let signingIdentity;
+  let encryptionIdentity;
   let failure;
   try {
-    signingHandle = await open(signingTarget, "wx", 0o600);
-    signingCreated = true;
-    encryptionHandle = await open(encryptionTarget, "wx", 0o600);
-    encryptionCreated = true;
+    const flags = constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL |
+      constants.O_NOFOLLOW;
+    signingHandle = await open(signing.target, flags, 0o600);
+    signingIdentity = await inspectCreatedHandle(signingHandle);
+    const signingPathIdentity = await inspectOutput(signingHandle, signing.target);
+    if (!sameIdentity(signingIdentity, signingPathIdentity)) {
+      throw new Error("OAuth key output identity changed");
+    }
+    encryptionHandle = await open(encryption.target, flags, 0o600);
+    encryptionIdentity = await inspectCreatedHandle(encryptionHandle);
+    const encryptionPathIdentity = await inspectOutput(
+      encryptionHandle,
+      encryption.target,
+    );
+    if (!sameIdentity(encryptionIdentity, encryptionPathIdentity)) {
+      throw new Error("OAuth key output identity changed");
+    }
+
+    const [signingParentAfter, encryptionParentAfter] = await Promise.all([
+      inspectParent(signing.parentPath),
+      inspectParent(encryption.parentPath),
+    ]);
+    if (!sameIdentity(signing.parentIdentity, signingParentAfter) ||
+        !sameIdentity(encryption.parentIdentity, encryptionParentAfter)) {
+      throw new Error("OAuth key output parent identity changed");
+    }
+    const [signingOutputAfter, encryptionOutputAfter] = await Promise.all([
+      inspectOutput(signingHandle, signing.target),
+      inspectOutput(encryptionHandle, encryption.target),
+    ]);
+    if (!sameIdentity(signingIdentity, signingOutputAfter) ||
+        !sameIdentity(encryptionIdentity, encryptionOutputAfter)) {
+      throw new Error("OAuth key output identity changed");
+    }
 
     const { privateKey } = await generateKeyPair("ES256", { extractable: true });
     const privateJwk = {
@@ -134,8 +215,10 @@ export async function generateOAuthKeys({
     }
   }
   if (failure) {
-    if (signingCreated) await unlinkQuietly(signingTarget);
-    if (encryptionCreated) await unlinkQuietly(encryptionTarget);
+    await Promise.all([
+      unlinkCreatedQuietly(signing.target, signingIdentity),
+      unlinkCreatedQuietly(encryption.target, encryptionIdentity),
+    ]);
     throw failure;
   }
 }

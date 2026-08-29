@@ -67,7 +67,9 @@ key generation, stdin/dashboard secret entry, rotation and rollback order, the
 redacted interactive probe, and the disabled-first two-user release gate. The
 opt-in live gate accepts only private JSON credential/session-state files at
 absolute paths outside this repository; it never imports external executable
-fixture code.
+fixture code. Storage-state files are identity-checked and parsed through
+no-follow handles, and live Supabase SDK traffic is confined to the exact
+approved production origin.
 
 The current local checkout is connected through ignored `.env.local` values to Supabase project `tctjlsvfufzxhauhywsm`. Its migrations, RLS policies, production site URL, and web redirect URLs have been configured. Google remains disabled until a Google OAuth client ID and client secret are entered in **Authentication → Sign In / Providers → Google**.
 

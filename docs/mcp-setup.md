@@ -15,7 +15,9 @@ cutover.
 
 The Vercel service requires these public values:
 
-- `SUPABASE_URL`: the Supabase project HTTPS origin.
+- `SUPABASE_URL`: exactly
+  `https://tctjlsvfufzxhauhywsm.supabase.co` for the approved production
+  project.
 - `SUPABASE_ANON_KEY`: the public anonymous key; never use a service-role key.
 - `TABLOOM_MCP_RESOURCE_URL`: `https://tabloom-mcp.vercel.app`.
 - `TABLOOM_OAUTH_ISSUER_URL`: `https://tabloom-mcp.vercel.app`.
@@ -33,10 +35,24 @@ files are local transfer artifacts only.
 
 ## Generate and enter facade secrets
 
-Create an operator-owned directory outside the repository, then pass two new
-absolute paths. The generator refuses stdout, relative paths, existing files,
-symlinks, and every path inside the repository. It creates both files with mode
-`0600` and removes its own partial output if generation fails.
+Create an operator-owned mode-`0700` directory outside the repository, then
+pass two new absolute paths. The generator refuses stdout, relative paths,
+existing files, symlinks, non-owned/non-`0700` parents, and every path inside
+the repository. It captures each parent device/inode, exclusively opens each
+output with no-follow semantics, and compares parent, pathname, and handle
+identities before generating or writing secret bytes. It creates both files
+with mode `0600` and removes only matching inodes created by its invocation if
+writing, syncing, or closing fails.
+
+```bash
+install -d -m 700 /absolute/external/path
+```
+
+Node does not expose portable `openat(2)` directory-descriptor-relative opens.
+The identity checks close cross-user and ordinary symlink/replacement races,
+but cannot eliminate a malicious same-user process racing the final checked
+pathname. Run the generator only in a trusted operator account with no
+untrusted same-UID processes.
 
 ```bash
 node services/tabloom-mcp/scripts/generate-oauth-keys.mjs \
@@ -125,7 +141,8 @@ The local probe starts a literal `127.0.0.1` callback and opens the interactive
 authorization request in the default browser. It discovers the issuer from the
 protected resource, reads issuer metadata, performs public DCR, requests exact
 S256/resource/scope bindings, verifies both access tokens through the published
-JWKS, refreshes once, calls `get_service_status`, revokes the rotated grant, and
+JWKS, refreshes once, replays the original refresh token and requires exact
+`invalid_grant`, calls `get_service_status`, revokes the rotated grant, and
 requires the same access token to receive `401` from `/api/mcp`.
 
 ```bash
@@ -134,8 +151,11 @@ TABLOOM_MCP_RESOURCE_URL=https://tabloom-mcp.vercel.app \
 ```
 
 The ignored `outputs/mcp-oauth-readiness.json` file is mode `0600`. It contains
-only booleans, issuer/resource strings, algorithm, audience, scope, and HTTP
-result classes. It never contains authorization codes, access or refresh
+only booleans (including refresh replay rejection), issuer/resource strings,
+algorithm, audience, scope, and HTTP result classes. A separate one-shot
+in-memory channel is the only boundary that can expose verified claims and
+access tokens to the checked-in live test; the report writer and CLI cannot
+serialize that channel. The report never contains authorization codes, access or refresh
 tokens, PKCE verifiers, cookies, subjects, client IDs, emails, or key IDs. A
 successful local fake/in-process test is not evidence that Supabase or Vercel
 production works.
@@ -148,16 +168,22 @@ production works.
 data, never JavaScript. The checked-in acceptance code never imports or
 executes an external module and never trusts precomputed pass/fail booleans.
 
-Both the fixture and its two Playwright storage-state files must be private
+The fixture and its two Playwright storage-state files must be owner-only
 regular files with mode `0600`, addressed by absolute paths outside the
-repository. Symlinks, repository paths, extra JSON properties, duplicate users,
-and incomplete inputs are rejected. The exact version-1 fixture shape is:
+repository. Each file is opened once with no-follow semantics, checked through
+its handle for owner, mode, type, size, and pathname identity, and parsed
+through that same handle. Storage states must have different canonical paths
+and device/inode identities. Only the validated in-memory state object is
+passed to Playwright; the original path is removed from the loaded fixture.
+Symlinks, aliases/hard links, repository paths, extra JSON properties,
+duplicate users, and incomplete inputs are rejected. The exact version-1
+fixture shape is:
 
 ```json
 {
   "version": 1,
   "resource": "https://tabloom-mcp.vercel.app",
-  "supabaseUrl": "https://your-project.supabase.co",
+  "supabaseUrl": "https://tctjlsvfufzxhauhywsm.supabase.co",
   "supabaseAnonKey": "SUPABASE_PUBLIC_ANON_KEY_VALUE",
   "subjectMismatchBearer": "FACADE_BEARER_WITH_MISMATCHED_OUTER_AND_INNER_SUBJECTS",
   "users": [
@@ -184,17 +210,30 @@ must use Playwright's JSON `{ "cookies": [], "origins": [] }` schema and hold
 an already human-authenticated browser session for its distinct Google test
 user. `subjectMismatchBearer` is credential data for a deliberately mismatched
 outer facade subject and nested Supabase subject; it is not a claimed result.
-Provisioning those external data files remains an approved operator action.
+Before sending it, the checked-in test verifies its ES256 signature against the
+live JWKS, exact issuer/audience/scope/header/times, User A subject/client/grant
+bindings, and proves its encrypted `supabase_token` ciphertext is exactly User
+B's freshly issued ciphertext rather than User A's. Random, malformed, expired,
+or unrelated bearers fail locally and are never sent. Provisioning those
+external data files remains an approved operator action.
 
 The checked-in test performs DCR and browser login/consent for both users, reads
 the published JWKS, validates exact ES256 issuer/resource/scope claims, parses
-the real `get_service_status` JSON-RPC response, refreshes, revokes, and requires
-post-revocation MCP failure. It independently resolves each Supabase token's
-subject, submits the mismatched bearer and requires `401`, and loads both
+the real `get_service_status` JSON-RPC response, refreshes, rejects replay of
+the original refresh credential, revokes, and requires post-revocation MCP
+failure. Private in-memory results bind both first and rotated facade subjects
+to the fixture UUID and prove the two browser runs issued four distinct access
+tokens. It independently resolves each Supabase token's subject, submits the
+cryptographically validated mismatch bearer and requires `401`, and loads both
 request-local workspaces to prove that each user sees its own named space and
-not the other's. Console, stdout, and stderr are disabled during all sensitive
-steps, errors are replaced with a fixed message, and no credentials or browser
-state are reported. Do not enable future workspace MCP tools to run this test.
+not the other's. User A then attempts to update User B's named space to a random
+sentinel: the SDK must return zero affected rows, and User B must reload the
+original unchanged name. Every Supabase Auth and repository request uses a
+silent SDK fetch wrapper confined to the exact approved production origin,
+manual redirects, and all-`3xx` rejection. Console, stdout, and stderr are
+disabled during all sensitive steps, errors are replaced with a fixed message,
+and no credentials or browser state are reported. Do not enable future
+workspace MCP tools to run this test.
 
 Run it only after explicit approval and complete fixture preparation:
 

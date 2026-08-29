@@ -349,6 +349,7 @@ function emptyReport(discovery = {}) {
     scope: "",
     scopeMatch: false,
     refreshRotated: false,
+    refreshReplayRejected: false,
     mcpContractMatch: false,
     mcpBeforeRevocationResult: "server_error",
     revocationResult: "server_error",
@@ -366,6 +367,25 @@ const HTTP_RESULT_CLASSES = new Set([
   "rate_limited",
   "server_error",
 ]);
+const PRIVATE_PROBE_CHANNELS = new WeakMap();
+
+export function createPrivateProbeResultChannel() {
+  const channel = Object.freeze({});
+  const state = { result: undefined, consumed: false };
+  PRIVATE_PROBE_CHANNELS.set(channel, state);
+  return Object.freeze({
+    channel,
+    take() {
+      if (state.consumed || !state.result) {
+        throw new Error("Private probe result is unavailable");
+      }
+      state.consumed = true;
+      const result = state.result;
+      state.result = undefined;
+      return result;
+    },
+  });
+}
 
 function httpResultClass(value) {
   return HTTP_RESULT_CLASSES.has(value) ? value : "server_error";
@@ -384,6 +404,7 @@ function allowlistedReport(report) {
     scope: typeof report?.scope === "string" ? report.scope : "",
     scopeMatch: report?.scopeMatch === true,
     refreshRotated: report?.refreshRotated === true,
+    refreshReplayRejected: report?.refreshReplayRejected === true,
     mcpContractMatch: report?.mcpContractMatch === true,
     mcpBeforeRevocationResult: httpResultClass(
       report?.mcpBeforeRevocationResult,
@@ -402,6 +423,7 @@ function reportFromResult({
   firstVerified,
   rotatedVerified,
   refreshRotated,
+  refreshReplayRejected,
   mcpContractMatch,
   mcpBeforeRevocationResult,
   revocationResult,
@@ -435,6 +457,7 @@ function reportFromResult({
     audienceMatch &&
     scopeMatch &&
     refreshRotated &&
+    refreshReplayRejected &&
     mcpContractMatch &&
     mcpBeforeRevocationResult === "success" &&
     revocationResult === "success" &&
@@ -452,6 +475,7 @@ function reportFromResult({
     scope,
     scopeMatch,
     refreshRotated,
+    refreshReplayRejected,
     mcpContractMatch,
     mcpBeforeRevocationResult,
     revocationResult,
@@ -595,6 +619,7 @@ export async function runProbe({
   handoffAuthorization: handoffAuthorizationFn = handoffAuthorization,
   verifyAccessToken: verifyAccessTokenFn = verifyAccessToken,
   writeReport: writeReportFn = writeReport,
+  privateResultChannel = Object.freeze({}),
   log = console.log,
 } = {}) {
   const expectedResource = requiredHttpsOrigin(
@@ -717,6 +742,19 @@ export async function runProbe({
       const refreshRotated =
         rotated.accessToken !== first.accessToken &&
         rotated.refreshToken !== first.refreshToken;
+      const replay = await safeRequest(metadata.token_endpoint, {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({
+          grant_type: "refresh_token",
+          refresh_token: first.refreshToken,
+          client_id: registration.client_id,
+          resource: expectedResource,
+          scope: REQUIRED_SCOPE,
+        }),
+      });
+      const refreshReplayRejected = replay.status === 400 &&
+        isRecord(replay.body) && replay.body.error === "invalid_grant";
 
       const beforeRevocation = await safeRequest(
         `${expectedResource}/api/mcp`,
@@ -748,6 +786,7 @@ export async function runProbe({
         firstVerified,
         rotatedVerified,
         refreshRotated,
+        refreshReplayRejected,
         mcpContractMatch,
         mcpBeforeRevocationResult,
         revocationResult,
@@ -757,6 +796,20 @@ export async function runProbe({
       log(`Redacted readiness report written to ${reportPath}`);
       if (!latestReport.pass) {
         throw new Error("OAuth flow failed the readiness gate");
+      }
+      const privateState = PRIVATE_PROBE_CHANNELS.get(privateResultChannel);
+      if (privateState) {
+        privateState.result = Object.freeze({
+          first: Object.freeze({
+            accessToken: first.accessToken,
+            verified: firstVerified,
+          }),
+          rotated: Object.freeze({
+            accessToken: rotated.accessToken,
+            verified: rotatedVerified,
+          }),
+          jwks,
+        });
       }
     } finally {
       await listener.close();
