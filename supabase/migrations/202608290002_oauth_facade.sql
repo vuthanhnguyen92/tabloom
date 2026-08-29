@@ -26,7 +26,9 @@ grant usage on schema public to oauth_facade_owner;
 
 create table public.oauth_clients (
   client_id uuid primary key default gen_random_uuid(),
-  client_name text not null check (char_length(btrim(client_name)) between 1 and 100),
+  client_name text not null
+    check (char_length(client_name) between 1 and 100)
+    check (char_length(btrim(client_name)) >= 1),
   redirect_uris text[] not null check (cardinality(redirect_uris) between 1 and 10),
   token_endpoint_auth_method text not null default 'none'
     check (token_endpoint_auth_method = 'none'),
@@ -66,9 +68,9 @@ alter table public.oauth_clients owner to oauth_facade_owner;
 alter table public.oauth_consumed_tokens owner to oauth_facade_owner;
 alter table public.oauth_revoked_grants owner to oauth_facade_owner;
 
-revoke all on table public.oauth_clients from public, anon, authenticated;
-revoke all on table public.oauth_consumed_tokens from public, anon, authenticated;
-revoke all on table public.oauth_revoked_grants from public, anon, authenticated;
+revoke all on table public.oauth_clients from public, anon, authenticated, service_role;
+revoke all on table public.oauth_consumed_tokens from public, anon, authenticated, service_role;
+revoke all on table public.oauth_revoked_grants from public, anon, authenticated, service_role;
 
 create or replace function public.register_oauth_client(client_metadata jsonb)
 returns jsonb
@@ -97,7 +99,9 @@ begin
   end if;
 
   name_value := client_metadata->>'client_name';
-  if char_length(btrim(name_value)) not between 1 and 100 then
+  if char_length(name_value) not between 1 and 100
+    or char_length(btrim(name_value)) < 1
+  then
     raise exception 'invalid OAuth client metadata' using errcode = '22023';
   end if;
 
@@ -277,11 +281,11 @@ alter function public.consume_oauth_token(text, text, timestamptz) owner to oaut
 alter function public.revoke_oauth_grant(text, timestamptz) owner to oauth_facade_owner;
 alter function public.is_oauth_grant_revoked(text) owner to oauth_facade_owner;
 
-revoke all on function public.register_oauth_client(jsonb) from public, anon, authenticated;
-revoke all on function public.get_oauth_client(uuid) from public, anon, authenticated;
-revoke all on function public.consume_oauth_token(text, text, timestamptz) from public, anon, authenticated;
-revoke all on function public.revoke_oauth_grant(text, timestamptz) from public, anon, authenticated;
-revoke all on function public.is_oauth_grant_revoked(text) from public, anon, authenticated;
+revoke all on function public.register_oauth_client(jsonb) from public, anon, authenticated, service_role;
+revoke all on function public.get_oauth_client(uuid) from public, anon, authenticated, service_role;
+revoke all on function public.consume_oauth_token(text, text, timestamptz) from public, anon, authenticated, service_role;
+revoke all on function public.revoke_oauth_grant(text, timestamptz) from public, anon, authenticated, service_role;
+revoke all on function public.is_oauth_grant_revoked(text) from public, anon, authenticated, service_role;
 
 grant execute on function public.register_oauth_client(jsonb) to anon;
 grant execute on function public.get_oauth_client(uuid) to anon;
