@@ -35,6 +35,7 @@ import {
   generateOAuthKeys,
   runKeyGeneratorCli,
 } from "../../services/tabloom-mcp/scripts/generate-oauth-keys.mjs";
+import { createOAuthDatabaseProofKey } from "../../services/tabloom-mcp/src/auth/database-proof";
 import {
   closeBrowserContextWithActiveCleanup,
   completeLiveAcceptancePhases,
@@ -997,7 +998,8 @@ describe("OAuth facade key generator", () => {
       });
       const signing = JSON.parse(await readFile(signingPath, "utf8"));
       const encryption = JSON.parse(await readFile(encryptionPath, "utf8"));
-      const databaseSecret = (await readFile(databaseSecretPath, "utf8")).trim();
+      const databaseProof = await readFile(databaseSecretPath);
+      const databaseSecret = databaseProof.toString("utf8");
       expect(signing).toHaveLength(1);
       expect(signing[0]).toMatchObject({
         active: true,
@@ -1009,8 +1011,12 @@ describe("OAuth facade key generator", () => {
       expect(encryption[0]).toMatchObject({ active: true });
       expect(encryption[0].kid).toMatch(/^encryption-v1-[A-Za-z0-9_-]{16,}$/);
       expect(Buffer.from(encryption[0].rootKey, "base64url")).toHaveLength(32);
+      expect(databaseProof).toHaveLength(43);
       expect(databaseSecret).toMatch(/^[A-Za-z0-9_-]{43}$/);
+      expect(databaseSecret).not.toMatch(/\s/);
       expect(Buffer.from(databaseSecret, "base64url")).toHaveLength(32);
+      expect(() => createOAuthDatabaseProofKey(databaseSecret)).not.toThrow();
+      expect(() => createOAuthDatabaseProofKey(`${databaseSecret}\n`)).toThrow();
       expect((await stat(signingPath)).mode & 0o777).toBe(0o600);
       expect((await stat(encryptionPath)).mode & 0o777).toBe(0o600);
       expect((await stat(databaseSecretPath)).mode & 0o777).toBe(0o600);

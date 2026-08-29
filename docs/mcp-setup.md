@@ -65,8 +65,10 @@ node services/tabloom-mcp/scripts/generate-oauth-keys.mjs \
   --database-secret-out /absolute/external/path/database-proof-v1.txt
 ```
 
-Enter each generated value through the Vercel dashboard's secret-value editor,
-or through stdin so the value is not retained in shell history:
+Enter the JSON values through the Vercel dashboard's secret-value editor, or
+through stdin so they are not retained in shell history. The database-proof
+file has exactly 43 base64url bytes and no trailing line ending; pass that file
+directly on stdin so Vercel receives it byte-for-byte:
 
 ```bash
 vercel env add TABLOOM_OAUTH_SIGNING_KEYS production \
@@ -77,13 +79,31 @@ vercel env add TABLOOM_OAUTH_DATABASE_SECRET production \
   < /absolute/external/path/database-proof-v1.txt
 ```
 
-In the separately approved Supabase database session, decode the base64url
-value from `database-proof-v1.txt` and upsert its raw 32 bytes into the single
-`oauth_private.facade_secret` row. Supply the value through the operator's
-protected stdin/secret-entry workflow—not a shell argument, migration, RPC,
-saved query, ticket, or log—and verify only `octet_length(secret) = 32`. Never
-grant the private schema/table to `anon`, `authenticated`, or `service_role`.
-The migration intentionally contains no production secret.
+In the separately approved operator environment, set
+`TABLOOM_OAUTH_DATABASE_URL` through its protected secret-entry workflow, then
+install the same local artifact into Postgres. The connection string is read
+only from that environment variable and is never a command argument:
+
+```bash
+npm --workspace @tabloom/mcp run oauth:install-database-secret -- \
+  --secret-file /Users/nickvu/.tabloom-secrets/database-proof-v1.txt
+```
+
+The command prints only Postgres's lowercase SHA-256 fingerprint of the raw
+32 decoded bytes. Before enabling OAuth, compute the local decoded-byte
+fingerprint without printing the artifact, and require the two fingerprints to
+be identical:
+
+```bash
+node --input-type=module -e 'import { createHash } from "node:crypto"; import { readFile } from "node:fs/promises"; const file = await readFile(process.argv[1]); const value = file.toString("utf8"); if (file.length !== 43 || !/^[A-Za-z0-9_-]{43}$/.test(value) || Buffer.from(value, "base64url").toString("base64url") !== value) process.exit(1); process.stdout.write(`${createHash("sha256").update(Buffer.from(value, "base64url")).digest("hex")}\\n`);' /Users/nickvu/.tabloom-secrets/database-proof-v1.txt
+```
+
+Length-only checks are insufficient: require the canonical base64url artifact
+and matching decoded-byte fingerprint. Never put the artifact or connection
+string in Git, shell history, Vercel build logs, saved SQL, a migration, RPC,
+ticket, or log. Never grant the private schema/table to `anon`,
+`authenticated`, or `service_role`. The migration intentionally contains no
+production secret.
 
 Do not use command substitution or put JSON after the command name. Confirm the
 files are untracked, transfer them through the approved secret channel, and

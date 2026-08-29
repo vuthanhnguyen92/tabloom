@@ -231,7 +231,7 @@ export async function generateOAuthKeys({
     await encryptionHandle.sync();
     if (databaseSecretHandle) {
       await databaseSecretHandle.writeFile(
-        `${randomBytes(32).toString("base64url")}\n`,
+        randomBytes(32).toString("base64url"),
         "utf8",
       );
       await databaseSecretHandle.chmod(0o600);
