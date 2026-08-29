@@ -1,7 +1,9 @@
 import { loadFacadeAuthConfig } from "../../../src/auth/config";
 import { validateDcrClientMetadata } from "../../../src/oauth/client-metadata";
 import {
+  OAuthInvalidClientMetadataError,
   OAuthPersistenceUnavailableError,
+  OAuthRegistrationCapacityError,
   createOAuthPersistence,
 } from "../../../src/oauth/persistence";
 import {
@@ -113,6 +115,21 @@ export async function POST(request: Request): Promise<Response> {
       token_endpoint_auth_method: "none",
     }, 201, REGISTRATION_CORS_HEADERS), "success", stored.clientId);
   } catch (error) {
+    if (error instanceof OAuthInvalidClientMetadataError) {
+      return respond(
+        oauthError("invalid_client_metadata", 400, REGISTRATION_CORS_HEADERS),
+        "client_error",
+      );
+    }
+    if (error instanceof OAuthRegistrationCapacityError) {
+      return respond(
+        oauthError("temporarily_unavailable", 429, {
+          ...REGISTRATION_CORS_HEADERS,
+          "Retry-After": String(error.retryAfterSeconds),
+        }),
+        "rate_limited",
+      );
+    }
     if (error instanceof OAuthPersistenceUnavailableError) {
       return respond(
         oauthError("temporarily_unavailable", 503, REGISTRATION_CORS_HEADERS),

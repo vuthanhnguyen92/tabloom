@@ -34,6 +34,8 @@ const DCR_KEYS = [
 ] as const;
 const CIMD_KEYS = [...DCR_KEYS, "client_id"].sort();
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const HTTPS_REDIRECT_PATTERN = /^https:\/\/(?:[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?|\[[0-9a-f:.]+\])(?::([0-9]{1,5}))?(?:\/[^#\s]*)?(?:\?[^#\s]*)?$/i;
+const HTTP_LOOPBACK_REDIRECT_PATTERN = /^http:\/\/(?:127\.0\.0\.1|\[::1\])(?::([0-9]{1,5}))?(?:\/[^#\s]*)?(?:\?[^#\s]*)?$/;
 
 function invalidClientMetadata(): Error {
   return new Error("Invalid public OAuth client metadata");
@@ -49,30 +51,35 @@ function isExactRecord(value: unknown, keys: readonly string[]): value is Record
 
 function validateClientName(value: unknown): string {
   if (typeof value !== "string") throw invalidClientMetadata();
-  const normalized = value.trim().normalize("NFC");
-  const length = Array.from(normalized).length;
-  if (length < 1 || length > 100 || /[\p{Cc}\p{Cf}]/u.test(normalized)) {
+  const length = Array.from(value).length;
+  if (length < 1 || length > 100 || Buffer.byteLength(value, "utf8") > 400 ||
+      value.startsWith(" ") || value.endsWith(" ") || /\p{Cc}/u.test(value)) {
     throw invalidClientMetadata();
   }
-  return normalized;
+  return value;
 }
 
 function validateRedirectUri(value: unknown): string {
-  if (typeof value !== "string" || value.length === 0 || /\s/u.test(value) || value.includes("*")) {
+  if (typeof value !== "string") throw invalidClientMetadata();
+  const byteLength = Buffer.byteLength(value, "utf8");
+  if (byteLength < 1 || byteLength > 2048 || /[\s#*]/.test(value)) {
     throw invalidClientMetadata();
   }
+
+  const match = HTTPS_REDIRECT_PATTERN.exec(value) ?? HTTP_LOOPBACK_REDIRECT_PATTERN.exec(value);
+  if (!match) throw invalidClientMetadata();
+  if (match[1] !== undefined) {
+    const port = Number(match[1]);
+    if (port < 1 || port > 65535) throw invalidClientMetadata();
+  }
+
   let url: URL;
   try {
     url = new URL(value);
   } catch {
     throw invalidClientMetadata();
   }
-  if (url.username || url.password || value.includes("#")) throw invalidClientMetadata();
-  if (url.protocol === "https:") return value;
-  const authority = /^http:\/\/([^/?#]+)/i.exec(value)?.[1];
-  const literalLoopback = authority !== undefined &&
-    /^(?:127\.0\.0\.1|\[::1\])(?::[0-9]+)?$/.test(authority);
-  if (url.protocol !== "http:" || !literalLoopback) throw invalidClientMetadata();
+  if (!url.hostname) throw invalidClientMetadata();
   return value;
 }
 

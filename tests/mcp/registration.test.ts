@@ -2,6 +2,9 @@ import { exportJWK, generateKeyPair } from "jose";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
+  OAuthInvalidClientMetadataError,
+  OAuthPersistenceUnavailableError,
+  OAuthRegistrationCapacityError,
   createOAuthPersistence,
   type OAuthPersistence,
 } from "../../services/tabloom-mcp/src/oauth/persistence";
@@ -54,6 +57,13 @@ function persistence(): OAuthPersistence {
     async consume() { return false; },
     async revokeGrant() {},
     async isGrantRevoked() { return false; },
+  };
+}
+
+function rejectingPersistence(error: Error): OAuthPersistence {
+  return {
+    ...persistence(),
+    async registerClient() { throw error; },
   };
 }
 
@@ -206,6 +216,91 @@ describe("public dynamic client registration", () => {
     expect(JSON.parse(body)).toEqual({ error: "invalid_client_metadata" });
     expect(body).not.toContain(secret);
     expect(body).not.toContain("unknown");
+  });
+
+  it("maps defensive database metadata rejection to invalid_client_metadata", async () => {
+    await useFacadeEnvironment(true);
+    vi.mocked(createOAuthPersistence).mockReturnValue(
+      rejectingPersistence(new OAuthInvalidClientMetadataError()),
+    );
+    const handler = await route();
+
+    const response = await handler.POST(new Request(`${ORIGIN}/oauth/register`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(registration),
+    }));
+
+    expect(response.status).toBe(400);
+    expectNoStore(response);
+    expect(response.headers.get("Access-Control-Allow-Origin")).toBe("*");
+    await expect(response.json()).resolves.toEqual({ error: "invalid_client_metadata" });
+  });
+
+  it("maps registration capacity to a fixed retryable 429 and rate-limited audit", async () => {
+    await useFacadeEnvironment(true);
+    vi.mocked(createOAuthPersistence).mockReturnValue(
+      rejectingPersistence(new OAuthRegistrationCapacityError()),
+    );
+    const audit = vi.spyOn(console, "info").mockImplementation(() => undefined);
+    const handler = await route();
+
+    const response = await handler.POST(new Request(`${ORIGIN}/oauth/register`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(registration),
+    }));
+
+    expect(response.status).toBe(429);
+    expectNoStore(response);
+    expect(response.headers.get("Access-Control-Allow-Origin")).toBe("*");
+    expect(response.headers.get("Retry-After")).toBe("60");
+    await expect(response.json()).resolves.toEqual({ error: "temporarily_unavailable" });
+    expect(audit).toHaveBeenCalledWith(expect.objectContaining({
+      routeCategory: "register",
+      resultClass: "rate_limited",
+    }));
+  });
+
+  it("keeps persistence outages on the sanitized dependency response", async () => {
+    await useFacadeEnvironment(true);
+    vi.mocked(createOAuthPersistence).mockReturnValue(
+      rejectingPersistence(new OAuthPersistenceUnavailableError()),
+    );
+    const handler = await route();
+
+    const response = await handler.POST(new Request(`${ORIGIN}/oauth/register`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(registration),
+    }));
+
+    expect(response.status).toBe(503);
+    expectNoStore(response);
+    expect(response.headers.get("Access-Control-Allow-Origin")).toBe("*");
+    await expect(response.json()).resolves.toEqual({ error: "temporarily_unavailable" });
+  });
+
+  it("sanitizes unexpected registration failures", async () => {
+    await useFacadeEnvironment(true);
+    const privateDetail = "private database identifier oauth_clients_internal";
+    vi.mocked(createOAuthPersistence).mockReturnValue(
+      rejectingPersistence(new Error(privateDetail)),
+    );
+    const handler = await route();
+
+    const response = await handler.POST(new Request(`${ORIGIN}/oauth/register`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(registration),
+    }));
+
+    expect(response.status).toBe(500);
+    expectNoStore(response);
+    expect(response.headers.get("Access-Control-Allow-Origin")).toBe("*");
+    const body = await response.text();
+    expect(JSON.parse(body)).toMatchObject({ error: "server_error" });
+    expect(body).not.toContain(privateDetail);
   });
 
   it("registers only validated public metadata and never returns a client secret", async () => {

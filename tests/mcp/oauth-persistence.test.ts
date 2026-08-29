@@ -4,7 +4,9 @@ import { describe, expect, it } from "vitest";
 import { createOAuthDatabaseProofKey } from "../../services/tabloom-mcp/src/auth/database-proof";
 
 import {
+  OAuthInvalidClientMetadataError,
   OAuthPersistenceUnavailableError,
+  OAuthRegistrationCapacityError,
   SupabaseOAuthPersistence,
   createOAuthPersistence,
   type OAuthRpcClient,
@@ -203,6 +205,59 @@ describe("SupabaseOAuthPersistence", () => {
     await expect(operation).rejects.toBeInstanceOf(OAuthPersistenceUnavailableError);
     await expect(operation).rejects.toThrow("OAuth persistence is temporarily unavailable");
     await expect(operation).rejects.not.toThrow(error.message);
+  });
+
+  it("maps SQLSTATE 22023 to non-sensitive invalid client metadata", async () => {
+    const databaseMessage = "invalid OAuth client metadata at private schema oauth_private";
+    const client = new FakeRpcClient({
+      data: null,
+      error: { code: "22023", message: databaseMessage },
+    });
+    const store = persistence(client);
+
+    const operation = store.registerClient({
+      clientName: "Example MCP Client",
+      redirectUris: ["https://client.example/callback"],
+      expiresAt: storedClient.expires_at,
+    });
+    await expect(operation).rejects.toBeInstanceOf(OAuthInvalidClientMetadataError);
+    await expect(operation).rejects.not.toThrow(databaseMessage);
+  });
+
+  it("maps only the fixed registration quota failure to capacity", async () => {
+    const client = new FakeRpcClient({
+      data: null,
+      error: { code: "P0001", message: "OAuth registration quota exceeded" },
+    });
+    const store = persistence(client);
+
+    const operation = store.registerClient({
+      clientName: "Example MCP Client",
+      redirectUris: ["https://client.example/callback"],
+      expiresAt: storedClient.expires_at,
+    });
+    await expect(operation).rejects.toBeInstanceOf(OAuthRegistrationCapacityError);
+    await expect(operation).rejects.toMatchObject({ retryAfterSeconds: 60 });
+    await expect(operation).rejects.not.toThrow("OAuth registration quota exceeded");
+  });
+
+  it("keeps unrelated P0001 failures generic and non-sensitive", async () => {
+    const databaseMessage = "private constraint oauth_clients_internal failed";
+    const client = new FakeRpcClient({
+      data: null,
+      error: { code: "P0001", message: databaseMessage },
+    });
+    const store = persistence(client);
+
+    const operation = store.registerClient({
+      clientName: "Example MCP Client",
+      redirectUris: ["https://client.example/callback"],
+      expiresAt: storedClient.expires_at,
+    });
+    await expect(operation).rejects.not.toBeInstanceOf(OAuthRegistrationCapacityError);
+    await expect(operation).rejects.not.toBeInstanceOf(OAuthPersistenceUnavailableError);
+    await expect(operation).rejects.toThrow("OAuth persistence operation failed");
+    await expect(operation).rejects.not.toThrow(databaseMessage);
   });
 });
 

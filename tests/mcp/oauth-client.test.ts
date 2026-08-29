@@ -68,32 +68,62 @@ describe("public OAuth client metadata", () => {
     expect(() => validateDcrClientMetadata(metadata)).toThrow();
   });
 
-  it("normalizes display names and enforces the character limit", () => {
+  it("preserves exact client names and counts PostgreSQL Unicode characters", () => {
+    const decomposedName = "Cafe\u0301 Client";
+    const fourHundredByteName = "😀".repeat(100);
+
     expect(validateDcrClientMetadata({
       ...validRegistration,
-      client_name: "  Cafe\u0301 Client  ",
-    }).clientName).toBe("Café Client");
-    expect(() => validateDcrClientMetadata({ ...validRegistration, client_name: "   " })).toThrow();
-    expect(() => validateDcrClientMetadata({ ...validRegistration, client_name: "x".repeat(101) })).toThrow();
-    expect(() => validateDcrClientMetadata({ ...validRegistration, client_name: "bad\u0000name" })).toThrow();
+      client_name: decomposedName,
+    }).clientName).toBe(decomposedName);
+    expect(validateDcrClientMetadata({
+      ...validRegistration,
+      client_name: fourHundredByteName,
+    }).clientName).toBe(fourHundredByteName);
+  });
+
+  it.each([
+    ["empty", ""],
+    ["only whitespace", "   "],
+    ["leading whitespace", " Example"],
+    ["trailing whitespace", "Example "],
+    ["more than 100 Unicode characters", `${"😀".repeat(100)}x`],
+    ["control character", "bad\u0000name"],
+  ])("rejects a %s client name", (_label, clientName) => {
+    expect(() => validateDcrClientMetadata({
+      ...validRegistration,
+      client_name: clientName,
+    })).toThrow();
   });
 
   it("accepts HTTPS and literal-IP loopback HTTP redirect URIs", () => {
+    const exactRedirect = "https://CLIENT.example:00443/%2f?value=%41";
     expect(validateDcrClientMetadata({
       ...validRegistration,
       redirect_uris: [
-        "https://client.example/callback",
+        exactRedirect,
         "http://127.0.0.1:49152/callback",
         "http://[::1]:49152/callback",
       ],
     }).redirectUris).toEqual([
-      "https://client.example/callback",
+      exactRedirect,
       "http://127.0.0.1:49152/callback",
       "http://[::1]:49152/callback",
     ]);
   });
 
+  it("accepts a redirect at the exact 2048-byte boundary", () => {
+    const redirectUri = "https://client.example/".padEnd(2048, "a");
+
+    expect(Buffer.byteLength(redirectUri, "utf8")).toBe(2048);
+    expect(validateDcrClientMetadata({
+      ...validRegistration,
+      redirect_uris: [redirectUri],
+    }).redirectUris).toEqual([redirectUri]);
+  });
+
   it.each([
+    "",
     "http://localhost/callback",
     "http://127.0.0.2/callback",
     "https://user:password@client.example/callback",
@@ -102,7 +132,21 @@ describe("public OAuth client metadata", () => {
     " https://client.example/callback",
     "https://client.exa\tmple/callback",
     "https://client.example/call\nback",
+    "https://client.example/callback\n",
     "https://*.client.example/callback",
+    "https://client.example/call*back",
+    "https://client.example:/callback",
+    "https://client.example:0/callback",
+    "https://client.example:65536/callback",
+    "https://client.example:123456/callback",
+    "https://client.example:443:444/callback",
+    "https://-client.example/callback",
+    "https://client.example-/callback",
+    "https://client_example/callback",
+    "https://K.example/callback",
+    "https://[1::2::3]/callback",
+    "https://[::1/callback",
+    "https:///callback",
   ])("rejects unsafe redirect URI %s", (redirectUri) => {
     expect(() => validateDcrClientMetadata({
       ...validRegistration,
@@ -132,6 +176,27 @@ describe("public OAuth client metadata", () => {
     expect(() => validateDcrClientMetadata({
       ...validRegistration,
       redirect_uris: ["https://client.example/callback", "https://client.example/callback"],
+    })).toThrow();
+  });
+
+  it("rejects a redirect URI at 2049 UTF-8 bytes", () => {
+    const redirectUri = "https://client.example/".padEnd(2049, "a");
+
+    expect(Buffer.byteLength(redirectUri, "utf8")).toBe(2049);
+    expect(() => validateDcrClientMetadata({
+      ...validRegistration,
+      redirect_uris: [redirectUri],
+    })).toThrow();
+  });
+
+  it("rejects a multibyte redirect below 2048 JavaScript units but over 2048 UTF-8 bytes", () => {
+    const redirectUri = `https://client.example/${"😀".repeat(600)}`;
+
+    expect(redirectUri.length).toBeLessThan(2048);
+    expect(Buffer.byteLength(redirectUri, "utf8")).toBeGreaterThan(2048);
+    expect(() => validateDcrClientMetadata({
+      ...validRegistration,
+      redirect_uris: [redirectUri],
     })).toThrow();
   });
 

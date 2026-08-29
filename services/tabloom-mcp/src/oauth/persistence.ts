@@ -86,6 +86,29 @@ export class OAuthPersistenceUnavailableError extends Error {
   }
 }
 
+export class OAuthInvalidClientMetadataError extends Error {
+  constructor() {
+    super("Invalid OAuth client metadata");
+    this.name = "OAuthInvalidClientMetadataError";
+  }
+}
+
+export class OAuthRegistrationCapacityError extends Error {
+  readonly retryAfterSeconds = 60;
+
+  constructor() {
+    super("OAuth registration capacity exceeded");
+    this.name = "OAuthRegistrationCapacityError";
+  }
+}
+
+class OAuthPersistenceOperationError extends Error {
+  constructor() {
+    super("OAuth persistence operation failed");
+    this.name = "OAuthPersistenceOperationError";
+  }
+}
+
 function isRetryableDatabaseError(error: OAuthRpcResult["error"]): boolean {
   const code = error?.code;
   return typeof code === "string" && (
@@ -94,10 +117,16 @@ function isRetryableDatabaseError(error: OAuthRpcResult["error"]): boolean {
 }
 
 function failedOperation(error: OAuthRpcResult["error"]): Error {
+  if (error?.code === "22023") {
+    return new OAuthInvalidClientMetadataError();
+  }
+  if (error?.code === "P0001" && error.message === "OAuth registration quota exceeded") {
+    return new OAuthRegistrationCapacityError();
+  }
   if (isRetryableDatabaseError(error)) {
     return new OAuthPersistenceUnavailableError();
   }
-  return new Error("OAuth persistence operation failed");
+  return new OAuthPersistenceOperationError();
 }
 
 function isStoredPublicClientRow(value: unknown): value is StoredPublicClientRow {
@@ -167,8 +196,10 @@ export class SupabaseOAuthPersistence implements OAuthPersistence {
       if (result.error) throw failedOperation(result.error);
       return result.data;
     } catch (error) {
-      if (error instanceof OAuthPersistenceUnavailableError) throw error;
-      if (error instanceof Error && error.message.startsWith("OAuth persistence")) {
+      if (error instanceof OAuthInvalidClientMetadataError ||
+          error instanceof OAuthRegistrationCapacityError ||
+          error instanceof OAuthPersistenceUnavailableError ||
+          error instanceof OAuthPersistenceOperationError) {
         throw error;
       }
       throw new OAuthPersistenceUnavailableError();
