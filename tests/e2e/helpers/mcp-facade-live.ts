@@ -74,6 +74,7 @@ export type ParsedLiveAcceptanceFixture = {
   resource: typeof LIVE_RESOURCE;
   supabaseUrl: string;
   supabaseAnonKey: string;
+  quiescentAcceptanceAccounts: true;
   users: [LiveAcceptanceUserInput, LiveAcceptanceUserInput];
 };
 
@@ -259,11 +260,13 @@ export function parseLiveAcceptanceFixture(
     "resource",
     "supabaseUrl",
     "supabaseAnonKey",
+    "quiescentAcceptanceAccounts",
     "users",
   ])) {
     throw new Error("Invalid live acceptance fixture");
   }
   if (value.version !== 1 || value.resource !== LIVE_RESOURCE ||
+      value.quiescentAcceptanceAccounts !== true ||
       !Array.isArray(value.users) || value.users.length !== 2) {
     throw new Error("Invalid live acceptance fixture contract");
   }
@@ -297,6 +300,7 @@ export function parseLiveAcceptanceFixture(
     resource: LIVE_RESOURCE,
     supabaseUrl: LIVE_SUPABASE_ORIGIN,
     supabaseAnonKey: privateCredential(value.supabaseAnonKey, "supabaseAnonKey"),
+    quiescentAcceptanceAccounts: true,
     users,
   };
 }
@@ -522,8 +526,45 @@ async function withSuppressedOutput<T>(action: () => Promise<T>): Promise<T> {
 }
 
 type CompletableProbePhase = { complete(): Promise<void> };
-type CleanupStatus = Readonly<{ cleanupFailed: boolean }>;
+type CleanupStatus = Readonly<{
+  cleanupFailed: boolean;
+  concurrentFixtureMutation?: boolean;
+}>;
 type CleanupStatusRecorder = (status: CleanupStatus) => void;
+
+export function recordLiveProbeReport<T extends { cleanupFailed?: unknown }>(
+  report: T,
+  reports: T[],
+  recordCleanupStatus: CleanupStatusRecorder,
+) {
+  recordCleanupStatus(Object.freeze({
+    cleanupFailed: report.cleanupFailed === true,
+  }));
+  reports.push(report);
+}
+
+export async function withLiveCleanupCategory<T>(
+  action: (recordCleanupStatus: CleanupStatusRecorder) => Promise<T>,
+): Promise<T> {
+  let cleanupFailed = false;
+  let concurrentFixtureMutation = false;
+  const recordCleanupStatus = (status: CleanupStatus) => {
+    cleanupFailed ||= status.cleanupFailed;
+    concurrentFixtureMutation ||= status.concurrentFixtureMutation === true;
+  };
+  try {
+    return await withSuppressedOutput(() => action(recordCleanupStatus));
+  } catch {
+    if (concurrentFixtureMutation) {
+      throw new Error(
+        "Secret-safe live facade acceptance failed: concurrentFixtureMutation",
+      );
+    }
+    throw new Error(cleanupFailed
+      ? "Secret-safe live facade acceptance failed: cleanupFailed"
+      : "Secret-safe live facade acceptance failed");
+  }
+}
 
 async function settleProbeCompletions(
   phases: CompletableProbePhase[],
@@ -554,6 +595,74 @@ export async function closeBrowserContextWithActiveCleanup(
   }
 }
 
+class ConcurrentFixtureMutationError extends Error {
+  constructor() {
+    super("concurrentFixtureMutation");
+  }
+}
+
+type RlsRecordKey = "space" | "collection" | "link";
+type RlsRestorationSnapshot = Readonly<{
+  records: Record<RlsRecordKey, JsonRecord>;
+  sync: Readonly<{ revision: number; updated_at: string }>;
+}>;
+
+function equalJson(left: unknown, right: unknown) {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function withoutUpdatedAt(record: JsonRecord) {
+  const businessFields = { ...record };
+  delete businessFields.updated_at;
+  return businessFields;
+}
+
+export function planRlsRestoration(input: {
+  baseline: RlsRestorationSnapshot;
+  current: RlsRestorationSnapshot;
+  returnedRecords: readonly RlsRecordKey[];
+}) {
+  const returned = new Set(input.returnedRecords);
+  const restoreRecords: RlsRecordKey[] = [];
+  for (const key of ["space", "collection", "link"] as const) {
+    const baseline = input.baseline.records[key];
+    const current = input.current.records[key];
+    if (!returned.has(key)) {
+      if (!equalJson(current, baseline)) throw new ConcurrentFixtureMutationError();
+      continue;
+    }
+    if (!equalJson(withoutUpdatedAt(current), withoutUpdatedAt(baseline))) {
+      throw new ConcurrentFixtureMutationError();
+    }
+    if (!equalJson(current, baseline)) restoreRecords.push(key);
+  }
+
+  const syncChanged = !equalJson(input.current.sync, input.baseline.sync);
+  if (returned.size === 0) {
+    if (syncChanged) throw new ConcurrentFixtureMutationError();
+  } else if (syncChanged) {
+    if (input.current.sync.revision !==
+          input.baseline.sync.revision + returned.size ||
+        typeof input.current.sync.updated_at !== "string") {
+      throw new ConcurrentFixtureMutationError();
+    }
+  }
+  return Object.freeze({
+    restoreRecords: Object.freeze(restoreRecords),
+    restoreSync: syncChanged,
+  });
+}
+
+export function requireOptimisticRestorationRow(
+  result: { error: unknown; data: unknown },
+  label: string,
+) {
+  if (result.error || !Array.isArray(result.data)) {
+    throw new Error(`${label} restoration failed`);
+  }
+  if (result.data.length !== 1) throw new ConcurrentFixtureMutationError();
+}
+
 export async function runRestorableRlsWriteCheck<T>(options: {
   capture(): Promise<T>;
   attempt(baseline: T): Promise<void>;
@@ -569,13 +678,21 @@ export async function runRestorableRlsWriteCheck<T>(options: {
     primaryError = error;
   }
   let cleanupFailed = false;
+  let concurrentFixtureMutation = false;
   try {
     await options.restore(baseline);
     await options.verifyRestored(baseline);
-  } catch {
+  } catch (error) {
     cleanupFailed = true;
+    concurrentFixtureMutation = error instanceof ConcurrentFixtureMutationError;
   }
-  options.recordCleanupStatus?.(Object.freeze({ cleanupFailed }));
+  options.recordCleanupStatus?.(Object.freeze({
+    cleanupFailed,
+    ...(concurrentFixtureMutation ? { concurrentFixtureMutation: true } : {}),
+  }));
+  if (concurrentFixtureMutation) {
+    throw new Error("concurrentFixtureMutation");
+  }
   if (cleanupFailed) throw new Error("Cross-user RLS cleanup failed");
   if (primaryError) throw primaryError;
 }
@@ -591,6 +708,7 @@ async function authorizeWithStorageState(
   let acceptance: { phase: NonNullable<typeof phase>; result: ProbePrivateResult } | undefined;
   let primaryError: unknown;
   const reports: Array<{
+    cleanupFailed?: boolean;
     refreshReplayRejected?: boolean;
     mcpBeforeRevocationResult?: string;
   }> = [];
@@ -616,9 +734,12 @@ async function authorizeWithStorageState(
         ]);
       },
       writeReport: async (report: {
+        cleanupFailed?: boolean;
         refreshReplayRejected?: boolean;
         mcpBeforeRevocationResult?: string;
-      }) => { reports.push(report); },
+      }) => {
+        recordLiveProbeReport(report, reports, recordCleanupStatus);
+      },
       privateResultChannel: privateResults.channel,
       log: () => undefined,
     });
@@ -763,11 +884,7 @@ async function verifyTwoUserRls(
     ),
     link: workspace.links.find((record) => record.id === userB.ownedLinkId),
   });
-  const requireOneRow = (result: { error: unknown; data: unknown }, label: string) => {
-    if (result.error || !Array.isArray(result.data) || result.data.length !== 1) {
-      throw new Error(`${label} restoration failed`);
-    }
-  };
+  let returnedRecords: RlsRecordKey[] = [];
 
   await runRestorableRlsWriteCheck({
     capture: async () => ({
@@ -783,8 +900,16 @@ async function verifyTwoUserRls(
         a.client.from("links").update({ title: originalRecords.link.title })
           .eq("id", userB.ownedLinkId).select("id"),
       ]);
-      if (deniedUpdates.some((denied) => denied.error ||
-          !Array.isArray(denied.data) || denied.data.length !== 0)) {
+      returnedRecords = [];
+      for (const [index, denied] of deniedUpdates.entries()) {
+        if (denied.error || !Array.isArray(denied.data) || denied.data.length > 1) {
+          throw new Error("Cross-user RLS no-op update could not be evaluated");
+        }
+        if (denied.data.length === 1) {
+          returnedRecords.push((["space", "collection", "link"] as const)[index]!);
+        }
+      }
+      if (returnedRecords.length > 0) {
         throw new Error("Cross-user RLS no-op update was not denied");
       }
     },
@@ -792,30 +917,55 @@ async function verifyTwoUserRls(
       const currentWorkspace = await b.repository.load();
       const current = targetRecords(currentWorkspace);
       if (!current.space || !current.collection || !current.link) {
-        throw new Error("Owner restoration target was missing");
+        throw new ConcurrentFixtureMutationError();
       }
-      if (JSON.stringify(current.space) !== JSON.stringify(baseline.records.space)) {
+      const currentRecords = {
+        space: current.space,
+        collection: current.collection,
+        link: current.link,
+      };
+      const currentSync = await loadSyncState();
+      const plan = planRlsRestoration({
+        baseline,
+        current: { records: currentRecords, sync: currentSync },
+        returnedRecords,
+      });
+      if (plan.restoreRecords.includes("space")) {
         const restored = await b.client.from("spaces").update({
           name: baseline.records.space.name,
           color: baseline.records.space.color,
           position: baseline.records.space.position,
           created_at: baseline.records.space.created_at,
           updated_at: baseline.records.space.updated_at,
-        }).eq("id", userB.ownedSpaceId).eq("user_id", userB.userId).select("id");
-        requireOneRow(restored, "Space");
+        }).eq("id", current.space.id)
+          .eq("user_id", current.space.user_id)
+          .eq("name", current.space.name)
+          .eq("color", current.space.color)
+          .eq("position", current.space.position)
+          .eq("created_at", current.space.created_at)
+          .eq("updated_at", current.space.updated_at)
+          .select("id");
+        requireOptimisticRestorationRow(restored, "Space");
       }
-      if (JSON.stringify(current.collection) !== JSON.stringify(baseline.records.collection)) {
+      if (plan.restoreRecords.includes("collection")) {
         const restored = await b.client.from("collections").update({
           space_id: baseline.records.collection.space_id,
           name: baseline.records.collection.name,
           position: baseline.records.collection.position,
           created_at: baseline.records.collection.created_at,
           updated_at: baseline.records.collection.updated_at,
-        }).eq("id", userB.ownedCollectionId).eq("user_id", userB.userId).select("id");
-        requireOneRow(restored, "Collection");
+        }).eq("id", current.collection.id)
+          .eq("user_id", current.collection.user_id)
+          .eq("space_id", current.collection.space_id)
+          .eq("name", current.collection.name)
+          .eq("position", current.collection.position)
+          .eq("created_at", current.collection.created_at)
+          .eq("updated_at", current.collection.updated_at)
+          .select("id");
+        requireOptimisticRestorationRow(restored, "Collection");
       }
-      if (JSON.stringify(current.link) !== JSON.stringify(baseline.records.link)) {
-        const restored = await b.client.from("links").update({
+      if (plan.restoreRecords.includes("link")) {
+        let query = b.client.from("links").update({
           collection_id: baseline.records.link.collection_id,
           url: baseline.records.link.url,
           title: baseline.records.link.title,
@@ -824,27 +974,50 @@ async function verifyTwoUserRls(
           position: baseline.records.link.position,
           created_at: baseline.records.link.created_at,
           updated_at: baseline.records.link.updated_at,
-        }).eq("id", userB.ownedLinkId).eq("user_id", userB.userId).select("id");
-        requireOneRow(restored, "Link");
+        }).eq("id", current.link.id)
+          .eq("user_id", current.link.user_id)
+          .eq("collection_id", current.link.collection_id)
+          .eq("url", current.link.url)
+          .eq("title", current.link.title)
+          .eq("description", current.link.description)
+          .eq("position", current.link.position)
+          .eq("created_at", current.link.created_at)
+          .eq("updated_at", current.link.updated_at);
+        query = current.link.favicon_url === null
+          ? query.is("favicon_url", null)
+          : query.eq("favicon_url", current.link.favicon_url);
+        const restored = await query.select("id");
+        requireOptimisticRestorationRow(restored, "Link");
       }
-      const currentSync = await loadSyncState();
-      if (JSON.stringify(currentSync) !== JSON.stringify(baseline.sync)) {
+      let observedSyncForRestore = currentSync;
+      if (plan.restoreRecords.length > 0) {
+        const afterRecordRepairs = await loadSyncState();
+        if (afterRecordRepairs.revision !==
+              currentSync.revision + plan.restoreRecords.length) {
+          throw new ConcurrentFixtureMutationError();
+        }
+        observedSyncForRestore = afterRecordRepairs;
+      }
+      if (plan.restoreSync || plan.restoreRecords.length > 0) {
         const restored = await b.client.from("workspace_sync_state").update({
           revision: baseline.sync.revision,
           updated_at: baseline.sync.updated_at,
-        }).eq("user_id", userB.userId).select("user_id");
-        requireOneRow(restored, "Workspace sync state");
+        }).eq("user_id", userB.userId)
+          .eq("revision", observedSyncForRestore.revision)
+          .eq("updated_at", observedSyncForRestore.updated_at)
+          .select("user_id");
+        requireOptimisticRestorationRow(restored, "Workspace sync state");
       }
     },
     verifyRestored: async (baseline) => {
       const restoredWorkspace = await b.repository.load();
-      assertIsolated(restoredWorkspace, userB, userA);
       const restoredRecords = targetRecords(restoredWorkspace);
       const restoredSync = await loadSyncState();
       if (JSON.stringify(restoredRecords) !== JSON.stringify(baseline.records) ||
           JSON.stringify(restoredSync) !== JSON.stringify(baseline.sync)) {
-        throw new Error("Cross-user RLS state was not exactly restored");
+        throw new ConcurrentFixtureMutationError();
       }
+      assertIsolated(restoredWorkspace, userB, userA);
     },
     recordCleanupStatus,
   });
@@ -948,12 +1121,7 @@ export async function runMcpFacadeLiveAcceptance(options: {
   signingKeyPath: string;
   repositoryRoot: string;
 }) {
-  let cleanupFailed = false;
-  const recordCleanupStatus = (status: CleanupStatus) => {
-    cleanupFailed ||= status.cleanupFailed;
-  };
-  try {
-    return await withSuppressedOutput(async () => {
+  return withLiveCleanupCategory(async (recordCleanupStatus) => {
     const starts = await Promise.allSettled(options.fixture.users.map(async (user) => {
       await verifySupabaseSubject(options.fixture, user);
       return authorizeWithStorageState(
@@ -993,10 +1161,5 @@ export async function runMcpFacadeLiveAcceptance(options: {
       },
       recordCleanupStatus,
     );
-    });
-  } catch {
-    throw new Error(cleanupFailed
-      ? "Secret-safe live facade acceptance failed: cleanupFailed"
-      : "Secret-safe live facade acceptance failed");
-  }
+  });
 }

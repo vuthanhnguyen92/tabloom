@@ -187,6 +187,7 @@ fixture shape is:
   "resource": "https://tabloom-mcp.vercel.app",
   "supabaseUrl": "https://tctjlsvfufzxhauhywsm.supabase.co",
   "supabaseAnonKey": "SUPABASE_PUBLIC_ANON_KEY_VALUE",
+  "quiescentAcceptanceAccounts": true,
   "users": [
     {
       "label": "user-a",
@@ -215,6 +216,11 @@ must use Playwright's JSON `{ "cookies": [], "origins": [] }` schema and hold
 an already human-authenticated browser session for its distinct Google test
 user. Each user must independently own the named space, collection, and link;
 all six record UUIDs must be distinct.
+`quiescentAcceptanceAccounts` is a required version-1 operator assertion: both
+accounts and all six records are dedicated to this acceptance run, and no
+browser, extension, sync client, script, or person may use or edit them from
+fixture capture until the run finishes. Do not run this gate when exclusive
+use cannot be guaranteed.
 
 The signing-key path is intentionally separate from the general fixture. It is
 an especially sensitive, operator-only copy of the currently active production
@@ -273,10 +279,17 @@ field to its already stored value. Each SDK call must return zero affected rows,
 and User B must reload all three original records unchanged. Because even a
 no-op update can fire revision triggers if RLS is broken, the gate first captures
 all three records plus User B's exact `workspace_sync_state` revision and
-`updated_at`. In mandatory cleanup, User B restores any changed record through
-the hardened owner client, restores the exact captured sync revision/timestamp
-after those trigger-producing repairs, and re-reads both records and sync state
-for exact equality. Cleanup denial or mismatch is a categorical fatal result;
+`updated_at`. Before any repair it re-reads every target and sync state. It
+restores only the exact timestamp/revision drift attributable to returned
+no-op writes, through User B's hardened owner client, with equality
+preconditions on every observed business/ownership/relationship field and on
+the observed timestamps/revision. A changed field before repair, or a
+zero-row optimistic repair caused by a change between read and write, produces
+the fixed `concurrentFixtureMutation` category and is never overwritten or
+rolled back. If all denied writes returned zero, any drift is treated as
+concurrent and no repair is attempted. After attributable repairs the gate
+re-reads the records and sync state for exact baseline equality. Cleanup denial,
+concurrent mutation, or mismatch is a categorical fatal result;
 the operator must stop rather than proceed with a possibly drifted fixture.
 Every Supabase Auth and repository request uses a
 silent SDK fetch wrapper confined to the exact approved production origin,

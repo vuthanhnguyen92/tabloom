@@ -42,9 +42,13 @@ import {
   createExactSupabaseFetch,
   loadLiveAcceptanceFixture,
   parseLiveAcceptanceFixture,
+  planRlsRestoration,
+  recordLiveProbeReport,
+  requireOptimisticRestorationRow,
   runRestorableRlsWriteCheck,
   verifyActiveBearerControlsAndMismatch,
   verifySubjectMismatchBearer,
+  withLiveCleanupCategory,
 } from "../e2e/helpers/mcp-facade-live";
 
 const RESOURCE = "https://tabloom-mcp.example.com";
@@ -136,12 +140,17 @@ function successfulProbeHarness(options: {
   listenerCloseError?: Error;
   failReportCall?: number;
   invalidReadiness?: boolean;
+  invalidFirstTokenResponse?: boolean;
+  firstVerificationError?: Error;
+  refreshFailure?: "resolved" | "throw" | "invalid";
+  cleanupReject?: boolean;
 } = {}) {
   const reports: Array<Record<string, unknown>> = [];
   let reportCalls = 0;
   let refreshCalls = 0;
   let mcpCalls = 0;
   let revokeCalls = 0;
+  const revokedTokens: string[] = [];
   const request = async (url: string, init?: RequestInit) => {
     if (url.endsWith("/.well-known/oauth-protected-resource")) {
       return jsonResponse(200, PROTECTED_RESOURCE);
@@ -159,12 +168,24 @@ function successfulProbeHarness(options: {
       const refresh = new URLSearchParams(String(init?.body))
         .get("grant_type") === "refresh_token";
       if (!refresh) {
+        if (options.invalidFirstTokenResponse) {
+          return jsonResponse(200, { access_token: "first-access" });
+        }
         return jsonResponse(200, {
           access_token: "first-access",
           refresh_token: "first-refresh",
         });
       }
       refreshCalls += 1;
+      if (options.refreshFailure === "throw") {
+        throw new Error("private refresh transport detail");
+      }
+      if (options.refreshFailure === "resolved") {
+        return jsonResponse(503, { error: "temporarily_unavailable" });
+      }
+      if (options.refreshFailure === "invalid") {
+        return jsonResponse(200, { access_token: "private-invalid-rotated" });
+      }
       return refreshCalls === 1
         ? jsonResponse(200, {
           access_token: "rotated-access",
@@ -174,11 +195,12 @@ function successfulProbeHarness(options: {
     }
     if (url.endsWith("/oauth/revoke")) {
       revokeCalls += 1;
-      return jsonResponse(200);
+      revokedTokens.push(String(new URLSearchParams(String(init?.body)).get("token")));
+      return jsonResponse(options.cleanupReject ? 503 : 200);
     }
     if (url.endsWith("/api/mcp")) {
       mcpCalls += 1;
-      if (mcpCalls > 1) return jsonResponse(401);
+      if (revokeCalls > 0) return jsonResponse(401);
       return jsonResponse(200, options.invalidReadiness
         ? { jsonrpc: "2.0", id: 1, error: { code: -32603 } }
         : serviceStatusResponse(1));
@@ -187,6 +209,7 @@ function successfulProbeHarness(options: {
   };
   return {
     reports,
+    revokedTokens,
     counts: () => ({ mcpCalls, revokeCalls }),
     probeOptions: {
       env: { NODE_ENV: "test", TABLOOM_MCP_RESOURCE_URL: RESOURCE },
@@ -204,11 +227,16 @@ function successfulProbeHarness(options: {
         },
       }),
       handoffAuthorization: async () => undefined,
-      verifyAccessToken: async () => ({
+      verifyAccessToken: async (token: string) => {
+        if (token === "first-access" && options.firstVerificationError) {
+          throw options.firstVerificationError;
+        }
+        return ({
         key: {} as CryptoKey,
         protectedHeader: { alg: "ES256" },
         payload: { iss: ISSUER, aud: RESOURCE, scope: SCOPE },
-      }),
+        });
+      },
       writeReport: async (report: Record<string, unknown>) => {
         reportCalls += 1;
         if (reportCalls === options.failReportCall) {
@@ -394,6 +422,11 @@ describe("MCP OAuth readiness probe", () => {
   });
 
   it.each([
+    {
+      name: "invalid first token response after an access token was issued",
+      options: { invalidFirstTokenResponse: true },
+      expected: "invalid token pair",
+    },
     {
       name: "JSON-RPC error",
       body: { jsonrpc: "2.0", id: 7, error: { code: -32603 } },
@@ -694,12 +727,52 @@ describe("MCP OAuth readiness probe", () => {
     ))
       .rejects.toThrow(expected);
     expect(harness.counts()).toEqual({ mcpCalls: 2, revokeCalls: 1 });
+    expect(harness.revokedTokens).toEqual(["rotated-access"]);
     expect(harness.reports.at(-1)).toMatchObject({
       cleanupFailed: false,
       mcpAfterRevocationResult: "unauthorized",
       revocationResult: "success",
       pass: false,
     });
+  });
+
+  it.each([
+    {
+      name: "first access-token verification",
+      options: { firstVerificationError: new Error("private first-token detail") },
+      expected: "private first-token detail",
+    },
+    {
+      name: "resolved refresh exchange error",
+      options: { refreshFailure: "resolved" as const },
+      expected: "Refresh-token exchange failed",
+    },
+    {
+      name: "thrown refresh exchange error",
+      options: { refreshFailure: "throw" as const },
+      expected: "private refresh transport detail",
+    },
+    {
+      name: "invalid refresh exchange response",
+      options: { refreshFailure: "invalid" as const },
+      expected: "invalid token pair",
+    },
+  ])("cleans the first grant after $name", async ({ options, expected }) => {
+    const harness = successfulProbeHarness(options);
+    await expect(beginProbeAcceptance(
+      harness.probeOptions as Parameters<typeof beginProbeAcceptance>[0],
+    )).rejects.toThrow(expected);
+    expect(harness.counts()).toEqual({ mcpCalls: 1, revokeCalls: 1 });
+    expect(harness.revokedTokens).toEqual(["first-access"]);
+    expect(harness.reports.at(-1)).toMatchObject({
+      cleanupFailed: false,
+      mcpAfterRevocationResult: "unauthorized",
+      revocationResult: "success",
+      pass: false,
+    });
+    expect(JSON.stringify(harness.reports)).not.toMatch(
+      /first-access|first-refresh|private-invalid-rotated|private .* detail/i,
+    );
   });
 
   it("returns a fixed nonzero CLI error without echoing unexpected details", async () => {
@@ -927,6 +1000,7 @@ describe("live MCP facade acceptance fixture schema", () => {
       resource: "https://tabloom-mcp.vercel.app",
       supabaseUrl: "https://tctjlsvfufzxhauhywsm.supabase.co",
       supabaseAnonKey: "public-anon-key",
+      quiescentAcceptanceAccounts: true,
       users: [
         {
           label: "user-a",
@@ -969,6 +1043,10 @@ describe("live MCP facade acceptance fixture schema", () => {
     expect(() => parseLiveAcceptanceFixture({
       ...validFixture(directory),
       subjectMismatchRejected: true,
+    }, { repositoryRoot: resolve(".") })).toThrow();
+    expect(() => parseLiveAcceptanceFixture({
+      ...validFixture(directory),
+      quiescentAcceptanceAccounts: false,
     }, { repositoryRoot: resolve(".") })).toThrow();
     const duplicate = validFixture(directory);
     duplicate.users[1]!.userId = duplicate.users[0]!.userId;
@@ -1209,6 +1287,31 @@ describe("live MCP facade acceptance fixture schema", () => {
     expect(JSON.stringify(statuses)).not.toContain("private-cleanup-detail");
   });
 
+  it("surfaces pre-phase cleanup failure categorically without primary or cleanup detail", async () => {
+    const harness = successfulProbeHarness({
+      firstVerificationError: new Error("private primary detail"),
+      cleanupReject: true,
+    });
+    const reports: Array<Record<string, unknown>> = [];
+    let surfaced = "";
+    try {
+      await withLiveCleanupCategory(async (recordCleanupStatus) => {
+        await beginProbeAcceptance({
+          ...harness.probeOptions,
+          writeReport: async (report: Record<string, unknown>) => {
+            recordLiveProbeReport(report, reports, recordCleanupStatus);
+          },
+        } as Parameters<typeof beginProbeAcceptance>[0]);
+      });
+    } catch (error) {
+      surfaced = String((error as Error).message);
+    }
+    expect(harness.counts()).toEqual({ mcpCalls: 1, revokeCalls: 1 });
+    expect(reports.at(-1)).toMatchObject({ cleanupFailed: true, pass: false });
+    expect(surfaced).toBe("Secret-safe live facade acceptance failed: cleanupFailed");
+    expect(surfaced).not.toMatch(/private primary|transport|access|refresh/i);
+  });
+
   it("cleans an acquired phase when browser context close fails", async () => {
     const events: string[] = [];
     const statuses: Array<{ cleanupFailed: boolean }> = [];
@@ -1270,6 +1373,152 @@ describe("live MCP facade acceptance fixture schema", () => {
     })).rejects.toThrow("cross-user no-op returned rows");
     expect(state).toEqual(original);
     expect(statuses).toEqual([{ cleanupFailed: false }]);
+  });
+
+  it("does not overwrite a concurrent fixture mutation observed before restoration", async () => {
+    const original = {
+      records: {
+        space: { id: "space-b", name: "Space B", updated_at: "before" },
+        collection: { id: "collection-b", space_id: "space-b", name: "Collection B", updated_at: "before" },
+        link: { id: "link-b", collection_id: "collection-b", title: "Link B", updated_at: "before" },
+      },
+      sync: { revision: 7, updated_at: "before" },
+    };
+    const state = structuredClone(original);
+    const statuses: Array<{
+      cleanupFailed: boolean;
+      concurrentFixtureMutation?: boolean;
+    }> = [];
+    let overwriteAttempts = 0;
+    await expect(runRestorableRlsWriteCheck({
+      capture: async () => structuredClone(original),
+      attempt: async () => {
+        state.records.space.name = "concurrent operator edit";
+        state.records.space.updated_at = "concurrent";
+        state.sync = { revision: 11, updated_at: "concurrent" };
+        throw new Error("broken RLS returned rows");
+      },
+      restore: async (baseline) => {
+        planRlsRestoration({
+          baseline,
+          current: state,
+          returnedRecords: ["space", "collection", "link"],
+        });
+        overwriteAttempts += 1;
+      },
+      verifyRestored: async () => undefined,
+      recordCleanupStatus: (status) => { statuses.push(status); },
+    })).rejects.toThrow("concurrentFixtureMutation");
+    expect(overwriteAttempts).toBe(0);
+    expect(state.records.space.name).toBe("concurrent operator edit");
+    expect(state.sync.revision).toBe(11);
+    expect(statuses).toEqual([{
+      cleanupFailed: true,
+      concurrentFixtureMutation: true,
+    }]);
+  });
+
+  it("treats any drift after zero returned cross-user writes as concurrent", () => {
+    const baseline = {
+      records: {
+        space: { id: "space-b", name: "Space B", updated_at: "before" },
+        collection: { id: "collection-b", space_id: "space-b", updated_at: "before" },
+        link: { id: "link-b", collection_id: "collection-b", updated_at: "before" },
+      },
+      sync: { revision: 7, updated_at: "before" },
+    };
+    const current = structuredClone(baseline);
+    current.records.link.updated_at = "unexpected";
+    expect(() => planRlsRestoration({
+      baseline,
+      current,
+      returnedRecords: [],
+    })).toThrow("concurrentFixtureMutation");
+  });
+
+  it("does not overwrite or roll back a concurrent mutation between read and restore", async () => {
+    const original = {
+      records: {
+        space: { id: "space-b", name: "Space B", updated_at: "before" },
+        collection: { id: "collection-b", space_id: "space-b", name: "Collection B", updated_at: "before" },
+        link: { id: "link-b", collection_id: "collection-b", title: "Link B", updated_at: "before" },
+      },
+      sync: { revision: 7, updated_at: "before" },
+    };
+    const state = structuredClone(original);
+    const statuses: Array<{
+      cleanupFailed: boolean;
+      concurrentFixtureMutation?: boolean;
+    }> = [];
+    await expect(runRestorableRlsWriteCheck({
+      capture: async () => structuredClone(original),
+      attempt: async () => {
+        state.records.space.updated_at = "test-space";
+        state.records.collection.updated_at = "test-collection";
+        state.records.link.updated_at = "test-link";
+        state.sync = { revision: 10, updated_at: "test-sync" };
+        throw new Error("broken RLS returned rows");
+      },
+      restore: async (baseline) => {
+        const observed = structuredClone(state);
+        planRlsRestoration({
+          baseline,
+          current: observed,
+          returnedRecords: ["space", "collection", "link"],
+        });
+        state.records.space.name = "concurrent operator edit";
+        state.records.space.updated_at = "concurrent";
+        state.sync = { revision: 11, updated_at: "concurrent" };
+        requireOptimisticRestorationRow({ error: null, data: [] }, "Space");
+        state.records.space = structuredClone(baseline.records.space);
+        state.sync = structuredClone(baseline.sync);
+      },
+      verifyRestored: async () => undefined,
+      recordCleanupStatus: (status) => { statuses.push(status); },
+    })).rejects.toThrow("concurrentFixtureMutation");
+    expect(state.records.space.name).toBe("concurrent operator edit");
+    expect(state.sync.revision).toBe(11);
+    expect(statuses).toEqual([{
+      cleanupFailed: true,
+      concurrentFixtureMutation: true,
+    }]);
+  });
+
+  it("settles both grants even when RLS restoration aborts on concurrency", async () => {
+    const events: string[] = [];
+    const baseline = {
+      records: {
+        space: { id: "space-b", name: "Space B", updated_at: "before" },
+        collection: { id: "collection-b", space_id: "space-b", updated_at: "before" },
+        link: { id: "link-b", collection_id: "collection-b", updated_at: "before" },
+      },
+      sync: { revision: 7, updated_at: "before" },
+    };
+    await expect(withLiveCleanupCategory(async (recordCleanupStatus) => {
+      await completeLiveAcceptancePhases([
+        { complete: async () => { events.push("revoke-a"); } },
+        { complete: async () => { events.push("revoke-b"); } },
+      ], async () => {
+        await runRestorableRlsWriteCheck({
+          capture: async () => structuredClone(baseline),
+          attempt: async () => undefined,
+          restore: async (captured) => {
+            const current = structuredClone(captured);
+            current.records.space.name = "concurrent operator edit";
+            planRlsRestoration({
+              baseline: captured,
+              current,
+              returnedRecords: [],
+            });
+          },
+          verifyRestored: async () => undefined,
+          recordCleanupStatus,
+        });
+      }, recordCleanupStatus);
+    })).rejects.toThrow(
+      "Secret-safe live facade acceptance failed: concurrentFixtureMutation",
+    );
+    expect(events.sort()).toEqual(["revoke-a", "revoke-b"]);
   });
 
   it("loads only private regular JSON fixture and storage-state files outside the repository", async () => {

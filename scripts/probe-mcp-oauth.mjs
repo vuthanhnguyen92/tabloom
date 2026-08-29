@@ -724,38 +724,19 @@ export async function beginProbeAcceptance({
           }),
         }),
         "Authorization-code exchange",
-      );
-    const first = tokenPair(firstBody, "Authorization-code exchange");
-    const firstVerified = await verifyAccessTokenFn(first.accessToken, {
-        issuer: discovery.issuer,
-        resource: discovery.resource,
-        jwks,
-      });
-
-    const rotatedBody = successfulJson(
-        await safeRequest(metadata.token_endpoint, {
-          method: "POST",
-          headers: { "content-type": "application/x-www-form-urlencoded" },
-          body: new URLSearchParams({
-            grant_type: "refresh_token",
-            refresh_token: first.refreshToken,
-            client_id: registration.client_id,
-            resource: expectedResource,
-            scope: REQUIRED_SCOPE,
-          }),
-        }),
-        "Refresh-token exchange",
-      );
-    const rotated = tokenPair(rotatedBody, "Refresh-token exchange");
-    const refreshRotated =
-      rotated.accessToken !== first.accessToken &&
-      rotated.refreshToken !== first.refreshToken;
+    );
+    let currentAccessToken = typeof firstBody.access_token === "string" &&
+        firstBody.access_token
+      ? firstBody.access_token
+      : undefined;
+    let firstVerified;
     let rotatedVerified;
+    let refreshRotated = false;
     let refreshReplayRejected = false;
     let mcpContractMatch = false;
     let mcpBeforeRevocationResult = "server_error";
     let cleanupPromise;
-    cleanupActiveGrant = ({ forceFailure = false } = {}) => {
+    const createActiveGrantCleanup = () => ({ forceFailure = false } = {}) => {
       if (cleanupPromise) return cleanupPromise;
       cleanupPromise = (async () => {
         let cleanupFailed = false;
@@ -766,7 +747,7 @@ export async function beginProbeAcceptance({
             method: "POST",
             headers: { "content-type": "application/x-www-form-urlencoded" },
             body: new URLSearchParams({
-              token: rotated.accessToken,
+              token: currentAccessToken,
               token_type_hint: "access_token",
             }),
           });
@@ -778,7 +759,7 @@ export async function beginProbeAcceptance({
         try {
           const afterRevocation = await safeRequest(
             `${expectedResource}/api/mcp`,
-            mcpRequest(rotated.accessToken, 2),
+            mcpRequest(currentAccessToken, 2),
           );
           mcpAfterRevocationResult = classifyHttpStatus(
             afterRevocation.status,
@@ -821,6 +802,35 @@ export async function beginProbeAcceptance({
       })();
       return cleanupPromise;
     };
+    if (currentAccessToken) cleanupActiveGrant = createActiveGrantCleanup();
+
+    const first = tokenPair(firstBody, "Authorization-code exchange");
+
+    firstVerified = await verifyAccessTokenFn(first.accessToken, {
+        issuer: discovery.issuer,
+        resource: discovery.resource,
+        jwks,
+      });
+
+    const rotatedBody = successfulJson(
+        await safeRequest(metadata.token_endpoint, {
+          method: "POST",
+          headers: { "content-type": "application/x-www-form-urlencoded" },
+          body: new URLSearchParams({
+            grant_type: "refresh_token",
+            refresh_token: first.refreshToken,
+            client_id: registration.client_id,
+            resource: expectedResource,
+            scope: REQUIRED_SCOPE,
+          }),
+        }),
+        "Refresh-token exchange",
+      );
+    const rotated = tokenPair(rotatedBody, "Refresh-token exchange");
+    currentAccessToken = rotated.accessToken;
+    refreshRotated =
+      rotated.accessToken !== first.accessToken &&
+      rotated.refreshToken !== first.refreshToken;
 
     rotatedVerified = await verifyAccessTokenFn(rotated.accessToken, {
       issuer: discovery.issuer,
