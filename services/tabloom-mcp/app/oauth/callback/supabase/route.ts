@@ -74,6 +74,8 @@ export async function GET(request: Request): Promise<Response> {
       supabaseRefreshToken: session.refreshToken,
       supabaseAccessTokenExpiresAt: session.accessTokenExpiresAt,
       csrfNonce: randomBytes(32).toString("base64url"),
+      authorizationCodeJti: randomBytes(32).toString("base64url"),
+      grantId: randomBytes(32).toString("base64url"),
     }, config.encryptionKeys, lifetimeSeconds, now);
 
     const headers = noStoreHeaders({

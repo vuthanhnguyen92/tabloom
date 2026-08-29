@@ -19,6 +19,8 @@ export type ConsentSession = {
   supabaseRefreshToken: string;
   supabaseAccessTokenExpiresAt: number;
   csrfNonce: string;
+  authorizationCodeJti: string;
+  grantId: string;
 };
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -89,13 +91,18 @@ function isConsentSession(value: unknown): value is ConsentSession {
     "supabaseRefreshToken",
     "supabaseAccessTokenExpiresAt",
     "csrfNonce",
+    "authorizationCodeJti",
+    "grantId",
   ]) &&
     isAuthorizationRequest(value.request) &&
     typeof value.userId === "string" && UUID_PATTERN.test(value.userId) &&
     isBoundedString(value.supabaseAccessToken) &&
     isBoundedString(value.supabaseRefreshToken) &&
     Number.isSafeInteger(value.supabaseAccessTokenExpiresAt) &&
-    typeof value.csrfNonce === "string" && NONCE_PATTERN.test(value.csrfNonce);
+    typeof value.csrfNonce === "string" && NONCE_PATTERN.test(value.csrfNonce) &&
+    typeof value.authorizationCodeJti === "string" && NONCE_PATTERN.test(value.authorizationCodeJti) &&
+    typeof value.grantId === "string" && NONCE_PATTERN.test(value.grantId) &&
+    value.authorizationCodeJti !== value.grantId;
 }
 
 function serializeCookie(name: string, value: string, maxAge: number): string {

@@ -44,6 +44,8 @@ const consent: ConsentSession = {
   supabaseRefreshToken: "secret-refresh-token",
   supabaseAccessTokenExpiresAt: NOW + 3600,
   csrfNonce: "n".repeat(43),
+  authorizationCodeJti: "j".repeat(43),
+  grantId: "g".repeat(43),
 };
 
 function uriWithLength(length: number): string {
@@ -199,11 +201,13 @@ describe("OAuth encrypted cookies", () => {
       supabaseRefreshToken: "r".repeat(40),
       supabaseAccessTokenExpiresAt: consent.supabaseAccessTokenExpiresAt,
       csrfNonce: consent.csrfNonce,
+      authorizationCodeJti: consent.authorizationCodeJti,
+      grantId: consent.grantId,
     });
-    const atLimit = await createConsentCookie(session(1924), keys, 600, NOW);
+    const atLimit = await createConsentCookie(session(1799), keys, 600, NOW);
 
     expect(Buffer.byteLength(atLimit, "utf8")).toBe(3_800);
-    await expect(createConsentCookie(session(1925), keys, 600, NOW))
+    await expect(createConsentCookie(session(1800), keys, 600, NOW))
       .rejects.toThrow("OAuth cookie exceeds storage limit");
   });
 });

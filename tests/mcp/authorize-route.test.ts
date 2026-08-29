@@ -438,6 +438,9 @@ describe("GET /oauth/callback/supabase", () => {
       supabaseRefreshToken: "supabase-refresh-token",
     });
     expect(consent.csrfNonce).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect(consent.authorizationCodeJti).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect(consent.grantId).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect(consent.authorizationCodeJti).not.toBe(consent.grantId);
     expect(response.headers.get("Location")).not.toMatch(/token|state|code/i);
   });
 
