@@ -1,0 +1,11 @@
+{
+  "name": "@tabloom/workspace",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./domain": "./domain.ts",
+    "./repository": "./repository.ts",
+    "./workspace-sync-repository": "./workspace-sync-repository.ts"
+  }
+}

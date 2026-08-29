@@ -2,6 +2,10 @@
   "name": "tabloom",
   "version": "0.1.0",
   "private": true,
+  "workspaces": [
+    "shared",
+    "services/*"
+  ],
   "engines": {
     "node": ">=22.13.0"
   },
