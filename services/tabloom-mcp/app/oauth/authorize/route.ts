@@ -4,13 +4,20 @@ import {
   validateAuthorizationRequest,
 } from "../../../src/oauth/authorization-request";
 import { resolveClient } from "../../../src/oauth/client-metadata";
+import { CimdUnavailableError } from "../../../src/oauth/cimd";
 import {
   OAuthCookieTooLargeError,
   createUpstreamStateCookie,
 } from "../../../src/oauth/cookies";
-import { createOAuthPersistence } from "../../../src/oauth/persistence";
+import {
+  createOAuthPersistence,
+  OAuthPersistenceUnavailableError,
+} from "../../../src/oauth/persistence";
 import { noStoreHeaders, oauthError, oauthJson } from "../../../src/oauth/responses";
-import { createUpstreamSupabaseAuth } from "../../../src/oauth/upstream-supabase";
+import {
+  createUpstreamSupabaseAuth,
+  UpstreamSupabaseAuthError,
+} from "../../../src/oauth/upstream-supabase";
 import {
   createOAuthAuditContext,
   emitOAuthAudit,
@@ -75,6 +82,13 @@ export async function GET(request: Request): Promise<Response> {
         ? redirectError(error.redirectUri, error.error, error.state)
         : oauthJson({ error: error.error }, 400), "client_error");
     }
+    if (error instanceof OAuthPersistenceUnavailableError ||
+        error instanceof CimdUnavailableError) {
+      return respond(
+        oauthError("temporarily_unavailable", 503),
+        "dependency_error",
+      );
+    }
     return respond(
       oauthError("server_error", 500, {}, audit.correlationId),
       "server_error",
@@ -103,10 +117,17 @@ export async function GET(request: Request): Promise<Response> {
         authorization.client.clientId,
       );
     }
-    return respond(redirectError(
-      authorization.redirectUri,
-      "temporarily_unavailable",
-      authorization.state,
-    ), "dependency_error", authorization.client.clientId);
+    if (error instanceof UpstreamSupabaseAuthError) {
+      return respond(redirectError(
+        authorization.redirectUri,
+        "temporarily_unavailable",
+        authorization.state,
+      ), "dependency_error", authorization.client.clientId);
+    }
+    return respond(
+      oauthError("server_error", 500, {}, audit.correlationId),
+      "server_error",
+      authorization.client.clientId,
+    );
   }
 }

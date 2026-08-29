@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 
-import { createClient } from "@supabase/supabase-js";
+import { AuthRetryableFetchError, createClient } from "@supabase/supabase-js";
 import { exportJWK, generateKeyPair, jwtDecrypt, jwtVerify, type JWK } from "jose";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -20,7 +20,12 @@ import {
   type RefreshTokenPayload,
 } from "../../services/tabloom-mcp/src/oauth/token-service";
 
-vi.mock("@supabase/supabase-js", () => ({ createClient: vi.fn() }));
+vi.mock("@supabase/supabase-js", async () => {
+  const actual = await vi.importActual<typeof import("@supabase/supabase-js")>(
+    "@supabase/supabase-js",
+  );
+  return { ...actual, createClient: vi.fn() };
+});
 vi.mock("../../services/tabloom-mcp/src/oauth/persistence", async () => {
   const actual = await vi.importActual<typeof import("../../services/tabloom-mcp/src/oauth/persistence")>(
     "../../services/tabloom-mcp/src/oauth/persistence",
@@ -544,6 +549,21 @@ describe("POST /oauth/token authorization_code", () => {
     expect(consumed).toEqual(new Set([consentSession.authorizationCodeJti]));
   });
 
+  it("returns 503 after consuming a code when getUser resolves with a retryable fetch error", async () => {
+    getUser.mockResolvedValue({
+      data: { user: null },
+      error: new AuthRetryableFetchError("network detail must stay private", 0),
+    });
+
+    const first = await tokenRequest();
+    const second = await tokenRequest();
+
+    await expectError(first, "temporarily_unavailable", 503);
+    await expectError(second, "invalid_grant");
+    expect(consumed).toEqual(new Set([consentSession.authorizationCodeJti]));
+    expect(getUser).toHaveBeenCalledTimes(1);
+  });
+
   it("never issues without durable replay protection", async () => {
     vi.mocked(createOAuthPersistence).mockReturnValue({
       ...persistence(),
@@ -721,6 +741,22 @@ describe("POST /oauth/token refresh_token", () => {
   it("burns the refresh JTI when a transient Supabase failure returns 503", async () => {
     const token = await refreshArtifact();
     refreshSession.mockRejectedValue(new Error("upstream unavailable with secret detail"));
+
+    const first = await refreshTokenRequest(token);
+    const second = await refreshTokenRequest(token);
+
+    await expectError(first, "temporarily_unavailable", 503);
+    await expectError(second, "invalid_grant");
+    expect(consumed).toEqual(new Set(["r".repeat(43)]));
+    expect(refreshSession).toHaveBeenCalledTimes(1);
+  });
+
+  it("burns the refresh JTI and returns 503 for a resolved retryable fetch error", async () => {
+    const token = await refreshArtifact();
+    refreshSession.mockResolvedValue({
+      data: { user: null, session: null },
+      error: new AuthRetryableFetchError("network detail must stay private", 503),
+    });
 
     const first = await refreshTokenRequest(token);
     const second = await refreshTokenRequest(token);

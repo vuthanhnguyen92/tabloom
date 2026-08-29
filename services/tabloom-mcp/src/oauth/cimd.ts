@@ -48,6 +48,13 @@ export class CimdFetchError extends Error {
   }
 }
 
+export class CimdUnavailableError extends CimdFetchError {
+  constructor(message = "CIMD client metadata is temporarily unavailable") {
+    super(message);
+    this.name = "CimdUnavailableError";
+  }
+}
+
 function ipv4Number(address: string): number | null {
   if (isIP(address) !== 4) return null;
   return address.split(".").reduce((result, octet) => (result * 256) + Number(octet), 0) >>> 0;
@@ -199,7 +206,7 @@ export function createCimdFetcher(dependencies: CimdFetcherDependencies = {}) {
     const timeoutPromise = new Promise<never>((_resolve, reject) => {
       timeout = setTimeout(() => {
         abortController.abort();
-        reject(new CimdFetchError("CIMD fetch timeout"));
+        reject(new CimdUnavailableError("CIMD fetch timeout"));
       }, CIMD_TIMEOUT_MS);
     });
 
@@ -237,7 +244,7 @@ export function createCimdFetcher(dependencies: CimdFetcherDependencies = {}) {
           signal: abortController.signal,
         });
       } catch {
-        throw new CimdFetchError();
+        throw new CimdUnavailableError();
       }
       if (abortController.signal.aborted) throw new CimdFetchError("CIMD fetch timeout");
       const document = await readJson(response, abortController.signal);

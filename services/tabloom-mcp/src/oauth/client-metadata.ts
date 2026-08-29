@@ -10,6 +10,13 @@ export type ValidatedClient = {
 
 export type ValidatedClientRegistration = Pick<ValidatedClient, "clientName" | "redirectUris">;
 
+export class InvalidOAuthClientError extends Error {
+  constructor() {
+    super("Invalid OAuth client");
+    this.name = "InvalidOAuthClientError";
+  }
+}
+
 type ClientMetadata = {
   client_name: unknown;
   redirect_uris: unknown;
@@ -147,15 +154,23 @@ export async function resolveClient(
     const expiresAt = stored?.expiresAt === null ? null : Date.parse(stored?.expiresAt ?? "");
     if (!stored || stored.clientId !== clientId ||
         (expiresAt !== null && (!Number.isFinite(expiresAt) || expiresAt <= now.getTime()))) {
-      throw new Error("Invalid OAuth client");
+      throw new InvalidOAuthClientError();
     }
-    const clientName = validateClientName(stored.clientName);
-    const redirectUris = validateRedirectUris(stored.redirectUris);
+    let clientName: string;
+    let redirectUris: readonly string[];
+    try {
+      clientName = validateClientName(stored.clientName);
+      redirectUris = validateRedirectUris(stored.redirectUris);
+    } catch {
+      throw new InvalidOAuthClientError();
+    }
     return Object.freeze({ clientId, clientName, redirectUris, source: "dcr" as const });
   }
 
-  if (!isValidCimdClientId(clientId)) throw new Error("Invalid OAuth client");
+  if (!isValidCimdClientId(clientId)) throw new InvalidOAuthClientError();
   const client = await (options.fetchCimd ?? fetchCimdClient)(clientId);
-  if (client.clientId !== clientId || client.source !== "cimd") throw new Error("Invalid OAuth client");
+  if (client.clientId !== clientId || client.source !== "cimd") {
+    throw new InvalidOAuthClientError();
+  }
   return client;
 }

@@ -29,7 +29,12 @@ import {
   type UpstreamSupabaseAuth,
 } from "../../services/tabloom-mcp/src/oauth/upstream-supabase";
 
-vi.mock("@supabase/supabase-js", () => ({ createClient: vi.fn() }));
+vi.mock("@supabase/supabase-js", async () => {
+  const actual = await vi.importActual<typeof import("@supabase/supabase-js")>(
+    "@supabase/supabase-js",
+  );
+  return { ...actual, createClient: vi.fn() };
+});
 vi.mock("../../services/tabloom-mcp/src/oauth/persistence", async () => {
   const actual = await vi.importActual<typeof import("../../services/tabloom-mcp/src/oauth/persistence")>(
     "../../services/tabloom-mcp/src/oauth/persistence",
@@ -401,8 +406,9 @@ describe("in-process authorization facade", () => {
       supabaseToken: "inner-access-b",
       innerExpiresAt: NOW + 600,
     }, config, NOW);
+    const userBClaims = decodeJwt(userBToken) as Record<string, unknown>;
     const substituted = await new SignJWT({
-      ...decodeJwt(userBToken),
+      ...userBClaims,
       sub: USER_A,
     })
       .setProtectedHeader({ alg: "ES256", kid: "signing-key", typ: "at+jwt" })

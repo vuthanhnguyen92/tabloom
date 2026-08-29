@@ -27,6 +27,21 @@ function response(overrides: Partial<CimdHttpResponse> = {}): CimdHttpResponse {
 }
 
 describe("CIMD hardened fetching", () => {
+  it("classifies a transport failure as retryable without exposing its details", async () => {
+    const fetchClient = createCimdFetcher({
+      resolve: async () => [{ address: "93.184.216.34", family: 4 }],
+      transport: async () => {
+        throw new Error("socket reset at private-host.example");
+      },
+    });
+
+    await expect(fetchClient(CLIENT_ID)).rejects.toMatchObject({
+      name: "CimdUnavailableError",
+      message: "CIMD client metadata is temporarily unavailable",
+    });
+    await expect(fetchClient(CLIENT_ID)).rejects.not.toThrow(/private-host|socket reset/i);
+  });
+
   it.each([
     [{ address: "93.184.216.34", family: 4 as const }],
     [{ address: "2606:4700:4700::1111", family: 6 as const }],

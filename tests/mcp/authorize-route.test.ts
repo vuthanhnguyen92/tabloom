@@ -10,10 +10,18 @@ import {
   readConsentSession,
   readUpstreamLoginState,
 } from "../../services/tabloom-mcp/src/oauth/cookies";
-import { fetchCimdClient } from "../../services/tabloom-mcp/src/oauth/cimd";
-import { createOAuthPersistence, type OAuthPersistence } from "../../services/tabloom-mcp/src/oauth/persistence";
+import {
+  CimdUnavailableError,
+  fetchCimdClient,
+} from "../../services/tabloom-mcp/src/oauth/cimd";
+import {
+  createOAuthPersistence,
+  OAuthPersistenceUnavailableError,
+  type OAuthPersistence,
+} from "../../services/tabloom-mcp/src/oauth/persistence";
 import {
   createUpstreamSupabaseAuth,
+  UpstreamSupabaseAuthError,
   type UpstreamSupabaseAuth,
 } from "../../services/tabloom-mcp/src/oauth/upstream-supabase";
 
@@ -223,11 +231,48 @@ describe("GET /oauth/authorize", () => {
     expect(getClient).not.toHaveBeenCalled();
   });
 
+  it("maps a typed DCR persistence outage to a non-redirecting temporarily_unavailable", async () => {
+    useFacadeEnvironment(true);
+    const store = persistence();
+    vi.spyOn(store, "getClient").mockRejectedValue(new OAuthPersistenceUnavailableError());
+    vi.mocked(createOAuthPersistence).mockReturnValue(store);
+    const auth = upstream();
+    vi.mocked(createUpstreamSupabaseAuth).mockReturnValue(auth);
+    const route = await authorizeRoute();
+
+    const response = await route.GET(new Request(authorizationUrl()));
+
+    expect(response.status).toBe(503);
+    expectNoStore(response);
+    expect(response.headers.get("X-Content-Type-Options")).toBe("nosniff");
+    expect(response.headers.get("Location")).toBeNull();
+    await expect(response.json()).resolves.toEqual({ error: "temporarily_unavailable" });
+    expect(auth.begin).not.toHaveBeenCalled();
+  });
+
+  it("maps a retryable CIMD transport failure to a non-redirecting temporarily_unavailable", async () => {
+    useFacadeEnvironment(true);
+    vi.mocked(createOAuthPersistence).mockReturnValue(persistence());
+    vi.mocked(fetchCimdClient).mockRejectedValue(new CimdUnavailableError());
+    const auth = upstream();
+    vi.mocked(createUpstreamSupabaseAuth).mockReturnValue(auth);
+    const route = await authorizeRoute();
+
+    const response = await route.GET(new Request(authorizationUrl(CIMD_CLIENT_ID)));
+
+    expect(response.status).toBe(503);
+    expectNoStore(response);
+    expect(response.headers.get("X-Content-Type-Options")).toBe("nosniff");
+    expect(response.headers.get("Location")).toBeNull();
+    await expect(response.json()).resolves.toEqual({ error: "temporarily_unavailable" });
+    expect(auth.begin).not.toHaveBeenCalled();
+  });
+
   it("maps upstream failures to a safe client redirect", async () => {
     useFacadeEnvironment(true);
     vi.mocked(createOAuthPersistence).mockReturnValue(persistence());
     const auth = upstream();
-    vi.mocked(auth.begin).mockRejectedValue(new Error("provider detail and token"));
+    vi.mocked(auth.begin).mockRejectedValue(new UpstreamSupabaseAuthError());
     vi.mocked(createUpstreamSupabaseAuth).mockReturnValue(auth);
     const route = await authorizeRoute();
 
@@ -238,6 +283,44 @@ describe("GET /oauth/authorize", () => {
     expect(new URL(location).searchParams.get("error")).toBe("temporarily_unavailable");
     expect(new URL(location).searchParams.get("state")).toBe("original-client-state");
     expect(location).not.toContain("provider+detail");
+  });
+
+  it("returns a correlated server_error for an unexpected post-validation exception", async () => {
+    useFacadeEnvironment(true);
+    vi.mocked(createOAuthPersistence).mockReturnValue(persistence());
+    const auth = upstream();
+    const privateDetail = "raw-provider-token at https://private.example/callback";
+    vi.mocked(auth.begin).mockRejectedValue(new Error(privateDetail));
+    vi.mocked(createUpstreamSupabaseAuth).mockReturnValue(auth);
+    const audit = vi.spyOn(console, "info").mockImplementation(() => undefined);
+    const route = await authorizeRoute();
+
+    const response = await route.GET(new Request(authorizationUrl()));
+
+    expect(response.status).toBe(500);
+    expectNoStore(response);
+    expect(response.headers.get("X-Content-Type-Options")).toBe("nosniff");
+    expect(response.headers.get("Location")).toBeNull();
+    const body = await response.json() as Record<string, unknown>;
+    expect(Object.keys(body).sort()).toEqual(["correlation_id", "error"]);
+    expect(body.error).toBe("server_error");
+    const event = audit.mock.calls.at(-1)?.[0] as Record<string, unknown>;
+    expect(event).toMatchObject({
+      routeCategory: "authorize",
+      resultClass: "server_error",
+      correlationId: body.correlation_id,
+    });
+    expect(Object.keys(event).sort()).toEqual([
+      "clientHash",
+      "correlationId",
+      "latencyBucket",
+      "resultClass",
+      "routeCategory",
+    ]);
+    const serialized = `${JSON.stringify(body)}${JSON.stringify(event)}`;
+    expect(serialized).not.toContain(privateDetail);
+    expect(serialized).not.toContain(DCR_CLIENT_ID);
+    expect(serialized).not.toContain(REDIRECT_URI);
   });
 
   it("returns a fixed error instead of redirecting upstream when transaction state exceeds the cookie limit", async () => {

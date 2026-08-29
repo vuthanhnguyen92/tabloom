@@ -5,7 +5,12 @@ import {
   validateAuthorizationRequest,
   verifyS256,
 } from "../../services/tabloom-mcp/src/oauth/authorization-request";
-import type { ValidatedClient } from "../../services/tabloom-mcp/src/oauth/client-metadata";
+import {
+  InvalidOAuthClientError,
+  type ValidatedClient,
+} from "../../services/tabloom-mcp/src/oauth/client-metadata";
+import { CimdUnavailableError } from "../../services/tabloom-mcp/src/oauth/cimd";
+import { OAuthPersistenceUnavailableError } from "../../services/tabloom-mcp/src/oauth/persistence";
 
 const RESOURCE = "https://tabloom-mcp.vercel.app";
 const CLIENT_ID = "5c177e69-8954-4c57-a777-07c732513bea";
@@ -33,7 +38,7 @@ function validParams(overrides: Record<string, string> = {}): URLSearchParams {
 }
 
 const resolveClient = async (clientId: string) => {
-  if (clientId !== CLIENT_ID) throw new Error("unknown client");
+  if (clientId !== CLIENT_ID) throw new InvalidOAuthClientError();
   return CLIENT;
 };
 
@@ -87,6 +92,33 @@ describe("authorization request validation", () => {
     })).rejects.toMatchObject({ error: "invalid_client", redirectUri: undefined });
   });
 
+  it("preserves a typed DCR persistence outage without trusting the redirect", async () => {
+    const unavailable = new OAuthPersistenceUnavailableError();
+
+    await expect(validateAuthorizationRequest(validParams(), {
+      resolveClient: async () => { throw unavailable; },
+      resource: RESOURCE,
+    })).rejects.toBe(unavailable);
+  });
+
+  it("preserves a retryable CIMD transport failure without trusting the redirect", async () => {
+    const unavailable = new CimdUnavailableError();
+
+    await expect(validateAuthorizationRequest(validParams({ client_id: "https://client.example/oauth.json" }), {
+      resolveClient: async () => { throw unavailable; },
+      resource: RESOURCE,
+    })).rejects.toBe(unavailable);
+  });
+
+  it("preserves an unexpected resolver exception for correlated server_error handling", async () => {
+    const unexpected = new Error("programming failure with private detail");
+
+    await expect(validateAuthorizationRequest(validParams(), {
+      resolveClient: async () => { throw unexpected; },
+      resource: RESOURCE,
+    })).rejects.toBe(unexpected);
+  });
+
   it("does not expose an unregistered redirect URI", async () => {
     await expect(validateAuthorizationRequest(validParams({ redirect_uri: "https://attacker.example/callback" }), {
       resolveClient,
@@ -110,7 +142,11 @@ describe("authorization request validation", () => {
     ["multiple scopes", { scope: "tabloom:workspace openid" }, "invalid_scope"],
   ])("returns a redirect-safe error for invalid %s", async (_label, overrides, error) => {
     await expect(validateAuthorizationRequest(validParams(overrides), { resolveClient, resource: RESOURCE }))
-      .rejects.toMatchObject({ error, redirectUri: REDIRECT_URI, state: overrides.state ?? "opaque-client-state" });
+      .rejects.toMatchObject({
+        error,
+        redirectUri: REDIRECT_URI,
+        state: "state" in overrides ? overrides.state : "opaque-client-state",
+      });
   });
 });
 

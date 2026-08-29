@@ -1,6 +1,8 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 
-import type { ValidatedClient } from "./client-metadata";
+import { CimdFetchError, CimdUnavailableError } from "./cimd";
+import { InvalidOAuthClientError, type ValidatedClient } from "./client-metadata";
+import { OAuthPersistenceUnavailableError } from "./persistence";
 
 export type ValidatedAuthorizationRequest = {
   client: ValidatedClient;
@@ -71,8 +73,13 @@ export async function validateAuthorizationRequest(
   let client: ValidatedClient;
   try {
     client = await options.resolveClient(clientId);
-  } catch {
-    throw unsafeError("invalid_client");
+  } catch (error) {
+    if (error instanceof OAuthPersistenceUnavailableError ||
+        error instanceof CimdUnavailableError) throw error;
+    if (error instanceof InvalidOAuthClientError || error instanceof CimdFetchError) {
+      throw unsafeError("invalid_client");
+    }
+    throw error;
   }
   if (client.clientId !== clientId) throw unsafeError("invalid_client");
   if (!client.redirectUris.includes(redirectUri)) throw unsafeError("invalid_request");

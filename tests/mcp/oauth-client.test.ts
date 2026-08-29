@@ -159,6 +159,11 @@ describe("client resolution", () => {
     expiresAt: null,
   };
 
+  it("classifies a syntactically invalid identifier as an invalid client", async () => {
+    await expect(resolveClient("not-a-client", persistenceWith(null)))
+      .rejects.toMatchObject({ name: "InvalidOAuthClientError" });
+  });
+
   it("resolves an opaque UUID only through persistence", async () => {
     await expect(resolveClient(stored.clientId, persistenceWith(stored), {
       fetchCimd: async () => { throw new Error("must not fetch"); },

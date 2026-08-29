@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 
-import { createClient } from "@supabase/supabase-js";
+import { createClient, isAuthRetryableFetchError } from "@supabase/supabase-js";
 
 import { openArtifact, sealArtifact } from "../auth/artifacts";
 import type { FacadeAuthConfig } from "../auth/config";
@@ -98,6 +98,9 @@ async function revalidateSupabaseUser(
     throw new TokenServiceError("temporarily_unavailable");
   }
 
+  if (isAuthRetryableFetchError(result.error)) {
+    throw new TokenServiceError("temporarily_unavailable");
+  }
   const userId = result.data.user?.id;
   if (result.error || typeof userId !== "string" ||
       !UUID_PATTERN.test(userId) || userId !== expectedUserId) {
@@ -203,6 +206,9 @@ async function refreshSupabaseSession(
     throw new TokenServiceError("temporarily_unavailable");
   }
 
+  if (isAuthRetryableFetchError(result.error)) {
+    throw new TokenServiceError("temporarily_unavailable");
+  }
   const userId = result.data.user?.id;
   const session = result.data.session;
   if (
