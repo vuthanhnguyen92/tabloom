@@ -25,6 +25,7 @@ export function noStoreHeaders(headers: HeadersInit = {}): Headers {
   const result = new Headers(headers);
   result.set("Cache-Control", "no-store");
   result.set("Pragma", "no-cache");
+  result.set("X-Content-Type-Options", "nosniff");
   return result;
 }
 
@@ -52,11 +53,14 @@ export function oauthJson(
 
 export function oauthError(
   error: OAuthErrorCode,
-  status: 400 | 405 | 413 | 500 | 503,
+  status: 400 | 401 | 405 | 413 | 429 | 500 | 503,
   headers: HeadersInit = {},
+  serverErrorCorrelationId?: string,
 ): Response {
   const body: JsonValue = { error };
-  if (error === "server_error") body.correlation_id = correlationId();
+  if (error === "server_error") {
+    body.correlation_id = serverErrorCorrelationId ?? correlationId();
+  }
   return oauthJson(body, status, headers);
 }
 

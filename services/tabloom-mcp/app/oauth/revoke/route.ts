@@ -5,6 +5,13 @@ import {
 } from "../../../src/oauth/persistence";
 import { revokeOAuthToken } from "../../../src/oauth/revocation-service";
 import { noStoreHeaders, oauthJson } from "../../../src/oauth/responses";
+import { oauthError } from "../../../src/oauth/responses";
+import {
+  createOAuthAuditContext,
+  emitOAuthAudit,
+  type OAuthResultClass,
+} from "../../../src/observability/oauth-audit";
+import { checkOAuthRateLimit } from "../../../src/security/oauth-rate-limit";
 
 const MAX_REVOCATION_FORM_BODY_BYTES = 32 * 1024;
 const ALLOWED_FORM_KEYS = new Set(["token", "token_type_hint"]);
@@ -18,10 +25,13 @@ class RevocationRequestError extends Error {
 
 function errorResponse(
   error: "invalid_request" | "invalid_client" | "server_error" | "temporarily_unavailable",
-  status: 400 | 401 | 405 | 413 | 500 | 503,
+  status: 400 | 401 | 405 | 413 | 429 | 500 | 503,
   headers: HeadersInit = {},
+  serverErrorCorrelationId?: string,
 ): Response {
-  return oauthJson({ error }, status, headers);
+  return error === "server_error"
+    ? oauthError(error, status, headers, serverErrorCorrelationId)
+    : oauthJson({ error }, status, headers);
 }
 
 function unsupportedMethod(): Response {
@@ -137,35 +147,61 @@ async function readRevocationToken(request: Request): Promise<string> {
 }
 
 export async function POST(request: Request): Promise<Response> {
+  const audit = createOAuthAuditContext("revoke");
+  const respond = (response: Response, resultClass: OAuthResultClass): Response => {
+    emitOAuthAudit(audit, { resultClass });
+    return response;
+  };
   let config;
   try {
     config = loadFacadeAuthConfig(process.env);
   } catch {
-    return errorResponse("server_error", 500);
+    return respond(
+      errorResponse("server_error", 500, {}, audit.correlationId),
+      "server_error",
+    );
   }
-  if (!config.oauthEnabled) return errorResponse("temporarily_unavailable", 503);
+  if (!config.oauthEnabled) {
+    return respond(errorResponse("temporarily_unavailable", 503), "dependency_error");
+  }
+
+  const rateLimit = await checkOAuthRateLimit({ route: "revoke", request });
+  if (!rateLimit.allowed) {
+    return respond(errorResponse("temporarily_unavailable", 429, {
+      "Retry-After": String(rateLimit.retryAfterSeconds),
+    }), "rate_limited");
+  }
 
   let token: string;
   try {
     token = await readRevocationToken(request);
   } catch (error) {
     if (error instanceof RevocationRequestError) {
-      return errorResponse(
+      return respond(errorResponse(
         error.error,
         error.error === "invalid_client" ? 401 : error.status,
-      );
+      ), "client_error");
     }
-    return errorResponse("server_error", 500);
+    return respond(
+      errorResponse("server_error", 500, {}, audit.correlationId),
+      "server_error",
+    );
   }
 
   try {
     await revokeOAuthToken(token, config, createOAuthPersistence(config));
-    return new Response(null, { status: 200, headers: noStoreHeaders() });
+    return respond(
+      new Response(null, { status: 200, headers: noStoreHeaders() }),
+      "success",
+    );
   } catch (error) {
     if (error instanceof OAuthPersistenceUnavailableError) {
-      return errorResponse("temporarily_unavailable", 503);
+      return respond(errorResponse("temporarily_unavailable", 503), "dependency_error");
     }
-    return errorResponse("server_error", 500);
+    return respond(
+      errorResponse("server_error", 500, {}, audit.correlationId),
+      "server_error",
+    );
   }
 }
 

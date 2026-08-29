@@ -11,6 +11,12 @@ import {
   oauthJson,
   readJsonPostBody,
 } from "../../../src/oauth/responses";
+import {
+  createOAuthAuditContext,
+  emitOAuthAudit,
+  type OAuthResultClass,
+} from "../../../src/observability/oauth-audit";
+import { checkOAuthRateLimit } from "../../../src/security/oauth-rate-limit";
 
 const REGISTRATION_CORS_HEADERS = { "Access-Control-Allow-Origin": "*" };
 const UNSUPPORTED_METHOD_HEADERS = {
@@ -29,14 +35,37 @@ export const PATCH = rejectUnsupportedMethod;
 export const DELETE = rejectUnsupportedMethod;
 
 export async function POST(request: Request): Promise<Response> {
+  const audit = createOAuthAuditContext("register");
+  const respond = (
+    response: Response,
+    resultClass: OAuthResultClass,
+    clientId?: string,
+  ): Response => {
+    emitOAuthAudit(audit, { resultClass, clientId });
+    return response;
+  };
   let config;
   try {
     config = loadFacadeAuthConfig(process.env);
   } catch {
-    return oauthError("server_error", 500, REGISTRATION_CORS_HEADERS);
+    return respond(
+      oauthError("server_error", 500, REGISTRATION_CORS_HEADERS, audit.correlationId),
+      "server_error",
+    );
   }
   if (!config.oauthEnabled) {
-    return oauthError("temporarily_unavailable", 503, REGISTRATION_CORS_HEADERS);
+    return respond(
+      oauthError("temporarily_unavailable", 503, REGISTRATION_CORS_HEADERS),
+      "dependency_error",
+    );
+  }
+
+  const rateLimit = await checkOAuthRateLimit({ route: "register", request });
+  if (!rateLimit.allowed) {
+    return respond(oauthError("temporarily_unavailable", 429, {
+      ...REGISTRATION_CORS_HEADERS,
+      "Retry-After": String(rateLimit.retryAfterSeconds),
+    }), "rate_limited");
   }
 
   let payload: unknown;
@@ -44,22 +73,28 @@ export async function POST(request: Request): Promise<Response> {
     payload = await readJsonPostBody(request);
   } catch (error) {
     if (error instanceof OAuthRequestError) {
-      return oauthError(
+      return respond(oauthError(
         "invalid_request",
         error.status,
         error.status === 405
           ? UNSUPPORTED_METHOD_HEADERS
           : REGISTRATION_CORS_HEADERS,
-      );
+      ), "client_error");
     }
-    return oauthError("server_error", 500, REGISTRATION_CORS_HEADERS);
+    return respond(
+      oauthError("server_error", 500, REGISTRATION_CORS_HEADERS, audit.correlationId),
+      "server_error",
+    );
   }
 
   let registration;
   try {
     registration = validateDcrClientMetadata(payload);
   } catch {
-    return oauthError("invalid_client_metadata", 400, REGISTRATION_CORS_HEADERS);
+    return respond(
+      oauthError("invalid_client_metadata", 400, REGISTRATION_CORS_HEADERS),
+      "client_error",
+    );
   }
 
   try {
@@ -68,19 +103,25 @@ export async function POST(request: Request): Promise<Response> {
       redirectUris: [...registration.redirectUris],
       expiresAt: null,
     });
-    return oauthJson({
+    return respond(oauthJson({
       client_id: stored.clientId,
       client_name: registration.clientName,
       redirect_uris: registration.redirectUris,
       grant_types: ["authorization_code", "refresh_token"],
       response_types: ["code"],
       token_endpoint_auth_method: "none",
-    }, 201, REGISTRATION_CORS_HEADERS);
+    }, 201, REGISTRATION_CORS_HEADERS), "success", stored.clientId);
   } catch (error) {
     if (error instanceof OAuthPersistenceUnavailableError) {
-      return oauthError("temporarily_unavailable", 503, REGISTRATION_CORS_HEADERS);
+      return respond(
+        oauthError("temporarily_unavailable", 503, REGISTRATION_CORS_HEADERS),
+        "dependency_error",
+      );
     }
-    return oauthError("server_error", 500, REGISTRATION_CORS_HEADERS);
+    return respond(
+      oauthError("server_error", 500, REGISTRATION_CORS_HEADERS, audit.correlationId),
+      "server_error",
+    );
   }
 }
 

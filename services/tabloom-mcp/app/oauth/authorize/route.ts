@@ -11,6 +11,12 @@ import {
 import { createOAuthPersistence } from "../../../src/oauth/persistence";
 import { noStoreHeaders, oauthError, oauthJson } from "../../../src/oauth/responses";
 import { createUpstreamSupabaseAuth } from "../../../src/oauth/upstream-supabase";
+import {
+  createOAuthAuditContext,
+  emitOAuthAudit,
+  type OAuthResultClass,
+} from "../../../src/observability/oauth-audit";
+import { checkOAuthRateLimit } from "../../../src/security/oauth-rate-limit";
 
 function redirectError(
   redirectUri: string,
@@ -27,13 +33,34 @@ function redirectError(
 }
 
 export async function GET(request: Request): Promise<Response> {
+  const audit = createOAuthAuditContext("authorize");
+  const respond = (
+    response: Response,
+    resultClass: OAuthResultClass,
+    clientId?: string,
+  ): Response => {
+    emitOAuthAudit(audit, { resultClass, clientId });
+    return response;
+  };
   let config;
   try {
     config = loadFacadeAuthConfig(process.env);
   } catch {
-    return oauthError("server_error", 500);
+    return respond(
+      oauthError("server_error", 500, {}, audit.correlationId),
+      "server_error",
+    );
   }
-  if (!config.oauthEnabled) return oauthError("temporarily_unavailable", 503);
+  if (!config.oauthEnabled) {
+    return respond(oauthError("temporarily_unavailable", 503), "dependency_error");
+  }
+
+  const rateLimit = await checkOAuthRateLimit({ route: "authorize", request });
+  if (!rateLimit.allowed) {
+    return respond(oauthError("temporarily_unavailable", 429, {
+      "Retry-After": String(rateLimit.retryAfterSeconds),
+    }), "rate_limited");
+  }
 
   let authorization;
   try {
@@ -44,11 +71,14 @@ export async function GET(request: Request): Promise<Response> {
     });
   } catch (error) {
     if (error instanceof AuthorizationRequestError) {
-      return error.redirectUri
+      return respond(error.redirectUri
         ? redirectError(error.redirectUri, error.error, error.state)
-        : oauthJson({ error: error.error }, 400);
+        : oauthJson({ error: error.error }, 400), "client_error");
     }
-    return oauthError("server_error", 500);
+    return respond(
+      oauthError("server_error", 500, {}, audit.correlationId),
+      "server_error",
+    );
   }
 
   try {
@@ -58,21 +88,25 @@ export async function GET(request: Request): Promise<Response> {
       request: authorization,
       supabaseCodeVerifier: login.codeVerifier,
     }, config.encryptionKeys);
-    return new Response(null, {
+    return respond(new Response(null, {
       status: 302,
       headers: noStoreHeaders({
         Location: login.providerUrl,
         "Set-Cookie": cookie,
       }),
-    });
+    }), "success", authorization.client.clientId);
   } catch (error) {
     if (error instanceof OAuthCookieTooLargeError) {
-      return oauthJson({ error: "invalid_request" }, 400);
+      return respond(
+        oauthJson({ error: "invalid_request" }, 400),
+        "client_error",
+        authorization.client.clientId,
+      );
     }
-    return redirectError(
+    return respond(redirectError(
       authorization.redirectUri,
       "temporarily_unavailable",
       authorization.state,
-    );
+    ), "dependency_error", authorization.client.clientId);
   }
 }
