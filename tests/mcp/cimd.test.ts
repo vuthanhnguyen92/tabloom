@@ -234,16 +234,29 @@ describe("CIMD hardened fetching", () => {
     await expect(fetchClient(CLIENT_ID)).resolves.toMatchObject({ clientId: CLIENT_ID });
   });
 
-  it("requires byte-for-byte metadata identity", async () => {
+  it.each([
+    ["malformed metadata", {
+      ...VALID_DOCUMENT,
+      client_name: "sensitive-metadata-detail\u0000",
+    }],
+    ["mismatched client identity", {
+      ...VALID_DOCUMENT,
+      client_id: "https://different.example/private-client.json",
+    }],
+  ])("normalizes %s validation failures", async (_label, document) => {
     const fetchClient = createCimdFetcher({
       resolve: async () => [{ address: "93.184.216.34", family: 4 }],
       transport: async () => response({
-        body: (async function* () {
-          yield Buffer.from(JSON.stringify({ ...VALID_DOCUMENT, client_id: `${CLIENT_ID}?different` }));
-        })(),
+        body: (async function* () { yield Buffer.from(JSON.stringify(document)); })(),
       }),
     });
-    await expect(fetchClient(CLIENT_ID)).rejects.toThrow();
+    const result = fetchClient(CLIENT_ID);
+
+    await expect(result).rejects.toMatchObject({
+      name: "CimdFetchError",
+      message: "CIMD client metadata could not be validated",
+    });
+    await expect(result).rejects.not.toThrow(/sensitive-metadata-detail|different\.example/i);
   });
 
   it("caches only successful exact documents for no more than five minutes", async () => {

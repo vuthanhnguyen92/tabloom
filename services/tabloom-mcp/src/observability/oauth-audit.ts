@@ -71,4 +71,3 @@ export function emitOAuthAudit(
     // Observability must never change the OAuth result.
   }
 }
-

@@ -10,10 +10,7 @@ import {
   readConsentSession,
   readUpstreamLoginState,
 } from "../../services/tabloom-mcp/src/oauth/cookies";
-import {
-  CimdUnavailableError,
-  fetchCimdClient,
-} from "../../services/tabloom-mcp/src/oauth/cimd";
+import { fetchCimdClient } from "../../services/tabloom-mcp/src/oauth/cimd";
 import {
   createOAuthPersistence,
   OAuthPersistenceUnavailableError,
@@ -51,6 +48,14 @@ const REDIRECT_URI = "https://client.example/callback";
 const USER_ID = "4f6f8607-9439-4ce3-a19e-f5a302ef3e68";
 const CHALLENGE = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM";
 const VERIFIER = "v".repeat(64);
+const VALID_CIMD_DOCUMENT = {
+  client_id: CIMD_CLIENT_ID,
+  client_name: "CIMD Client",
+  redirect_uris: [REDIRECT_URI],
+  grant_types: ["authorization_code", "refresh_token"],
+  response_types: ["code"],
+  token_endpoint_auth_method: "none",
+};
 let privateJwk: JWK;
 
 beforeAll(async () => {
@@ -253,7 +258,13 @@ describe("GET /oauth/authorize", () => {
   it("maps a retryable CIMD transport failure to a non-redirecting temporarily_unavailable", async () => {
     useFacadeEnvironment(true);
     vi.mocked(createOAuthPersistence).mockReturnValue(persistence());
-    vi.mocked(fetchCimdClient).mockRejectedValue(new CimdUnavailableError());
+    const { createCimdFetcher } = await vi.importActual<
+      typeof import("../../services/tabloom-mcp/src/oauth/cimd")
+    >("../../services/tabloom-mcp/src/oauth/cimd");
+    vi.mocked(fetchCimdClient).mockImplementation(createCimdFetcher({
+      resolve: async () => [{ address: "93.184.216.34", family: 4 }],
+      transport: async () => { throw new Error("private transport detail"); },
+    }));
     const auth = upstream();
     vi.mocked(createUpstreamSupabaseAuth).mockReturnValue(auth);
     const route = await authorizeRoute();
@@ -266,6 +277,55 @@ describe("GET /oauth/authorize", () => {
     expect(response.headers.get("Location")).toBeNull();
     await expect(response.json()).resolves.toEqual({ error: "temporarily_unavailable" });
     expect(auth.begin).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["malformed metadata", {
+      ...VALID_CIMD_DOCUMENT,
+      client_name: "sensitive-metadata-detail\u0000",
+    }],
+    ["mismatched client identity", {
+      ...VALID_CIMD_DOCUMENT,
+      client_id: "https://different.example/private-client.json",
+    }],
+  ])("maps real-fetcher %s to a fixed non-redirecting invalid_client", async (_label, document) => {
+    useFacadeEnvironment(true);
+    vi.mocked(createOAuthPersistence).mockReturnValue(persistence());
+    const { createCimdFetcher } = await vi.importActual<
+      typeof import("../../services/tabloom-mcp/src/oauth/cimd")
+    >("../../services/tabloom-mcp/src/oauth/cimd");
+    vi.mocked(fetchCimdClient).mockImplementation(createCimdFetcher({
+      resolve: async () => [{ address: "93.184.216.34", family: 4 }],
+      transport: async () => ({
+        statusCode: 200,
+        headers: { "content-type": "application/json" },
+        body: (async function* () { yield Buffer.from(JSON.stringify(document)); })(),
+      }),
+    }));
+    const auth = upstream();
+    vi.mocked(createUpstreamSupabaseAuth).mockReturnValue(auth);
+    const audit = vi.spyOn(console, "info").mockImplementation(() => undefined);
+    const route = await authorizeRoute();
+
+    const response = await route.GET(new Request(authorizationUrl(CIMD_CLIENT_ID)));
+
+    expect(response.status).toBe(400);
+    expectNoStore(response);
+    expect(response.headers.get("X-Content-Type-Options")).toBe("nosniff");
+    expect(response.headers.get("Location")).toBeNull();
+    const body = await response.json() as Record<string, unknown>;
+    expect(body).toEqual({ error: "invalid_client" });
+    expect(auth.begin).not.toHaveBeenCalled();
+    const event = audit.mock.calls.at(-1)?.[0] as Record<string, unknown>;
+    expect(event).toMatchObject({
+      routeCategory: "authorize",
+      resultClass: "client_error",
+    });
+    const serialized = `${JSON.stringify(body)}${JSON.stringify(event)}`;
+    expect(serialized).not.toContain(CIMD_CLIENT_ID);
+    expect(serialized).not.toContain(REDIRECT_URI);
+    expect(serialized).not.toContain("sensitive-metadata-detail");
+    expect(serialized).not.toContain("different.example");
   });
 
   it("maps upstream failures to a safe client redirect", async () => {

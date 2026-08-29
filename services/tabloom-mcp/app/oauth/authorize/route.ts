@@ -4,7 +4,7 @@ import {
   validateAuthorizationRequest,
 } from "../../../src/oauth/authorization-request";
 import { resolveClient } from "../../../src/oauth/client-metadata";
-import { CimdUnavailableError } from "../../../src/oauth/cimd";
+import { isCimdUnavailableError } from "../../../src/oauth/cimd";
 import {
   OAuthCookieTooLargeError,
   createUpstreamStateCookie,
@@ -83,7 +83,7 @@ export async function GET(request: Request): Promise<Response> {
         : oauthJson({ error: error.error }, 400), "client_error");
     }
     if (error instanceof OAuthPersistenceUnavailableError ||
-        error instanceof CimdUnavailableError) {
+        isCimdUnavailableError(error)) {
       return respond(
         oauthError("temporarily_unavailable", 503),
         "dependency_error",
