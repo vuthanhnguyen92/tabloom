@@ -23,6 +23,7 @@
 # misc
 .DS_Store
 *.pem
+/.local/extension-keys/
 
 # debug
 npm-debug.log*

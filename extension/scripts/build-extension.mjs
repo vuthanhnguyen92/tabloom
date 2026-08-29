@@ -1,6 +1,7 @@
-import { copyFileSync, mkdirSync } from "node:fs";
+import { copyFileSync, mkdirSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { spawnSync } from "node:child_process";
+import { writeAuthReport } from "./extension-identity.mjs";
 
 const root = resolve(import.meta.dirname, "../..");
 const supportedTargets = ["chromium", "firefox", "safari"];
@@ -21,8 +22,11 @@ for (const target of targets) {
 
   const output = resolve(root, "dist-extension", target);
   mkdirSync(output, { recursive: true });
-  copyFileSync(resolve(root, "extension/manifests", `${target}.json`), resolve(output, "manifest.json"));
+  const manifestSource = resolve(root, "extension/manifests", `${target}.json`);
+  copyFileSync(manifestSource, resolve(output, "manifest.json"));
   copyFileSync(resolve(root, "extension/auth-callback.html"), resolve(output, "auth-callback.html"));
+  const manifest = JSON.parse(readFileSync(manifestSource, "utf8"));
+  writeAuthReport(resolve(root, "dist-extension/reports"), target, manifest);
 }
 
 if (process.argv.includes("--safari-project")) {

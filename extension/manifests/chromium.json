@@ -1,5 +1,6 @@
 {
   "manifest_version": 3,
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAtgz1eytoKEoyt9HK+31qAzwjsHyh8GzEWFMXpyxtpBQDCtQSMERyxlzjEbIn+N8Z2gsAZoxDbWV/HzOszpjF49V4FbGy+B8oyfhlotKMWrbp6/0Z5rdiinYYbUvXZgsWqtwajoTYHL9PUGpnuR84fgzZierOYId1J+KmSpCPsDpOAPQIduan9HprL5gCbK1L5ZWlIJtfb1vYh2oGjPuDQ1ycjd/PSciombOW7wbf1d7oYNZSC/ZeQzKn8ZczW0E5bEpW7OpK5C4djXKSnJoZZeSBMmg5jEfv0gslQTsoaQZvypclTxVYHrxCteLyHvM+yc3u4wcVF40K61SNrCS1awIDAQAB",
   "name": "Tabloom — Calm tab workspace",
   "description": "Capture open tabs into organized, synchronized spaces.",
   "version": "0.7.0",
