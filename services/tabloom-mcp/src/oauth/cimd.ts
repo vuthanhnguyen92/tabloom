@@ -7,11 +7,13 @@ import {
   validateCimdClientMetadata,
   type ValidatedClient,
 } from "./client-metadata";
+import { CimdFetchError, CimdUnavailableError } from "./cimd-errors";
+
+export { CimdFetchError, CimdUnavailableError } from "./cimd-errors";
 
 const CIMD_TIMEOUT_MS = 3_000;
 const CIMD_MAX_BYTES = 32 * 1024;
 const CIMD_CACHE_TTL_MS = 5 * 60 * 1_000;
-const CIMD_ERROR_KIND = "__tabloom_cimd_error_kind__";
 
 export type ResolvedAddress = { address: string; family: 4 | 6 };
 export type CimdDnsResolver = (hostname: string) => Promise<readonly ResolvedAddress[]>;
@@ -41,40 +43,6 @@ export type CimdFetcherDependencies = {
   transport?: CimdTransport;
   now?: () => number;
 };
-
-export class CimdFetchError extends Error {
-  constructor(message = "CIMD client metadata could not be validated") {
-    super(message);
-    this.name = "CimdFetchError";
-    Object.defineProperty(this, CIMD_ERROR_KIND, {
-      configurable: true,
-      value: "invalid",
-    });
-  }
-}
-
-export class CimdUnavailableError extends CimdFetchError {
-  constructor(message = "CIMD client metadata is temporarily unavailable") {
-    super(message);
-    this.name = "CimdUnavailableError";
-    Object.defineProperty(this, CIMD_ERROR_KIND, { value: "unavailable" });
-  }
-}
-
-function hasErrorKind(error: unknown, kind: "invalid" | "unavailable"): boolean {
-  return typeof error === "object" && error !== null &&
-    Object.hasOwn(error, CIMD_ERROR_KIND) &&
-    (error as Record<string, unknown>)[CIMD_ERROR_KIND] === kind;
-}
-
-export function isCimdFetchError(error: unknown): error is CimdFetchError {
-  return error instanceof CimdFetchError ||
-    hasErrorKind(error, "invalid") || hasErrorKind(error, "unavailable");
-}
-
-export function isCimdUnavailableError(error: unknown): error is CimdUnavailableError {
-  return error instanceof CimdUnavailableError || hasErrorKind(error, "unavailable");
-}
 
 function ipv4Number(address: string): number | null {
   if (isIP(address) !== 4) return null;

@@ -9,7 +9,10 @@ import {
   InvalidOAuthClientError,
   type ValidatedClient,
 } from "../../services/tabloom-mcp/src/oauth/client-metadata";
-import { CimdUnavailableError } from "../../services/tabloom-mcp/src/oauth/cimd";
+import {
+  CimdFetchError,
+  CimdUnavailableError,
+} from "../../services/tabloom-mcp/src/oauth/cimd-errors";
 import { OAuthPersistenceUnavailableError } from "../../services/tabloom-mcp/src/oauth/persistence";
 
 const RESOURCE = "https://tabloom-mcp.vercel.app";
@@ -110,8 +113,21 @@ describe("authorization request validation", () => {
     })).rejects.toBe(unavailable);
   });
 
-  it("preserves an unexpected resolver exception for correlated server_error handling", async () => {
-    const unexpected = new Error("programming failure with private detail");
+  it("maps a genuine invalid CIMD error to invalid_client", async () => {
+    await expect(validateAuthorizationRequest(validParams({ client_id: "https://client.example/oauth.json" }), {
+      resolveClient: async () => { throw new CimdFetchError(); },
+      resource: RESOURCE,
+    })).rejects.toMatchObject({ error: "invalid_client", redirectUri: undefined });
+  });
+
+  it.each([
+    ["raw Error", new Error("programming failure with private detail")],
+    ["spoofed invalid marker", { __tabloom_cimd_error_kind__: "invalid", detail: "private invalid detail" }],
+    ["spoofed unavailable marker", {
+      __tabloom_cimd_error_kind__: "unavailable",
+      detail: "private unavailable detail",
+    }],
+  ])("preserves an unexpected %s for correlated server_error handling", async (_label, unexpected) => {
 
     await expect(validateAuthorizationRequest(validParams(), {
       resolveClient: async () => { throw unexpected; },

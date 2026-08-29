@@ -1,5 +1,5 @@
 import { exportJWK, generateKeyPair, type JWK } from "jose";
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { loadFacadeAuthConfig } from "../../services/tabloom-mcp/src/auth/config";
 import type { ValidatedAuthorizationRequest } from "../../services/tabloom-mcp/src/oauth/authorization-request";
@@ -10,7 +10,9 @@ import {
   readConsentSession,
   readUpstreamLoginState,
 } from "../../services/tabloom-mcp/src/oauth/cookies";
-import { fetchCimdClient } from "../../services/tabloom-mcp/src/oauth/cimd";
+import { createCimdFetcher } from "../../services/tabloom-mcp/src/oauth/cimd";
+import { CimdUnavailableError } from "../../services/tabloom-mcp/src/oauth/cimd-errors";
+import { resolveClient } from "../../services/tabloom-mcp/src/oauth/client-metadata";
 import {
   createOAuthPersistence,
   OAuthPersistenceUnavailableError,
@@ -28,11 +30,11 @@ vi.mock("../../services/tabloom-mcp/src/oauth/persistence", async () => {
   );
   return { ...actual, createOAuthPersistence: vi.fn() };
 });
-vi.mock("../../services/tabloom-mcp/src/oauth/cimd", async () => {
-  const actual = await vi.importActual<typeof import("../../services/tabloom-mcp/src/oauth/cimd")>(
-    "../../services/tabloom-mcp/src/oauth/cimd",
+vi.mock("../../services/tabloom-mcp/src/oauth/client-metadata", async () => {
+  const actual = await vi.importActual<typeof import("../../services/tabloom-mcp/src/oauth/client-metadata")>(
+    "../../services/tabloom-mcp/src/oauth/client-metadata",
   );
-  return { ...actual, fetchCimdClient: vi.fn() };
+  return { ...actual, resolveClient: vi.fn(actual.resolveClient) };
 });
 vi.mock("../../services/tabloom-mcp/src/oauth/upstream-supabase", async () => {
   const actual = await vi.importActual<typeof import("../../services/tabloom-mcp/src/oauth/upstream-supabase")>(
@@ -61,6 +63,13 @@ let privateJwk: JWK;
 beforeAll(async () => {
   const keyPair = await generateKeyPair("ES256", { extractable: true });
   privateJwk = await exportJWK(keyPair.privateKey);
+});
+
+beforeEach(async () => {
+  const actual = await vi.importActual<typeof import("../../services/tabloom-mcp/src/oauth/client-metadata")>(
+    "../../services/tabloom-mcp/src/oauth/client-metadata",
+  );
+  vi.mocked(resolveClient).mockImplementation(actual.resolveClient);
 });
 
 function useFacadeEnvironment(enabled: boolean) {
@@ -152,7 +161,6 @@ async function callbackRoute() {
 
 afterEach(() => {
   vi.unstubAllEnvs();
-  vi.resetModules();
   vi.clearAllMocks();
 });
 afterAll(() => vi.restoreAllMocks());
@@ -219,7 +227,7 @@ describe("GET /oauth/authorize", () => {
     const store = persistence();
     const getClient = vi.spyOn(store, "getClient");
     vi.mocked(createOAuthPersistence).mockReturnValue(store);
-    vi.mocked(fetchCimdClient).mockResolvedValue({
+    vi.mocked(resolveClient).mockResolvedValue({
       clientId: CIMD_CLIENT_ID,
       clientName: "CIMD Client",
       redirectUris: [REDIRECT_URI],
@@ -232,7 +240,7 @@ describe("GET /oauth/authorize", () => {
 
     expect(response.status).toBe(302);
     expect(response.headers.get("Location")).toContain("example.supabase.co");
-    expect(fetchCimdClient).toHaveBeenCalledWith(CIMD_CLIENT_ID);
+    expect(resolveClient).toHaveBeenCalledWith(CIMD_CLIENT_ID, store);
     expect(getClient).not.toHaveBeenCalled();
   });
 
@@ -258,13 +266,7 @@ describe("GET /oauth/authorize", () => {
   it("maps a retryable CIMD transport failure to a non-redirecting temporarily_unavailable", async () => {
     useFacadeEnvironment(true);
     vi.mocked(createOAuthPersistence).mockReturnValue(persistence());
-    const { createCimdFetcher } = await vi.importActual<
-      typeof import("../../services/tabloom-mcp/src/oauth/cimd")
-    >("../../services/tabloom-mcp/src/oauth/cimd");
-    vi.mocked(fetchCimdClient).mockImplementation(createCimdFetcher({
-      resolve: async () => [{ address: "93.184.216.34", family: 4 }],
-      transport: async () => { throw new Error("private transport detail"); },
-    }));
+    vi.mocked(resolveClient).mockRejectedValue(new CimdUnavailableError());
     const auth = upstream();
     vi.mocked(createUpstreamSupabaseAuth).mockReturnValue(auth);
     const route = await authorizeRoute();
@@ -290,18 +292,22 @@ describe("GET /oauth/authorize", () => {
     }],
   ])("maps real-fetcher %s to a fixed non-redirecting invalid_client", async (_label, document) => {
     useFacadeEnvironment(true);
-    vi.mocked(createOAuthPersistence).mockReturnValue(persistence());
-    const { createCimdFetcher } = await vi.importActual<
-      typeof import("../../services/tabloom-mcp/src/oauth/cimd")
-    >("../../services/tabloom-mcp/src/oauth/cimd");
-    vi.mocked(fetchCimdClient).mockImplementation(createCimdFetcher({
+    const store = persistence();
+    vi.mocked(createOAuthPersistence).mockReturnValue(store);
+    const actual = await vi.importActual<typeof import("../../services/tabloom-mcp/src/oauth/client-metadata")>(
+      "../../services/tabloom-mcp/src/oauth/client-metadata",
+    );
+    const fetchClient = createCimdFetcher({
       resolve: async () => [{ address: "93.184.216.34", family: 4 }],
       transport: async () => ({
         statusCode: 200,
         headers: { "content-type": "application/json" },
         body: (async function* () { yield Buffer.from(JSON.stringify(document)); })(),
       }),
-    }));
+    });
+    vi.mocked(resolveClient).mockImplementation(
+      (clientId, persistence) => actual.resolveClient(clientId, persistence, { fetchCimd: fetchClient }),
+    );
     const auth = upstream();
     vi.mocked(createUpstreamSupabaseAuth).mockReturnValue(auth);
     const audit = vi.spyOn(console, "info").mockImplementation(() => undefined);
@@ -326,6 +332,46 @@ describe("GET /oauth/authorize", () => {
     expect(serialized).not.toContain(REDIRECT_URI);
     expect(serialized).not.toContain("sensitive-metadata-detail");
     expect(serialized).not.toContain("different.example");
+  });
+
+  it.each([
+    ["raw Error", new Error("private raw resolver detail")],
+    ["spoofed invalid marker", {
+      __tabloom_cimd_error_kind__: "invalid",
+      detail: "private spoofed invalid detail",
+    }],
+    ["spoofed unavailable marker", {
+      __tabloom_cimd_error_kind__: "unavailable",
+      detail: "private spoofed unavailable detail",
+    }],
+  ])("returns a correlated server_error for an untyped CIMD resolver %s", async (_label, thrown) => {
+    useFacadeEnvironment(true);
+    vi.mocked(createOAuthPersistence).mockReturnValue(persistence());
+    vi.mocked(resolveClient).mockRejectedValue(thrown);
+    const auth = upstream();
+    vi.mocked(createUpstreamSupabaseAuth).mockReturnValue(auth);
+    const audit = vi.spyOn(console, "info").mockImplementation(() => undefined);
+    const route = await authorizeRoute();
+
+    const response = await route.GET(new Request(authorizationUrl(CIMD_CLIENT_ID)));
+
+    expect(response.status).toBe(500);
+    expectNoStore(response);
+    expect(response.headers.get("X-Content-Type-Options")).toBe("nosniff");
+    expect(response.headers.get("Location")).toBeNull();
+    const body = await response.json() as Record<string, unknown>;
+    expect(body.error).toBe("server_error");
+    const event = audit.mock.calls.at(-1)?.[0] as Record<string, unknown>;
+    expect(event).toMatchObject({
+      routeCategory: "authorize",
+      resultClass: "server_error",
+      correlationId: body.correlation_id,
+    });
+    const serialized = `${JSON.stringify(body)}${JSON.stringify(event)}`;
+    expect(serialized).not.toContain(CIMD_CLIENT_ID);
+    expect(serialized).not.toContain(REDIRECT_URI);
+    expect(serialized).not.toContain("private");
+    expect(auth.begin).not.toHaveBeenCalled();
   });
 
   it("maps upstream failures to a safe client redirect", async () => {

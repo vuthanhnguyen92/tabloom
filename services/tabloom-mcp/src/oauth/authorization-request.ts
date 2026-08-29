@@ -1,6 +1,6 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 
-import { isCimdFetchError, isCimdUnavailableError } from "./cimd";
+import { CimdFetchError, CimdUnavailableError } from "./cimd-errors";
 import { InvalidOAuthClientError, type ValidatedClient } from "./client-metadata";
 import { OAuthPersistenceUnavailableError } from "./persistence";
 
@@ -75,8 +75,8 @@ export async function validateAuthorizationRequest(
     client = await options.resolveClient(clientId);
   } catch (error) {
     if (error instanceof OAuthPersistenceUnavailableError ||
-        isCimdUnavailableError(error)) throw error;
-    if (error instanceof InvalidOAuthClientError || isCimdFetchError(error)) {
+        error instanceof CimdUnavailableError) throw error;
+    if (error instanceof InvalidOAuthClientError || error instanceof CimdFetchError) {
       throw unsafeError("invalid_client");
     }
     throw error;
