@@ -1,7 +1,7 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { OAuthAuthorizationDetails } from "@supabase/supabase-js";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { OAuthConsent } from "../app/oauth/consent/OAuthConsent";
 
 const details: OAuthAuthorizationDetails = {
@@ -17,13 +17,27 @@ const details: OAuthAuthorizationDetails = {
   scope: "workspace.read workspace.write",
 };
 
+const locationDescriptor = Object.getOwnPropertyDescriptor(window, "location");
+
+function mockLocation() {
+  const assign = vi.fn();
+  Object.defineProperty(window, "location", { configurable: true, value: { assign } });
+  return assign;
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((next) => { resolve = next; });
+  return { promise, resolve };
+}
+
 function oauthClient(authorizationDetails: OAuthAuthorizationDetails) {
   return {
     auth: {
       getSession: vi.fn<() => Promise<{ data: { session: unknown }; error: null }>>(async () => ({ data: { session: { user: { id: "user-1" } } }, error: null })),
       signInWithOAuth: vi.fn<() => Promise<{ data: { provider: string; url: string | null }; error: { message: string } | null }>>(async () => ({ data: { provider: "google", url: "https://accounts.example/authorize" }, error: null })),
       oauth: {
-        getAuthorizationDetails: vi.fn<() => Promise<{ data: OAuthAuthorizationDetails | { redirect_url: string }; error: null }>>(async () => ({ data: authorizationDetails, error: null })),
+        getAuthorizationDetails: vi.fn<(authorizationId: string) => Promise<{ data: OAuthAuthorizationDetails | { redirect_url: string }; error: null }>>(async () => ({ data: authorizationDetails, error: null })),
         approveAuthorization: vi.fn(async () => ({ data: { redirect_url: "https://client.example/callback?approve=1" }, error: null })),
         denyAuthorization: vi.fn(async () => ({ data: { redirect_url: "https://client.example/callback?deny=1" }, error: null })),
       },
@@ -45,6 +59,10 @@ function signedInOAuthClient(authorizationDetails: OAuthAuthorizationDetails, re
 }
 
 describe("OAuthConsent", () => {
+  afterEach(() => {
+    if (locationDescriptor) Object.defineProperty(window, "location", locationDescriptor);
+  });
+
   it("explains when the authorization request is missing", () => {
     render(<OAuthConsent authorizationId="" client={oauthClient(details)} />);
 
@@ -73,8 +91,7 @@ describe("OAuthConsent", () => {
   });
 
   it("redirects an already-approved request using Supabase's returned URL", async () => {
-    const assign = vi.fn();
-    Object.defineProperty(window, "location", { configurable: true, value: { assign } });
+    const assign = mockLocation();
     const client = signedInOAuthClient(details, "https://client.example/callback?approved=1");
     client.auth.oauth.getAuthorizationDetails.mockResolvedValue({ data: { redirect_url: "https://client.example/callback?already=1" }, error: null });
 
@@ -84,6 +101,7 @@ describe("OAuthConsent", () => {
   });
 
   it.each(["approve", "deny"] as const)("returns the %s decision to the OAuth client", async (decision) => {
+    const assign = mockLocation();
     const client = signedInOAuthClient(details, `https://client.example/callback?${decision}=1`);
     render(<OAuthConsent authorizationId="authorization-1" client={client} />);
 
@@ -91,6 +109,59 @@ describe("OAuthConsent", () => {
 
     expect(client.auth.oauth[decision === "approve" ? "approveAuthorization" : "denyAuthorization"])
       .toHaveBeenCalledWith("authorization-1", { skipBrowserRedirect: true });
+    await waitFor(() => expect(assign).toHaveBeenCalledWith(`https://client.example/callback?${decision}=1`));
+  });
+
+  it("rejects authorization details for a different request", async () => {
+    const client = oauthClient({ ...details, authorization_id: "authorization-2" });
+    render(<OAuthConsent authorizationId="authorization-1" client={client} />);
+
+    expect(await screen.findByRole("heading", { name: "Authorization request unavailable" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Connect Codex to Tabloom" })).not.toBeInTheDocument();
+  });
+
+  it("disables both decisions while a decision is pending", async () => {
+    mockLocation();
+    const pending = deferred<{ data: { redirect_url: string }; error: null }>();
+    const client = signedInOAuthClient(details, "https://client.example/callback?approve=1");
+    client.auth.oauth.approveAuthorization.mockImplementation(() => pending.promise);
+    render(<OAuthConsent authorizationId="authorization-1" client={client} />);
+
+    await userEvent.click(await screen.findByRole("button", { name: "Approve access" }));
+
+    expect(screen.getByRole("button", { name: "Deny" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Submitting…" })).toBeDisabled();
+    pending.resolve({ data: { redirect_url: "https://client.example/callback?approve=1" }, error: null });
+  });
+
+  it("invalidates visible consent state when the request changes or is removed", async () => {
+    const nextDetails: OAuthAuthorizationDetails = { ...details, authorization_id: "authorization-2", client: { ...details.client, name: "Another client" } };
+    const client = oauthClient(details);
+    client.auth.oauth.getAuthorizationDetails.mockImplementation(async (requestId) => ({ data: requestId === "authorization-2" ? nextDetails : details, error: null }));
+    const { rerender } = render(<OAuthConsent authorizationId="authorization-1" client={client} />);
+
+    expect(await screen.findByRole("heading", { name: "Connect Codex to Tabloom" })).toBeInTheDocument();
+    rerender(<OAuthConsent authorizationId="authorization-2" client={client} />);
+    expect(screen.queryByRole("heading", { name: "Connect Codex to Tabloom" })).not.toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Connect Another client to Tabloom" })).toBeInTheDocument();
+
+    rerender(<OAuthConsent authorizationId="" client={client} />);
+    expect(screen.getByRole("heading", { name: "Authorization request unavailable" })).toBeInTheDocument();
+  });
+
+  it("does not redirect after a pending decision becomes stale", async () => {
+    const assign = mockLocation();
+    const pending = deferred<{ data: { redirect_url: string }; error: null }>();
+    const client = signedInOAuthClient(details, "https://client.example/callback?approve=1");
+    client.auth.oauth.approveAuthorization.mockImplementation(() => pending.promise);
+    const { rerender } = render(<OAuthConsent authorizationId="authorization-1" client={client} />);
+
+    await userEvent.click(await screen.findByRole("button", { name: "Approve access" }));
+    rerender(<OAuthConsent authorizationId="authorization-2" client={client} />);
+    pending.resolve({ data: { redirect_url: "https://client.example/callback?stale=1" }, error: null });
+
+    expect(await screen.findByRole("heading", { name: "Authorization request unavailable" })).toBeInTheDocument();
+    expect(assign).not.toHaveBeenCalled();
   });
 
   it("shows a safe sign-in failure summary", async () => {
