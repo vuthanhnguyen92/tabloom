@@ -101,15 +101,64 @@ describe("public dynamic client registration", () => {
     expect(body).not.toContain("do-not-echo");
   });
 
-  it("accepts only JSON POST requests", async () => {
+  it("returns the fixed no-store 405 contract for every unsupported HTTP method", async () => {
     await useFacadeEnvironment(true);
     const handler = await route();
 
-    expect("GET" in handler).toBe(false);
+    for (const method of ["GET", "HEAD", "PUT", "PATCH", "DELETE"] as const) {
+      const response = await (handler as Record<string, (request: Request) => Response>)[method]!(
+        new Request(`${ORIGIN}/oauth/register`, { method }),
+      );
+
+      expect(response.status).toBe(405);
+      expectNoStore(response);
+      expect(response.headers.get("Access-Control-Allow-Origin")).toBe("*");
+      expect(response.headers.get("Allow")).toBe("POST, OPTIONS");
+      await expect(response.json()).resolves.toEqual({ error: "invalid_request" });
+    }
+  });
+
+  it("rejects non-JSON POST requests with a fixed no-store error", async () => {
+    await useFacadeEnvironment(true);
+    const handler = await route();
+
     const response = await handler.POST(new Request(`${ORIGIN}/oauth/register`, {
       method: "POST",
       headers: { "Content-Type": "text/plain" },
       body: JSON.stringify(registration),
+    }));
+
+    expect(response.status).toBe(400);
+    expectNoStore(response);
+    await expect(response.json()).resolves.toEqual({ error: "invalid_request" });
+  });
+
+  it("does not disclose malformed JSON parser details", async () => {
+    await useFacadeEnvironment(true);
+    const handler = await route();
+    const parserDetail = "parser detail must not be reflected";
+
+    const response = await handler.POST(new Request(`${ORIGIN}/oauth/register`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: `{"client_name":"${parserDetail}`,
+    }));
+
+    expect(response.status).toBe(400);
+    expectNoStore(response);
+    const body = await response.text();
+    expect(JSON.parse(body)).toEqual({ error: "invalid_request" });
+    expect(body).not.toContain(parserDetail);
+  });
+
+  it("does not disclose invalid UTF-8 bytes", async () => {
+    await useFacadeEnvironment(true);
+    const handler = await route();
+
+    const response = await handler.POST(new Request(`${ORIGIN}/oauth/register`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: Uint8Array.from([0x7b, 0x22, 0x78, 0x22, 0x3a, 0x22, 0xc3, 0x28, 0x22, 0x7d]),
     }));
 
     expect(response.status).toBe(400);

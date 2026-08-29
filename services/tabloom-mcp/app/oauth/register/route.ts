@@ -13,6 +13,20 @@ import {
 } from "../../../src/oauth/responses";
 
 const REGISTRATION_CORS_HEADERS = { "Access-Control-Allow-Origin": "*" };
+const UNSUPPORTED_METHOD_HEADERS = {
+  ...REGISTRATION_CORS_HEADERS,
+  Allow: "POST, OPTIONS",
+};
+
+function rejectUnsupportedMethod(): Response {
+  return oauthError("invalid_request", 405, UNSUPPORTED_METHOD_HEADERS);
+}
+
+export const GET = rejectUnsupportedMethod;
+export const HEAD = rejectUnsupportedMethod;
+export const PUT = rejectUnsupportedMethod;
+export const PATCH = rejectUnsupportedMethod;
+export const DELETE = rejectUnsupportedMethod;
 
 export async function POST(request: Request): Promise<Response> {
   let config;
@@ -34,7 +48,7 @@ export async function POST(request: Request): Promise<Response> {
         "invalid_request",
         error.status,
         error.status === 405
-          ? { ...REGISTRATION_CORS_HEADERS, Allow: "POST, OPTIONS" }
+          ? UNSUPPORTED_METHOD_HEADERS
           : REGISTRATION_CORS_HEADERS,
       );
     }
