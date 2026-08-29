@@ -109,17 +109,27 @@ async function issueRefreshToken(
   payload: Omit<RefreshTokenPayload, "jti" | "issuedAt" | "expiresAt">,
   config: FacadeAuthConfig,
   now: number,
+  familyExpiresAt: number,
 ): Promise<string> {
+  const lifetimeSeconds = familyExpiresAt - now;
+  if (
+    !Number.isSafeInteger(familyExpiresAt) ||
+    !Number.isSafeInteger(lifetimeSeconds) ||
+    lifetimeSeconds <= 0 ||
+    lifetimeSeconds > REFRESH_TOKEN_LIFETIME_SECONDS
+  ) {
+    throw invalidGrant();
+  }
   const refresh: RefreshTokenPayload = {
     ...payload,
     jti: randomIdentifier(),
     issuedAt: now,
-    expiresAt: now + REFRESH_TOKEN_LIFETIME_SECONDS,
+    expiresAt: familyExpiresAt,
   };
   return sealArtifact(
     "refresh_token",
     refresh,
-    REFRESH_TOKEN_LIFETIME_SECONDS,
+    lifetimeSeconds,
     config.encryptionKeys,
     now,
   );
@@ -227,6 +237,7 @@ async function issueTokenPair(
     supabaseAccessToken: string;
     supabaseRefreshToken: string;
     supabaseAccessTokenExpiresAt: number;
+    refreshExpiresAt: number;
   },
   config: FacadeAuthConfig,
   now: number,
@@ -249,7 +260,7 @@ async function issueTokenPair(
       resource: input.resource,
       scope: input.scope,
       grantId: input.grantId,
-    }, config, now),
+    }, config, now, input.refreshExpiresAt),
   ]);
 
   return {
@@ -304,6 +315,7 @@ export async function exchangeAuthorizationCode(
     supabaseAccessToken: code.supabaseAccessToken,
     supabaseRefreshToken: code.supabaseRefreshToken,
     supabaseAccessTokenExpiresAt: code.supabaseAccessTokenExpiresAt,
+    refreshExpiresAt: now + REFRESH_TOKEN_LIFETIME_SECONDS,
   }, config, now);
 }
 
@@ -346,6 +358,8 @@ export async function exchangeRefreshToken(
   );
   if (await persistence.isGrantRevoked(refresh.grantId)) throw invalidGrant();
 
+  const issuanceNow = Math.max(now, Math.floor(Date.now() / 1000));
+
   return issueTokenPair({
     userId: refresh.userId,
     clientId: refresh.clientId,
@@ -355,5 +369,6 @@ export async function exchangeRefreshToken(
     supabaseAccessToken: rotated.accessToken,
     supabaseRefreshToken: rotated.refreshToken,
     supabaseAccessTokenExpiresAt: rotated.accessTokenExpiresAt,
-  }, config, now);
+    refreshExpiresAt: refresh.expiresAt,
+  }, config, issuanceNow);
 }

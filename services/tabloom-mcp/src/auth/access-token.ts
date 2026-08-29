@@ -5,6 +5,7 @@ import {
   signingPrivateKey,
   signingPublicKey,
 } from "./key-rings";
+import { isValidCimdClientId } from "../oauth/client-metadata";
 
 export type TabloomAccessClaims = {
   sub: string;
@@ -58,18 +59,8 @@ function hasExactKeys(value: Record<string, unknown>, expected: readonly string[
     keys.every((key, index) => key === expected[index]);
 }
 
-function isCanonicalPublicClientId(clientId: string): boolean {
-  if (DCR_CLIENT_ID_PATTERN.test(clientId)) return true;
-  if (clientId.trim() !== clientId || clientId.includes("#") || clientId.includes("*")) {
-    return false;
-  }
-  try {
-    const url = new URL(clientId);
-    return url.protocol === "https:" && !url.username && !url.password &&
-      Boolean(url.hostname) && url.href === clientId;
-  } catch {
-    return false;
-  }
+function isValidPublicClientId(clientId: string): boolean {
+  return DCR_CLIENT_ID_PATTERN.test(clientId) || isValidCimdClientId(clientId);
 }
 
 export async function issueAccessToken(
@@ -159,7 +150,7 @@ export async function verifyRevocableAccessToken(
     !hasExactKeys(protectedHeader, ACCESS_TOKEN_HEADER_KEYS) ||
     !hasExactKeys(payload, ACCESS_TOKEN_CLAIM_KEYS) ||
     !UUID_PATTERN.test(payload.sub) ||
-    !isCanonicalPublicClientId(payload.client_id) ||
+    !isValidPublicClientId(payload.client_id) ||
     !OPAQUE_IDENTIFIER_PATTERN.test(payload.grant_id) ||
     typeof payload.jti !== "string" ||
     !OPAQUE_IDENTIFIER_PATTERN.test(payload.jti) ||

@@ -21,9 +21,10 @@ export async function revokeOAuthToken(
   }
 
   if (accessGrantId !== undefined) {
+    const persistenceNow = Math.max(now, Math.floor(Date.now() / 1000));
     await persistence.revokeGrant(
       accessGrantId,
-      new Date((now + REFRESH_TOKEN_LIFETIME_SECONDS) * 1000),
+      new Date((persistenceNow + REFRESH_TOKEN_LIFETIME_SECONDS) * 1000),
     );
     return;
   }
@@ -35,7 +36,8 @@ export async function revokeOAuthToken(
     return;
   }
 
-  const expiresAt = new Date((now + REFRESH_TOKEN_LIFETIME_SECONDS) * 1000);
+  const persistenceNow = Math.max(now, Math.floor(Date.now() / 1000));
+  const expiresAt = new Date((persistenceNow + REFRESH_TOKEN_LIFETIME_SECONDS) * 1000);
   await persistence.revokeGrant(refresh.grantId, expiresAt);
   await persistence.consume("refresh_token", refresh.jti, expiresAt);
 }

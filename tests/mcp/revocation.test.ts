@@ -253,7 +253,11 @@ describe("POST /oauth/revoke", () => {
 
   it.each([
     ["non-UUID subject", { sub: "attacker-subject" }, {}],
-    ["non-canonical public client", { client_id: "https://CLIENT.example/oauth.json" }, {}],
+    ["HTTP client metadata identifier", { client_id: "http://client.example/oauth.json" }, {}],
+    ["credentialed client metadata identifier", { client_id: "https://user:pass@client.example/oauth.json" }, {}],
+    ["fragmented client metadata identifier", { client_id: "https://client.example/oauth.json#fragment" }, {}],
+    ["wildcard client metadata identifier", { client_id: "https://*.client.example/oauth.json" }, {}],
+    ["whitespace-padded client metadata identifier", { client_id: " https://client.example/oauth.json" }, {}],
     ["invalid grant identifier", { grant_id: "attacker-grant" }, {}],
     ["invalid access JTI", { jti: "attacker-jti" }, {}],
     ["wrong scope", { scope: "other:scope" }, {}],
@@ -286,9 +290,14 @@ describe("POST /oauth/revoke", () => {
     expect(consumeCalls).toEqual([]);
   });
 
-  it("accepts a canonical HTTPS client metadata identifier in a strict access token", async () => {
+  it.each([
+    "https://client.example/oauth/metadata.json",
+    "https://client.example",
+    "https://CLIENT.example/oauth.json",
+    "https://client.example:443/oauth.json",
+  ])("accepts the client metadata identifier %s in a strict access token", async (clientId) => {
     const token = await handSignedAccessToken({
-      client_id: "https://client.example/oauth/metadata.json",
+      client_id: clientId,
     });
 
     await expectEmptySuccess(await revokeRequest(token, "access_token"));

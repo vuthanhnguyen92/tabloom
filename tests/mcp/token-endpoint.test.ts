@@ -851,6 +851,102 @@ describe("POST /oauth/token refresh_token", () => {
     expect(revocationExpiries[0]!.getTime()).toBeGreaterThan(agedExpiresAt * 1000);
   });
 
+  it("caps a descendant to its absolute family expiry when revocation started before refresh", async () => {
+    const oneDay = 24 * 60 * 60;
+    const familyExpiresAt = NOW + REFRESH_TOKEN_LIFETIME_SECONDS;
+    const token = await refreshArtifact();
+    let revocationStarted!: () => void;
+    let finishRevocation!: () => void;
+    const started = new Promise<void>((resolve) => { revocationStarted = resolve; });
+    const blocked = new Promise<void>((resolve) => { finishRevocation = resolve; });
+    let revokedUntil: number | undefined;
+    const base = persistence();
+    vi.mocked(createOAuthPersistence).mockReturnValue({
+      ...base,
+      async revokeGrant(_grantId, expiresAt) {
+        revocationExpiries.push(expiresAt);
+        revocationStarted();
+        await blocked;
+        revokedUntil = Math.floor(expiresAt.getTime() / 1000);
+      },
+      async isGrantRevoked() {
+        return revokedUntil !== undefined && Math.floor(Date.now() / 1000) < revokedUntil;
+      },
+    });
+
+    const revoking = revokeTokenRequest(token);
+    await started;
+
+    const refreshNow = NOW + oneDay;
+    vi.setSystemTime(refreshNow * 1000);
+    refreshSession.mockImplementation(() => Promise.resolve({
+      data: {
+        user: { id: USER_ID },
+        session: {
+          access_token: ROTATED_ACCESS_TOKEN,
+          refresh_token: ROTATED_REFRESH_TOKEN,
+          expires_at: Math.floor(Date.now() / 1000) + 300,
+        },
+      },
+      error: null,
+    }));
+
+    const refreshed = await refreshTokenRequest(token);
+    expect(refreshed.status).toBe(200);
+    const refreshedBody = await refreshed.json() as Record<string, unknown>;
+    const descendant = await openArtifact<RefreshTokenPayload>(
+      "refresh_token",
+      refreshedBody.refresh_token as string,
+      loadFacadeAuthConfig(process.env).encryptionKeys,
+      refreshNow,
+    );
+
+    finishRevocation();
+    const revocation = await revoking;
+    expect(revocation.status).toBe(200);
+    await expect(revocation.text()).resolves.toBe("");
+    expect(revocationExpiries).toEqual([new Date(familyExpiresAt * 1000)]);
+
+    vi.setSystemTime((familyExpiresAt + 1) * 1000);
+    const afterDurableHorizon = await refreshTokenRequest(refreshedBody.refresh_token as string);
+
+    expect(descendant.expiresAt).toBe(familyExpiresAt);
+    await expectError(afterDurableHorizon, "invalid_grant");
+    expect(refreshSession).toHaveBeenCalledTimes(1);
+  });
+
+  it("burns a refresh whose absolute family lifetime expires during provider work", async () => {
+    const familyExpiresAt = NOW + 60;
+    const token = await refreshArtifact({ expiresAt: familyExpiresAt });
+    let providerStarted!: () => void;
+    let finishProvider!: (value: unknown) => void;
+    const started = new Promise<void>((resolve) => { providerStarted = resolve; });
+    const providerResult = new Promise((resolve) => { finishProvider = resolve; });
+    refreshSession.mockImplementation(() => {
+      providerStarted();
+      return providerResult;
+    });
+
+    const refreshing = refreshTokenRequest(token);
+    await started;
+    vi.setSystemTime((familyExpiresAt + 1) * 1000);
+    finishProvider({
+      data: {
+        user: { id: USER_ID },
+        session: {
+          access_token: ROTATED_ACCESS_TOKEN,
+          refresh_token: ROTATED_REFRESH_TOKEN,
+          expires_at: familyExpiresAt + 300,
+        },
+      },
+      error: null,
+    });
+
+    await expectError(await refreshing, "invalid_grant");
+    expect(consumed).toEqual(new Set(["r".repeat(43)]));
+    expect(refreshSession).toHaveBeenCalledTimes(1);
+  });
+
   it("keeps refresh requests form-only, public-client, exact, and bounded", async () => {
     const token = await refreshArtifact();
     await expectError(
