@@ -87,7 +87,7 @@ export async function validateAuthorizationRequest(
   }
   if (record.response_type !== "code") fail("invalid_request");
   if (!state || Buffer.byteLength(state, "utf8") > 512) fail("invalid_request");
-  if (!record.code_challenge || !PKCE_VALUE_PATTERN.test(record.code_challenge)) fail("invalid_request");
+  if (!record.code_challenge || !PKCE_CHALLENGE_PATTERN.test(record.code_challenge)) fail("invalid_request");
   if (record.code_challenge_method !== "S256") fail("invalid_request");
   if (record.resource !== options.resource) fail("invalid_request");
   if (record.scope !== "tabloom:workspace") fail("invalid_scope");

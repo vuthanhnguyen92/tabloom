@@ -162,12 +162,17 @@ async function readJson(response: CimdHttpResponse, signal: AbortSignal): Promis
   }
   const chunks: Uint8Array[] = [];
   let byteLength = 0;
-  for await (const chunk of response.body) {
-    if (signal.aborted) throw new CimdFetchError("CIMD fetch timeout");
-    const bytes = typeof chunk === "string" ? Buffer.from(chunk, "utf8") : chunk;
-    byteLength += bytes.byteLength;
-    if (byteLength > CIMD_MAX_BYTES) throw new CimdFetchError();
-    chunks.push(bytes);
+  try {
+    for await (const chunk of response.body) {
+      if (signal.aborted) throw new CimdFetchError("CIMD fetch timeout");
+      const bytes = typeof chunk === "string" ? Buffer.from(chunk, "utf8") : chunk;
+      byteLength += bytes.byteLength;
+      if (byteLength > CIMD_MAX_BYTES) throw new CimdFetchError();
+      chunks.push(bytes);
+    }
+  } catch (error) {
+    if (error instanceof CimdFetchError) throw error;
+    throw new CimdFetchError();
   }
   try {
     const json = new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks));

@@ -177,6 +177,25 @@ describe("CIMD hardened fetching", () => {
     await expect(fetchClient(CLIENT_ID)).rejects.toThrow();
   });
 
+  it("normalizes response-stream failures without exposing transport details", async () => {
+    const fetchClient = createCimdFetcher({
+      resolve: async () => [{ address: "93.184.216.34", family: 4 }],
+      transport: async () => response({
+        body: (async function* () {
+          yield Buffer.from("{");
+          throw new Error("provider socket reset at internal-host.example");
+        })(),
+      }),
+    });
+    const result = fetchClient(CLIENT_ID);
+    await expect(result).rejects.toBeInstanceOf(Error);
+    await expect(result).rejects.toMatchObject({
+      name: "CimdFetchError",
+      message: "CIMD client metadata could not be validated",
+    });
+    await expect(result).rejects.not.toThrow(/internal-host|socket reset/i);
+  });
+
   it.each([
     ["text/html", JSON.stringify(VALID_DOCUMENT)],
     ["application/json", "not-json"],

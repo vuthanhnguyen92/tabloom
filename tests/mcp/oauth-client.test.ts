@@ -100,8 +100,23 @@ describe("public OAuth client metadata", () => {
     "https://client.example/callback#fragment",
     "https://client.example/callback#",
     " https://client.example/callback",
+    "https://client.exa\tmple/callback",
+    "https://client.example/call\nback",
     "https://*.client.example/callback",
   ])("rejects unsafe redirect URI %s", (redirectUri) => {
+    expect(() => validateDcrClientMetadata({
+      ...validRegistration,
+      redirect_uris: [redirectUri],
+    })).toThrow();
+  });
+
+  it.each([
+    "http://127.1/callback",
+    "http://2130706433/callback",
+    "http://0x7f000001/callback",
+    "http://0177.0.0.1/callback",
+    "http://[0:0:0:0:0:0:0:1]/callback",
+  ])("rejects non-literal loopback spelling %s", (redirectUri) => {
     expect(() => validateDcrClientMetadata({
       ...validRegistration,
       redirect_uris: [redirectUri],

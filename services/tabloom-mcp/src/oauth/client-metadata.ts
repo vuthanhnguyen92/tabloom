@@ -51,7 +51,7 @@ function validateClientName(value: unknown): string {
 }
 
 function validateRedirectUri(value: unknown): string {
-  if (typeof value !== "string" || value.length === 0 || value.trim() !== value || value.includes("*")) {
+  if (typeof value !== "string" || value.length === 0 || /\s/u.test(value) || value.includes("*")) {
     throw invalidClientMetadata();
   }
   let url: URL;
@@ -62,8 +62,10 @@ function validateRedirectUri(value: unknown): string {
   }
   if (url.username || url.password || value.includes("#")) throw invalidClientMetadata();
   if (url.protocol === "https:") return value;
-  const loopback = url.hostname === "127.0.0.1" || url.hostname === "[::1]";
-  if (url.protocol !== "http:" || !loopback) throw invalidClientMetadata();
+  const authority = /^http:\/\/([^/?#]+)/i.exec(value)?.[1];
+  const literalLoopback = authority !== undefined &&
+    /^(?:127\.0\.0\.1|\[::1\])(?::[0-9]+)?$/.test(authority);
+  if (url.protocol !== "http:" || !literalLoopback) throw invalidClientMetadata();
   return value;
 }
 
