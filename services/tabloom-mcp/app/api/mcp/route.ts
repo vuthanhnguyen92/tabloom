@@ -32,13 +32,29 @@ const handler = createMcpHandler(
   },
 );
 
-async function authenticatedHandler(request: Request): Promise<Response> {
+type AuthenticatedHandler = ReturnType<typeof withMcpAuth>;
+
+let cachedAuthenticatedHandler: AuthenticatedHandler | undefined;
+
+function getAuthenticatedHandler(): AuthenticatedHandler {
+  if (cachedAuthenticatedHandler) {
+    return cachedAuthenticatedHandler;
+  }
+
   const config = loadMcpAuthConfig(process.env);
-  return withMcpAuth(handler, createTokenVerifier(config), {
+  const verifier = createTokenVerifier(config);
+  const authenticatedHandler = withMcpAuth(handler, verifier, {
     required: true,
     resourceMetadataPath: "/.well-known/oauth-protected-resource",
     resourceUrl: config.resourceUrl.origin,
-  })(request);
+  });
+
+  cachedAuthenticatedHandler = authenticatedHandler;
+  return authenticatedHandler;
 }
 
-export { authenticatedHandler as GET, authenticatedHandler as POST };
+async function routeHandler(request: Request): Promise<Response> {
+  return getAuthenticatedHandler()(request);
+}
+
+export { routeHandler as GET, routeHandler as POST };
