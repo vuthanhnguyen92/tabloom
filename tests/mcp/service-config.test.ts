@@ -1,18 +1,60 @@
 import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
+import nextConfig from "../../services/tabloom-mcp/next.config";
+import { GET } from "../../services/tabloom-mcp/app/api/health/route";
 
 describe("Tabloom MCP service configuration", () => {
-  it("pins the supported MCP server runtime", async () => {
+  it("pins the supported MCP server runtime and dependencies", async () => {
     const manifest = JSON.parse(
       await readFile("services/tabloom-mcp/package.json", "utf8"),
     );
 
     expect(manifest.engines.node).toBe(">=22.13.0");
-    expect(manifest.dependencies).toMatchObject({
+    expect(manifest.dependencies).toEqual({
       "@modelcontextprotocol/server": "2.0.0",
+      "@supabase/supabase-js": "2.112.4",
+      "@tabloom/workspace": "file:../../shared",
       "mcp-handler": "2.1.1",
+      "next": "16.3.3",
+      "react": "19.2.6",
+      "react-dom": "19.2.6",
       "jose": "6.2.10",
       "zod": "4.5.2",
+    });
+  });
+
+  it("provides the service lifecycle scripts", async () => {
+    const manifest = JSON.parse(
+      await readFile("services/tabloom-mcp/package.json", "utf8"),
+    );
+
+    expect(manifest.scripts).toMatchObject({
+      dev: "next dev",
+      build: "next build",
+      start: "next start",
+      "type-check": "tsc --noEmit",
+      lint: "eslint .",
+    });
+  });
+
+  it("is included by the root workspace", async () => {
+    const rootManifest = JSON.parse(await readFile("package.json", "utf8"));
+
+    expect(rootManifest.workspaces).toEqual(["shared", "services/*"]);
+  });
+
+  it("transpiles the local shared workspace package", () => {
+    expect(nextConfig.transpilePackages).toEqual(["@tabloom/workspace"]);
+  });
+
+  it("serves a non-sensitive, uncached health response", async () => {
+    const response = GET();
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("Cache-Control")).toBe("no-store");
+    await expect(response.json()).resolves.toEqual({
+      service: "tabloom-mcp",
+      status: "ok",
     });
   });
 

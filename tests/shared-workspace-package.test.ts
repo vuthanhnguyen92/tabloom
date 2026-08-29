@@ -14,6 +14,9 @@ describe("shared workspace package", () => {
         "./repository": "./repository.ts",
         "./workspace-sync-repository": "./workspace-sync-repository.ts",
       },
+      dependencies: {
+        "@supabase/supabase-js": "2.112.4",
+      },
     });
   });
 });
