@@ -350,6 +350,7 @@ function emptyReport(discovery = {}) {
     scopeMatch: false,
     refreshRotated: false,
     refreshReplayRejected: false,
+    cleanupFailed: false,
     mcpContractMatch: false,
     mcpBeforeRevocationResult: "server_error",
     revocationResult: "server_error",
@@ -405,6 +406,7 @@ function allowlistedReport(report) {
     scopeMatch: report?.scopeMatch === true,
     refreshRotated: report?.refreshRotated === true,
     refreshReplayRejected: report?.refreshReplayRejected === true,
+    cleanupFailed: report?.cleanupFailed === true,
     mcpContractMatch: report?.mcpContractMatch === true,
     mcpBeforeRevocationResult: httpResultClass(
       report?.mcpBeforeRevocationResult,
@@ -424,6 +426,7 @@ function reportFromResult({
   rotatedVerified,
   refreshRotated,
   refreshReplayRejected,
+  cleanupFailed = false,
   mcpContractMatch,
   mcpBeforeRevocationResult,
   revocationResult,
@@ -458,6 +461,7 @@ function reportFromResult({
     scopeMatch &&
     refreshRotated &&
     refreshReplayRejected &&
+    !cleanupFailed &&
     mcpContractMatch &&
     mcpBeforeRevocationResult === "success" &&
     revocationResult === "success" &&
@@ -476,6 +480,7 @@ function reportFromResult({
     scopeMatch,
     refreshRotated,
     refreshReplayRejected,
+    cleanupFailed,
     mcpContractMatch,
     mcpBeforeRevocationResult,
     revocationResult,
@@ -629,6 +634,15 @@ export async function beginProbeAcceptance({
   let latestReport = emptyReport({ resource: expectedResource });
   const safeRequest = (url, init) =>
     noRedirectRequest(requestFn, url, init);
+  let listener;
+  let listenerCloseAttempted = false;
+  let cleanupActiveGrant;
+
+  const closeListener = async () => {
+    if (!listener || listenerCloseAttempted) return;
+    listenerCloseAttempted = true;
+    await listener.close();
+  };
 
   try {
     const protectedResource = successfulJson(
@@ -667,9 +681,8 @@ export async function beginProbeAcceptance({
     );
 
     const { state, verifier, challenge } = createPkceFn();
-    const listener = await createCallbackListenerFn(state);
-    try {
-      const registration = successfulJson(
+    listener = await createCallbackListenerFn(state);
+    const registration = successfulJson(
         await safeRequest(metadata.registration_endpoint, {
           method: "POST",
           headers: { "content-type": "application/json" },
@@ -679,11 +692,11 @@ export async function beginProbeAcceptance({
         }),
         "Dynamic client registration",
       );
-      if (typeof registration.client_id !== "string" || !registration.client_id) {
-        throw new Error("Dynamic client registration failed");
-      }
+    if (typeof registration.client_id !== "string" || !registration.client_id) {
+      throw new Error("Dynamic client registration failed");
+    }
 
-      const authorizationUrl = buildAuthorizationUrl({
+    const authorizationUrl = buildAuthorizationUrl({
         authorizationEndpoint: metadata.authorization_endpoint,
         clientId: registration.client_id,
         callbackUrl: listener.callbackUrl,
@@ -691,13 +704,13 @@ export async function beginProbeAcceptance({
         challenge,
         resource: expectedResource,
       });
-      log("Complete the authorization request in the opened browser window.");
-      await handoffAuthorizationFn(authorizationUrl);
-      const timeoutMs = Number(env.TABLOOM_MCP_OAUTH_TIMEOUT_MS) ||
-        DEFAULT_TIMEOUT_MS;
-      const code = await waitForCallback(listener.callback, timeoutMs);
+    log("Complete the authorization request in the opened browser window.");
+    await handoffAuthorizationFn(authorizationUrl);
+    const timeoutMs = Number(env.TABLOOM_MCP_OAUTH_TIMEOUT_MS) ||
+      DEFAULT_TIMEOUT_MS;
+    const code = await waitForCallback(listener.callback, timeoutMs);
 
-      const firstBody = successfulJson(
+    const firstBody = successfulJson(
         await safeRequest(metadata.token_endpoint, {
           method: "POST",
           headers: { "content-type": "application/x-www-form-urlencoded" },
@@ -712,14 +725,14 @@ export async function beginProbeAcceptance({
         }),
         "Authorization-code exchange",
       );
-      const first = tokenPair(firstBody, "Authorization-code exchange");
-      const firstVerified = await verifyAccessTokenFn(first.accessToken, {
+    const first = tokenPair(firstBody, "Authorization-code exchange");
+    const firstVerified = await verifyAccessTokenFn(first.accessToken, {
         issuer: discovery.issuer,
         resource: discovery.resource,
         jwks,
       });
 
-      const rotatedBody = successfulJson(
+    const rotatedBody = successfulJson(
         await safeRequest(metadata.token_endpoint, {
           method: "POST",
           headers: { "content-type": "application/x-www-form-urlencoded" },
@@ -733,16 +746,89 @@ export async function beginProbeAcceptance({
         }),
         "Refresh-token exchange",
       );
-      const rotated = tokenPair(rotatedBody, "Refresh-token exchange");
-      const rotatedVerified = await verifyAccessTokenFn(rotated.accessToken, {
-        issuer: discovery.issuer,
-        resource: discovery.resource,
-        jwks,
-      });
-      const refreshRotated =
-        rotated.accessToken !== first.accessToken &&
-        rotated.refreshToken !== first.refreshToken;
-      const replay = await safeRequest(metadata.token_endpoint, {
+    const rotated = tokenPair(rotatedBody, "Refresh-token exchange");
+    const refreshRotated =
+      rotated.accessToken !== first.accessToken &&
+      rotated.refreshToken !== first.refreshToken;
+    let rotatedVerified;
+    let refreshReplayRejected = false;
+    let mcpContractMatch = false;
+    let mcpBeforeRevocationResult = "server_error";
+    let cleanupPromise;
+    cleanupActiveGrant = ({ forceFailure = false } = {}) => {
+      if (cleanupPromise) return cleanupPromise;
+      cleanupPromise = (async () => {
+        let cleanupFailed = false;
+        let revocationResult = "server_error";
+        let mcpAfterRevocationResult = "server_error";
+        try {
+          const revocation = await safeRequest(metadata.revocation_endpoint, {
+            method: "POST",
+            headers: { "content-type": "application/x-www-form-urlencoded" },
+            body: new URLSearchParams({
+              token: rotated.accessToken,
+              token_type_hint: "access_token",
+            }),
+          });
+          revocationResult = classifyHttpStatus(revocation.status);
+          if (revocationResult !== "success") cleanupFailed = true;
+        } catch {
+          cleanupFailed = true;
+        }
+        try {
+          const afterRevocation = await safeRequest(
+            `${expectedResource}/api/mcp`,
+            mcpRequest(rotated.accessToken, 2),
+          );
+          mcpAfterRevocationResult = classifyHttpStatus(
+            afterRevocation.status,
+          );
+          if (mcpAfterRevocationResult !== "unauthorized") {
+            cleanupFailed = true;
+          }
+        } catch {
+          cleanupFailed = true;
+        }
+        latestReport = reportFromResult({
+          discovery,
+          firstVerified,
+          rotatedVerified,
+          refreshRotated,
+          refreshReplayRejected,
+          cleanupFailed,
+          mcpContractMatch,
+          mcpBeforeRevocationResult,
+          revocationResult,
+          mcpAfterRevocationResult,
+        });
+        if (forceFailure) latestReport.pass = false;
+        try {
+          await writeReportFn(latestReport, reportPath);
+        } catch {
+          cleanupFailed = true;
+          latestReport = { ...latestReport, cleanupFailed: true, pass: false };
+          await writeReportFn(latestReport, reportPath).catch(() => undefined);
+        }
+        if (cleanupFailed) {
+          throw new Error("OAuth active-grant cleanup failed");
+        }
+        if (!forceFailure && !latestReport.pass) {
+          throw new Error("OAuth flow failed the readiness gate");
+        }
+        if (!forceFailure) {
+          log(`Redacted readiness report written to ${reportPath}`);
+        }
+      })();
+      return cleanupPromise;
+    };
+
+    rotatedVerified = await verifyAccessTokenFn(rotated.accessToken, {
+      issuer: discovery.issuer,
+      resource: discovery.resource,
+      jwks,
+    });
+
+    const replay = await safeRequest(metadata.token_endpoint, {
         method: "POST",
         headers: { "content-type": "application/x-www-form-urlencoded" },
         body: new URLSearchParams({
@@ -753,18 +839,16 @@ export async function beginProbeAcceptance({
           scope: REQUIRED_SCOPE,
         }),
       });
-      const refreshReplayRejected = replay.status === 400 &&
-        isRecord(replay.body) && replay.body.error === "invalid_grant";
+    refreshReplayRejected = replay.status === 400 &&
+      isRecord(replay.body) && replay.body.error === "invalid_grant";
 
-      const beforeRevocation = await safeRequest(
+    const beforeRevocation = await safeRequest(
         `${expectedResource}/api/mcp`,
         mcpRequest(rotated.accessToken, 1),
       );
-      const mcpBeforeRevocationResult = classifyHttpStatus(
-        beforeRevocation.status,
-      );
-      const mcpContractMatch = evaluateMcpServiceStatus(beforeRevocation, 1);
-      latestReport = reportFromResult({
+    mcpBeforeRevocationResult = classifyHttpStatus(beforeRevocation.status);
+    mcpContractMatch = evaluateMcpServiceStatus(beforeRevocation, 1);
+    latestReport = reportFromResult({
         discovery,
         firstVerified,
         rotatedVerified,
@@ -775,19 +859,19 @@ export async function beginProbeAcceptance({
         revocationResult: "server_error",
         mcpAfterRevocationResult: "server_error",
       });
-      await writeReportFn(latestReport, reportPath);
-      const activeGrantReady = latestReport.discoverySupported &&
-        latestReport.resourceMatch && latestReport.issuerMatch &&
-        latestReport.algorithm === "ES256" && latestReport.audienceMatch &&
-        latestReport.scopeMatch && latestReport.refreshRotated &&
-        latestReport.refreshReplayRejected && latestReport.mcpContractMatch &&
-        latestReport.mcpBeforeRevocationResult === "success";
-      if (!activeGrantReady) {
-        throw new Error("OAuth flow failed the active-grant readiness gate");
-      }
-      const privateState = PRIVATE_PROBE_CHANNELS.get(privateResultChannel);
-      if (privateState) {
-        privateState.result = Object.freeze({
+    await writeReportFn(latestReport, reportPath);
+    const activeGrantReady = latestReport.discoverySupported &&
+      latestReport.resourceMatch && latestReport.issuerMatch &&
+      latestReport.algorithm === "ES256" && latestReport.audienceMatch &&
+      latestReport.scopeMatch && latestReport.refreshRotated &&
+      latestReport.refreshReplayRejected && latestReport.mcpContractMatch &&
+      latestReport.mcpBeforeRevocationResult === "success";
+    if (!activeGrantReady) {
+      throw new Error("OAuth flow failed the active-grant readiness gate");
+    }
+    const privateState = PRIVATE_PROBE_CHANNELS.get(privateResultChannel);
+    if (privateState) {
+      privateState.result = Object.freeze({
           first: Object.freeze({
             accessToken: first.accessToken,
             verified: firstVerified,
@@ -797,57 +881,19 @@ export async function beginProbeAcceptance({
             verified: rotatedVerified,
           }),
           jwks,
-        });
-      }
-      let completed = false;
-      return Object.freeze({
-        async complete() {
-          if (completed) throw new Error("OAuth probe phase was already completed");
-          completed = true;
-          try {
-            const revocation = await safeRequest(metadata.revocation_endpoint, {
-              method: "POST",
-              headers: { "content-type": "application/x-www-form-urlencoded" },
-              body: new URLSearchParams({
-                token: rotated.accessToken,
-                token_type_hint: "access_token",
-              }),
-            });
-            const revocationResult = classifyHttpStatus(revocation.status);
-            const afterRevocation = await safeRequest(
-              `${expectedResource}/api/mcp`,
-              mcpRequest(rotated.accessToken, 2),
-            );
-            const mcpAfterRevocationResult = classifyHttpStatus(
-              afterRevocation.status,
-            );
-            latestReport = reportFromResult({
-              discovery,
-              firstVerified,
-              rotatedVerified,
-              refreshRotated,
-              refreshReplayRejected,
-              mcpContractMatch,
-              mcpBeforeRevocationResult,
-              revocationResult,
-              mcpAfterRevocationResult,
-            });
-            await writeReportFn(latestReport, reportPath);
-            log(`Redacted readiness report written to ${reportPath}`);
-            if (!latestReport.pass) {
-              throw new Error("OAuth flow failed the readiness gate");
-            }
-          } catch (error) {
-            await writeReportFn(latestReport, reportPath);
-            throw error;
-          }
-        },
       });
-    } finally {
-      await listener.close();
     }
+    const phase = Object.freeze({
+      complete: () => cleanupActiveGrant({ forceFailure: false }),
+    });
+    await closeListener();
+    return phase;
   } catch (error) {
-    await writeReportFn(latestReport, reportPath);
+    if (cleanupActiveGrant) {
+      await cleanupActiveGrant({ forceFailure: true }).catch(() => undefined);
+    }
+    await closeListener().catch(() => undefined);
+    await writeReportFn(latestReport, reportPath).catch(() => undefined);
     throw error;
   }
 }

@@ -151,8 +151,8 @@ TABLOOM_MCP_RESOURCE_URL=https://tabloom-mcp.vercel.app \
 ```
 
 The ignored `outputs/mcp-oauth-readiness.json` file is mode `0600`. It contains
-only booleans (including refresh replay rejection), issuer/resource strings,
-algorithm, audience, scope, and HTTP result classes. A separate one-shot
+only booleans (including refresh replay rejection and cleanup failure),
+issuer/resource strings, algorithm, audience, scope, and HTTP result classes. A separate one-shot
 in-memory channel is the only boundary that can expose verified claims and
 access tokens to the checked-in live test; the report writer and CLI cannot
 serialize that channel. The report never contains authorization codes, access or refresh
@@ -256,8 +256,10 @@ The checked-in test performs DCR and browser login/consent for both users, reads
 the published JWKS, validates exact ES256 issuer/resource/scope claims, parses
 the real `get_service_status` JSON-RPC response, refreshes, and rejects replay
 of the original refresh credential. It pauses both users with their rotated
-grants active, constructs and submits the runtime mismatch bearer and requires
-`401`, then resumes both probe phases, revokes each grant, and requires each
+grants active, requires both ordinary rotated A and B bearers to return the
+exact successful `get_service_status` JSON-RPC result, then immediately submits
+the runtime mismatch bearer and requires `401`. Only afterward does it resume
+both probe phases, revoke each grant, and require each
 rotated access token to receive post-revocation MCP `401`. Private in-memory
 results bind both first and rotated facade subjects
 to the fixture UUID and prove the two browser runs issued four distinct access
@@ -268,8 +270,15 @@ link has the correct `user_id`, includes the expected independently owned
 fixture record, and excludes the other user's fixture record. User A then
 attempts a no-op update of one User B space, collection, and link, setting each
 field to its already stored value. Each SDK call must return zero affected rows,
-and User B must reload all three original records unchanged. No cleanup write is
-needed or authorized. Every Supabase Auth and repository request uses a
+and User B must reload all three original records unchanged. Because even a
+no-op update can fire revision triggers if RLS is broken, the gate first captures
+all three records plus User B's exact `workspace_sync_state` revision and
+`updated_at`. In mandatory cleanup, User B restores any changed record through
+the hardened owner client, restores the exact captured sync revision/timestamp
+after those trigger-producing repairs, and re-reads both records and sync state
+for exact equality. Cleanup denial or mismatch is a categorical fatal result;
+the operator must stop rather than proceed with a possibly drifted fixture.
+Every Supabase Auth and repository request uses a
 silent SDK fetch wrapper confined to the exact approved production origin,
 manual redirects, and all-`3xx` rejection. Console, stdout, and stderr are
 disabled during all sensitive steps, errors are replaced with a fixed message,

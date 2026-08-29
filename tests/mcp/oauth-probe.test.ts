@@ -36,11 +36,14 @@ import {
   runKeyGeneratorCli,
 } from "../../services/tabloom-mcp/scripts/generate-oauth-keys.mjs";
 import {
+  closeBrowserContextWithActiveCleanup,
   completeLiveAcceptancePhases,
   loadAcceptanceMismatchSigner,
   createExactSupabaseFetch,
   loadLiveAcceptanceFixture,
   parseLiveAcceptanceFixture,
+  runRestorableRlsWriteCheck,
+  verifyActiveBearerControlsAndMismatch,
   verifySubjectMismatchBearer,
 } from "../e2e/helpers/mcp-facade-live";
 
@@ -80,6 +83,7 @@ const REPORT_KEYS = [
   "scopeMatch",
   "refreshRotated",
   "refreshReplayRejected",
+  "cleanupFailed",
   "mcpContractMatch",
   "mcpBeforeRevocationResult",
   "revocationResult",
@@ -126,6 +130,95 @@ function serviceStatusResponse(id: number) {
 
 function jsonResponse(status: number, body: Record<string, unknown> = {}) {
   return { status, body };
+}
+
+function successfulProbeHarness(options: {
+  listenerCloseError?: Error;
+  failReportCall?: number;
+  invalidReadiness?: boolean;
+} = {}) {
+  const reports: Array<Record<string, unknown>> = [];
+  let reportCalls = 0;
+  let refreshCalls = 0;
+  let mcpCalls = 0;
+  let revokeCalls = 0;
+  const request = async (url: string, init?: RequestInit) => {
+    if (url.endsWith("/.well-known/oauth-protected-resource")) {
+      return jsonResponse(200, PROTECTED_RESOURCE);
+    }
+    if (url.endsWith("/.well-known/oauth-authorization-server")) {
+      return jsonResponse(200, AUTHORIZATION_SERVER);
+    }
+    if (url.endsWith("/.well-known/jwks.json")) {
+      return jsonResponse(200, { keys: [] });
+    }
+    if (url.endsWith("/oauth/register")) {
+      return jsonResponse(201, { client_id: "public-client" });
+    }
+    if (url.endsWith("/oauth/token")) {
+      const refresh = new URLSearchParams(String(init?.body))
+        .get("grant_type") === "refresh_token";
+      if (!refresh) {
+        return jsonResponse(200, {
+          access_token: "first-access",
+          refresh_token: "first-refresh",
+        });
+      }
+      refreshCalls += 1;
+      return refreshCalls === 1
+        ? jsonResponse(200, {
+          access_token: "rotated-access",
+          refresh_token: "rotated-refresh",
+        })
+        : jsonResponse(400, { error: "invalid_grant" });
+    }
+    if (url.endsWith("/oauth/revoke")) {
+      revokeCalls += 1;
+      return jsonResponse(200);
+    }
+    if (url.endsWith("/api/mcp")) {
+      mcpCalls += 1;
+      if (mcpCalls > 1) return jsonResponse(401);
+      return jsonResponse(200, options.invalidReadiness
+        ? { jsonrpc: "2.0", id: 1, error: { code: -32603 } }
+        : serviceStatusResponse(1));
+    }
+    throw new Error("Unexpected request");
+  };
+  return {
+    reports,
+    counts: () => ({ mcpCalls, revokeCalls }),
+    probeOptions: {
+      env: { NODE_ENV: "test", TABLOOM_MCP_RESOURCE_URL: RESOURCE },
+      request,
+      createPkce: () => ({
+        state: "state",
+        verifier: "verifier",
+        challenge: "challenge",
+      }),
+      createCallbackListener: async () => ({
+        callbackUrl: CALLBACK_URL,
+        callback: Promise.resolve("code"),
+        close: async () => {
+          if (options.listenerCloseError) throw options.listenerCloseError;
+        },
+      }),
+      handoffAuthorization: async () => undefined,
+      verifyAccessToken: async () => ({
+        key: {} as CryptoKey,
+        protectedHeader: { alg: "ES256" },
+        payload: { iss: ISSUER, aud: RESOURCE, scope: SCOPE },
+      }),
+      writeReport: async (report: Record<string, unknown>) => {
+        reportCalls += 1;
+        if (reportCalls === options.failReportCall) {
+          throw new Error("report write failed");
+        }
+        reports.push(report);
+      },
+      log: () => undefined,
+    },
+  };
 }
 
 describe("MCP OAuth readiness probe", () => {
@@ -416,6 +509,7 @@ describe("MCP OAuth readiness probe", () => {
     expect(reports.at(-1)).toMatchObject({
       refreshRotated: true,
       refreshReplayRejected: true,
+      cleanupFailed: false,
       mcpContractMatch: true,
       mcpBeforeRevocationResult: "success",
       revocationResult: "server_error",
@@ -435,6 +529,9 @@ describe("MCP OAuth readiness probe", () => {
     expect(() => privateResults.take()).toThrow();
 
     await phase.complete();
+    await phase.complete();
+    expect(requests.filter((entry) => entry.url.endsWith("/oauth/revoke")))
+      .toHaveLength(1);
 
     expect(Object.fromEntries(new URL(handoffUrl).searchParams)).toEqual({
       response_type: "code",
@@ -493,6 +590,7 @@ describe("MCP OAuth readiness probe", () => {
       scopeMatch: true,
       refreshRotated: true,
       refreshReplayRejected: true,
+      cleanupFailed: false,
       mcpContractMatch: true,
       mcpBeforeRevocationResult: "success",
       revocationResult: "success",
@@ -561,15 +659,47 @@ describe("MCP OAuth readiness probe", () => {
         reports.push(report);
       },
       log: () => undefined,
-    })).rejects.toThrow("readiness gate");
+    })).rejects.toThrow("cleanup failed");
     expect(mcpCalls).toBe(2);
     expect(reports.at(-1)).toMatchObject({
       refreshReplayRejected: true,
+      cleanupFailed: true,
       revocationEnforced: false,
       mcpAfterRevocationResult: "success",
       pass: false,
     });
     expect(Object.keys(reports.at(-1)!)).toEqual(REPORT_KEYS);
+  });
+
+  it.each([
+    {
+      name: "callback listener close",
+      options: { listenerCloseError: new Error("listener close failed") },
+      expected: "listener close failed",
+    },
+    {
+      name: "active report write",
+      options: { failReportCall: 2 },
+      expected: "report write failed",
+    },
+    {
+      name: "active readiness",
+      options: { invalidReadiness: true },
+      expected: "readiness gate",
+    },
+  ])("cleans the rotated grant after $name failure", async ({ options, expected }) => {
+    const harness = successfulProbeHarness(options);
+    await expect(beginProbeAcceptance(
+      harness.probeOptions as Parameters<typeof beginProbeAcceptance>[0],
+    ))
+      .rejects.toThrow(expected);
+    expect(harness.counts()).toEqual({ mcpCalls: 2, revokeCalls: 1 });
+    expect(harness.reports.at(-1)).toMatchObject({
+      cleanupFailed: false,
+      mcpAfterRevocationResult: "unauthorized",
+      revocationResult: "success",
+      pass: false,
+    });
   });
 
   it("returns a fixed nonzero CLI error without echoing unexpected details", async () => {
@@ -1055,6 +1185,91 @@ describe("live MCP facade acceptance fixture schema", () => {
     } finally {
       await closeServer(server);
     }
+  });
+
+  it("preserves an active-check failure while both phase cleanups settle categorically", async () => {
+    const events: string[] = [];
+    const statuses: Array<{ cleanupFailed: boolean }> = [];
+    const phases = [
+      { complete: async () => { events.push("revoke-a"); } },
+      {
+        complete: async () => {
+          events.push("revoke-b");
+          throw new Error("private-cleanup-detail");
+        },
+      },
+    ];
+    await expect(completeLiveAcceptancePhases(
+      phases,
+      async () => { throw new Error("duplicate active bearer"); },
+      (status) => { statuses.push(status); },
+    )).rejects.toThrow("duplicate active bearer");
+    expect(events.sort()).toEqual(["revoke-a", "revoke-b"]);
+    expect(statuses).toEqual([{ cleanupFailed: true }]);
+    expect(JSON.stringify(statuses)).not.toContain("private-cleanup-detail");
+  });
+
+  it("cleans an acquired phase when browser context close fails", async () => {
+    const events: string[] = [];
+    const statuses: Array<{ cleanupFailed: boolean }> = [];
+    await expect(closeBrowserContextWithActiveCleanup(
+      { close: async () => { throw new Error("context close failed"); } },
+      { complete: async () => { events.push("revoke"); } },
+      (status) => { statuses.push(status); },
+    )).rejects.toThrow("context close failed");
+    expect(events).toEqual(["revoke"]);
+    expect(statuses).toEqual([{ cleanupFailed: false }]);
+  });
+
+  it("requires both active ordinary bearer controls immediately before mismatch rejection", async () => {
+    const calls: string[] = [];
+    const request = async (_url: string, init?: RequestInit) => {
+      const token = String((init?.headers as Record<string, string>).authorization)
+        .replace("Bearer ", "");
+      calls.push(token);
+      const id = JSON.parse(String(init?.body)).id;
+      return token === "mismatch"
+        ? jsonResponse(401)
+        : jsonResponse(200, serviceStatusResponse(id));
+    };
+    await expect(verifyActiveBearerControlsAndMismatch({
+      resource: RESOURCE,
+      userAAccessToken: "ordinary-a",
+      userBAccessToken: "ordinary-b",
+      mismatchBearer: "mismatch",
+      request,
+    })).resolves.toBeUndefined();
+    expect(calls).toEqual(["ordinary-a", "ordinary-b", "mismatch"]);
+  });
+
+  it("restores three-table records and sync revision after broken-RLS trigger drift", async () => {
+    const original = {
+      records: {
+        spaces: { name: "Space B", updated_at: "2026-08-29T00:00:00Z" },
+        collections: { name: "Collection B", updated_at: "2026-08-29T00:00:01Z" },
+        links: { title: "Link B", updated_at: "2026-08-29T00:00:02Z" },
+      },
+      sync: { revision: 7, updated_at: "2026-08-29T00:00:03Z" },
+    };
+    let state = structuredClone(original);
+    const statuses: Array<{ cleanupFailed: boolean }> = [];
+    await expect(runRestorableRlsWriteCheck({
+      capture: async () => structuredClone(original),
+      attempt: async () => {
+        state.records.spaces.updated_at = "drift-space";
+        state.records.collections.updated_at = "drift-collection";
+        state.records.links.updated_at = "drift-link";
+        state.sync = { revision: 10, updated_at: "drift-sync" };
+        throw new Error("cross-user no-op returned rows");
+      },
+      restore: async (baseline) => { state = structuredClone(baseline); },
+      verifyRestored: async (baseline) => {
+        expect(state).toEqual(baseline);
+      },
+      recordCleanupStatus: (status) => { statuses.push(status); },
+    })).rejects.toThrow("cross-user no-op returned rows");
+    expect(state).toEqual(original);
+    expect(statuses).toEqual([{ cleanupFailed: false }]);
   });
 
   it("loads only private regular JSON fixture and storage-state files outside the repository", async () => {

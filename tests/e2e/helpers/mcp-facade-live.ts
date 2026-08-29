@@ -8,6 +8,7 @@ import { SupabaseWorkspaceRepository } from "../../../shared/repository";
 import {
   createPrivateProbeResultChannel,
   beginProbeAcceptance,
+  evaluateMcpServiceStatus,
   probeRequest,
 } from "../../../scripts/probe-mcp-oauth.mjs";
 import {
@@ -520,13 +521,75 @@ async function withSuppressedOutput<T>(action: () => Promise<T>): Promise<T> {
   }
 }
 
+type CompletableProbePhase = { complete(): Promise<void> };
+type CleanupStatus = Readonly<{ cleanupFailed: boolean }>;
+type CleanupStatusRecorder = (status: CleanupStatus) => void;
+
+async function settleProbeCompletions(
+  phases: CompletableProbePhase[],
+  recordCleanupStatus: CleanupStatusRecorder,
+) {
+  const completions = await Promise.allSettled(
+    phases.map((phase) => phase.complete()),
+  );
+  const cleanupFailed = completions.some(
+    (completion) => completion.status === "rejected",
+  );
+  recordCleanupStatus(Object.freeze({ cleanupFailed }));
+  return cleanupFailed;
+}
+
+export async function closeBrowserContextWithActiveCleanup(
+  context: { close(): Promise<void> },
+  phase: CompletableProbePhase | undefined,
+  recordCleanupStatus: CleanupStatusRecorder = () => undefined,
+) {
+  try {
+    await context.close();
+  } catch (primaryError) {
+    if (phase) {
+      await settleProbeCompletions([phase], recordCleanupStatus);
+    }
+    throw primaryError;
+  }
+}
+
+export async function runRestorableRlsWriteCheck<T>(options: {
+  capture(): Promise<T>;
+  attempt(baseline: T): Promise<void>;
+  restore(baseline: T): Promise<void>;
+  verifyRestored(baseline: T): Promise<void>;
+  recordCleanupStatus?: CleanupStatusRecorder;
+}) {
+  const baseline = await options.capture();
+  let primaryError: unknown;
+  try {
+    await options.attempt(baseline);
+  } catch (error) {
+    primaryError = error;
+  }
+  let cleanupFailed = false;
+  try {
+    await options.restore(baseline);
+    await options.verifyRestored(baseline);
+  } catch {
+    cleanupFailed = true;
+  }
+  options.recordCleanupStatus?.(Object.freeze({ cleanupFailed }));
+  if (cleanupFailed) throw new Error("Cross-user RLS cleanup failed");
+  if (primaryError) throw primaryError;
+}
+
 async function authorizeWithStorageState(
   browser: Browser,
   user: LiveAcceptanceUser,
   resource: string,
+  recordCleanupStatus: CleanupStatusRecorder,
 ) {
   let context: BrowserContext | undefined;
   let phase: Awaited<ReturnType<typeof beginProbeAcceptance>> | undefined;
+  let acceptance: { phase: NonNullable<typeof phase>; result: ProbePrivateResult } | undefined;
+  let primaryError: unknown;
   const reports: Array<{
     refreshReplayRejected?: boolean;
     mcpBeforeRevocationResult?: string;
@@ -569,13 +632,27 @@ async function authorizeWithStorageState(
         result.first.accessToken === result.rotated.accessToken) {
       throw new Error("Facade subject did not match the browser fixture user");
     }
-    return { phase, result };
+    acceptance = { phase, result };
   } catch (error) {
-    if (phase) await phase.complete().catch(() => undefined);
-    throw error;
-  } finally {
-    await context?.close();
+    primaryError = error;
+    if (phase) {
+      await settleProbeCompletions([phase], recordCleanupStatus);
+    }
   }
+  if (context) {
+    try {
+      await closeBrowserContextWithActiveCleanup(
+        context,
+        phase,
+        recordCleanupStatus,
+      );
+    } catch (error) {
+      primaryError ??= error;
+    }
+  }
+  if (primaryError) throw primaryError;
+  if (!acceptance) throw new Error("Active probe result was unavailable");
+  return acceptance;
 }
 
 function supabaseClientFor(
@@ -609,7 +686,10 @@ function repositoryFor(fixture: LiveAcceptanceFixture, user: LiveAcceptanceUser)
   };
 }
 
-async function verifyTwoUserRls(fixture: LiveAcceptanceFixture) {
+async function verifyTwoUserRls(
+  fixture: LiveAcceptanceFixture,
+  recordCleanupStatus: CleanupStatusRecorder,
+) {
   const [userA, userB] = fixture.users;
   const a = repositoryFor(fixture, userA);
   const b = repositoryFor(fixture, userB);
@@ -656,30 +736,118 @@ async function verifyTwoUserRls(fixture: LiveAcceptanceFixture) {
   if (!originalB.space || !originalB.collection || !originalB.link) {
     throw new Error("Live acceptance owner records were missing");
   }
-  const deniedUpdates = await Promise.all([
-    a.client.from("spaces").update({ name: originalB.space.name })
-      .eq("id", userB.ownedSpaceId).select("id"),
-    a.client.from("collections").update({ name: originalB.collection.name })
-      .eq("id", userB.ownedCollectionId).select("id"),
-    a.client.from("links").update({ title: originalB.link.title })
-      .eq("id", userB.ownedLinkId).select("id"),
-  ]);
-  if (deniedUpdates.some((denied) => denied.error ||
-      !Array.isArray(denied.data) || denied.data.length !== 0)) {
-    throw new Error("Cross-user RLS no-op update was not denied");
-  }
-  const afterDeniedUpdate = await b.repository.load();
-  assertIsolated(afterDeniedUpdate, userB, userA);
-  const reloadedB = {
-    space: afterDeniedUpdate.spaces.find((record) => record.id === userB.ownedSpaceId),
-    collection: afterDeniedUpdate.collections.find(
+  const originalRecords = {
+    space: originalB.space,
+    collection: originalB.collection,
+    link: originalB.link,
+  };
+  const loadSyncState = async () => {
+    const result = await b.client.from("workspace_sync_state")
+      .select("revision,updated_at")
+      .eq("user_id", userB.userId)
+      .single();
+    if (result.error || !isRecord(result.data) ||
+        !Number.isSafeInteger(result.data.revision) ||
+        typeof result.data.updated_at !== "string") {
+      throw new Error("Workspace sync state could not be captured");
+    }
+    return {
+      revision: result.data.revision as number,
+      updated_at: result.data.updated_at,
+    };
+  };
+  const targetRecords = (workspace: typeof workspaceB) => ({
+    space: workspace.spaces.find((record) => record.id === userB.ownedSpaceId),
+    collection: workspace.collections.find(
       (record) => record.id === userB.ownedCollectionId,
     ),
-    link: afterDeniedUpdate.links.find((record) => record.id === userB.ownedLinkId),
+    link: workspace.links.find((record) => record.id === userB.ownedLinkId),
+  });
+  const requireOneRow = (result: { error: unknown; data: unknown }, label: string) => {
+    if (result.error || !Array.isArray(result.data) || result.data.length !== 1) {
+      throw new Error(`${label} restoration failed`);
+    }
   };
-  if (JSON.stringify(reloadedB) !== JSON.stringify(originalB)) {
-    throw new Error("Cross-user RLS update changed an owner record");
-  }
+
+  await runRestorableRlsWriteCheck({
+    capture: async () => ({
+      records: originalRecords,
+      sync: await loadSyncState(),
+    }),
+    attempt: async () => {
+      const deniedUpdates = await Promise.all([
+        a.client.from("spaces").update({ name: originalRecords.space.name })
+          .eq("id", userB.ownedSpaceId).select("id"),
+        a.client.from("collections").update({ name: originalRecords.collection.name })
+          .eq("id", userB.ownedCollectionId).select("id"),
+        a.client.from("links").update({ title: originalRecords.link.title })
+          .eq("id", userB.ownedLinkId).select("id"),
+      ]);
+      if (deniedUpdates.some((denied) => denied.error ||
+          !Array.isArray(denied.data) || denied.data.length !== 0)) {
+        throw new Error("Cross-user RLS no-op update was not denied");
+      }
+    },
+    restore: async (baseline) => {
+      const currentWorkspace = await b.repository.load();
+      const current = targetRecords(currentWorkspace);
+      if (!current.space || !current.collection || !current.link) {
+        throw new Error("Owner restoration target was missing");
+      }
+      if (JSON.stringify(current.space) !== JSON.stringify(baseline.records.space)) {
+        const restored = await b.client.from("spaces").update({
+          name: baseline.records.space.name,
+          color: baseline.records.space.color,
+          position: baseline.records.space.position,
+          created_at: baseline.records.space.created_at,
+          updated_at: baseline.records.space.updated_at,
+        }).eq("id", userB.ownedSpaceId).eq("user_id", userB.userId).select("id");
+        requireOneRow(restored, "Space");
+      }
+      if (JSON.stringify(current.collection) !== JSON.stringify(baseline.records.collection)) {
+        const restored = await b.client.from("collections").update({
+          space_id: baseline.records.collection.space_id,
+          name: baseline.records.collection.name,
+          position: baseline.records.collection.position,
+          created_at: baseline.records.collection.created_at,
+          updated_at: baseline.records.collection.updated_at,
+        }).eq("id", userB.ownedCollectionId).eq("user_id", userB.userId).select("id");
+        requireOneRow(restored, "Collection");
+      }
+      if (JSON.stringify(current.link) !== JSON.stringify(baseline.records.link)) {
+        const restored = await b.client.from("links").update({
+          collection_id: baseline.records.link.collection_id,
+          url: baseline.records.link.url,
+          title: baseline.records.link.title,
+          description: baseline.records.link.description,
+          favicon_url: baseline.records.link.favicon_url,
+          position: baseline.records.link.position,
+          created_at: baseline.records.link.created_at,
+          updated_at: baseline.records.link.updated_at,
+        }).eq("id", userB.ownedLinkId).eq("user_id", userB.userId).select("id");
+        requireOneRow(restored, "Link");
+      }
+      const currentSync = await loadSyncState();
+      if (JSON.stringify(currentSync) !== JSON.stringify(baseline.sync)) {
+        const restored = await b.client.from("workspace_sync_state").update({
+          revision: baseline.sync.revision,
+          updated_at: baseline.sync.updated_at,
+        }).eq("user_id", userB.userId).select("user_id");
+        requireOneRow(restored, "Workspace sync state");
+      }
+    },
+    verifyRestored: async (baseline) => {
+      const restoredWorkspace = await b.repository.load();
+      assertIsolated(restoredWorkspace, userB, userA);
+      const restoredRecords = targetRecords(restoredWorkspace);
+      const restoredSync = await loadSyncState();
+      if (JSON.stringify(restoredRecords) !== JSON.stringify(baseline.records) ||
+          JSON.stringify(restoredSync) !== JSON.stringify(baseline.sync)) {
+        throw new Error("Cross-user RLS state was not exactly restored");
+      }
+    },
+    recordCleanupStatus,
+  });
 }
 
 async function verifySubjectMismatch(
@@ -706,28 +874,57 @@ async function verifySubjectMismatch(
     jwks: userAResult.jwks,
     resource: fixture.resource,
   });
-  const response = await probeRequest(`${fixture.resource}/api/mcp`, {
-    method: "POST",
-    headers: {
-      authorization: `Bearer ${mismatchBearer}`,
-      accept: "application/json, text/event-stream",
-      "content-type": "application/json",
-    },
-    body: JSON.stringify({
-      jsonrpc: "2.0",
-      id: 1,
-      method: "tools/call",
-      params: { name: "get_service_status", arguments: {} },
-    }),
+  await verifyActiveBearerControlsAndMismatch({
+    resource: fixture.resource,
+    userAAccessToken: userAResult.rotated.accessToken,
+    userBAccessToken: userBResult.rotated.accessToken,
+    mismatchBearer,
   });
-  if (response.status !== 401) throw new Error("Subject mismatch was not rejected");
 }
 
-type CompletableProbePhase = { complete(): Promise<void> };
+export async function verifyActiveBearerControlsAndMismatch(input: {
+  resource: string;
+  userAAccessToken: string;
+  userBAccessToken: string;
+  mismatchBearer: string;
+  request?: typeof probeRequest;
+}) {
+  const request = input.request ?? probeRequest;
+  const call = (accessToken: string, id: number) => request(
+    `${input.resource}/api/mcp`,
+    {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${accessToken}`,
+        accept: "application/json, text/event-stream",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id,
+        method: "tools/call",
+        params: { name: "get_service_status", arguments: {} },
+      }),
+    },
+  );
+  const userAControl = await call(input.userAAccessToken, 101);
+  if (!evaluateMcpServiceStatus(userAControl, 101)) {
+    throw new Error("User A active-bearer MCP control failed");
+  }
+  const userBControl = await call(input.userBAccessToken, 102);
+  if (!evaluateMcpServiceStatus(userBControl, 102)) {
+    throw new Error("User B active-bearer MCP control failed");
+  }
+  const mismatch = await call(input.mismatchBearer, 103);
+  if (mismatch.status !== 401) {
+    throw new Error("Subject mismatch was not rejected while controls were active");
+  }
+}
 
 export async function completeLiveAcceptancePhases(
   phases: CompletableProbePhase[],
   activeChecks: () => Promise<void>,
+  recordCleanupStatus: CleanupStatusRecorder = () => undefined,
 ) {
   let activeFailure: unknown;
   try {
@@ -735,12 +932,13 @@ export async function completeLiveAcceptancePhases(
   } catch (error) {
     activeFailure = error;
   }
-  const completions = await Promise.allSettled(
-    phases.map((phase) => phase.complete()),
+  const cleanupFailed = await settleProbeCompletions(
+    phases,
+    recordCleanupStatus,
   );
   if (activeFailure) throw activeFailure;
-  if (completions.some((completion) => completion.status === "rejected")) {
-    throw new Error("Post-acceptance revocation failed");
+  if (cleanupFailed) {
+    throw new Error("Post-acceptance cleanup failed");
   }
 }
 
@@ -750,43 +948,55 @@ export async function runMcpFacadeLiveAcceptance(options: {
   signingKeyPath: string;
   repositoryRoot: string;
 }) {
-  return withSuppressedOutput(async () => {
-    const signer = await loadAcceptanceMismatchSigner(options.signingKeyPath, {
-      repositoryRoot: options.repositoryRoot,
-    });
+  let cleanupFailed = false;
+  const recordCleanupStatus = (status: CleanupStatus) => {
+    cleanupFailed ||= status.cleanupFailed;
+  };
+  try {
+    return await withSuppressedOutput(async () => {
     const starts = await Promise.allSettled(options.fixture.users.map(async (user) => {
       await verifySupabaseSubject(options.fixture, user);
       return authorizeWithStorageState(
         options.browser,
         user,
         options.fixture.resource,
+        recordCleanupStatus,
       );
     }));
     const active = starts.flatMap((start) =>
       start.status === "fulfilled" ? [start.value] : []);
-    if (starts.some((start) => start.status === "rejected")) {
-      await Promise.allSettled(active.map((entry) => entry.phase.complete()));
-      throw new Error("Two-user active-grant setup failed");
-    }
-    const results = active.map((entry) => entry.result);
-    const allAccessTokens = results.flatMap((result) => [
-      result.first.accessToken,
-      result.rotated.accessToken,
-    ]);
-    if (new Set(allAccessTokens).size !== allAccessTokens.length) {
-      throw new Error("Two-user browser OAuth results were not distinct");
-    }
     await completeLiveAcceptancePhases(
       active.map((entry) => entry.phase),
       async () => {
+        if (starts.some((start) => start.status === "rejected")) {
+          throw new Error("Two-user active-grant setup failed");
+        }
+        const results = active.map((entry) => entry.result);
+        const allAccessTokens = results.flatMap((result) => [
+          result.first.accessToken,
+          result.rotated.accessToken,
+        ]);
+        if (new Set(allAccessTokens).size !== allAccessTokens.length) {
+          throw new Error("Two-user browser OAuth results were not distinct");
+        }
+        const signer = await loadAcceptanceMismatchSigner(
+          options.signingKeyPath,
+          { repositoryRoot: options.repositoryRoot },
+        );
         await verifySubjectMismatch(
           options.fixture,
           results[0]!,
           results[1]!,
           signer,
         );
-        await verifyTwoUserRls(options.fixture);
+        await verifyTwoUserRls(options.fixture, recordCleanupStatus);
       },
+      recordCleanupStatus,
     );
-  });
+    });
+  } catch {
+    throw new Error(cleanupFailed
+      ? "Secret-safe live facade acceptance failed: cleanupFailed"
+      : "Secret-safe live facade acceptance failed");
+  }
 }
