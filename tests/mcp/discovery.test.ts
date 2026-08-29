@@ -53,7 +53,7 @@ describe("MCP OAuth discovery", () => {
 
     expect(response.status).toBe(401);
     expect(response.headers.get("WWW-Authenticate")).toContain(
-      `resource_metadata=\"${RESOURCE}/.well-known/oauth-protected-resource\"`,
+      `resource_metadata="${RESOURCE}/.well-known/oauth-protected-resource"`,
     );
     expect(route.POST).toBeTypeOf("function");
     expect("DELETE" in route).toBe(false);
@@ -61,9 +61,10 @@ describe("MCP OAuth discovery", () => {
 
   it("reuses one remote JWKS resolver across authenticated requests", async () => {
     useValidEnvironment();
-    const fetchJwks = vi.fn(async () =>
-      Response.json({ keys: [] }, { status: 200 }),
-    );
+    const fetchJwks = vi.fn(async (input: RequestInfo | URL) => {
+      void input;
+      return Response.json({ keys: [] }, { status: 200 });
+    });
     vi.stubGlobal("fetch", fetchJwks);
     const { privateKey } = await generateKeyPair("ES256");
     const now = Math.floor(Date.now() / 1000);

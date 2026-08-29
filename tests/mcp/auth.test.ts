@@ -17,6 +17,7 @@ const CLIENT_ID = "tabloom-test-client";
 const ANON_KEY = "test-anon-key";
 
 const validEnv = (): NodeJS.ProcessEnv => ({
+  NODE_ENV: "test",
   SUPABASE_URL,
   SUPABASE_ANON_KEY: ANON_KEY,
   TABLOOM_MCP_RESOURCE_URL: RESOURCE,

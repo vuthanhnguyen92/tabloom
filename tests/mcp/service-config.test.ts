@@ -37,6 +37,19 @@ describe("Tabloom MCP service configuration", () => {
     });
   });
 
+  it("installs the TypeScript build toolchain when deployed as an isolated root", async () => {
+    const manifest = JSON.parse(
+      await readFile("services/tabloom-mcp/package.json", "utf8"),
+    );
+
+    expect(manifest.devDependencies).toEqual({
+      "@types/node": "22.19.19",
+      "@types/react": "19.2.14",
+      "@types/react-dom": "19.2.3",
+      typescript: "5.9.3",
+    });
+  });
+
   it("is included by the root workspace", async () => {
     const rootManifest = JSON.parse(await readFile("package.json", "utf8"));
 
