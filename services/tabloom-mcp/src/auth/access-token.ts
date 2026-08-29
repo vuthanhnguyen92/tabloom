@@ -15,6 +15,17 @@ export type TabloomAccessClaims = {
   supabase_token: string;
 };
 
+export type StrictTabloomAccessClaims = TabloomAccessClaims & {
+  iat: number;
+  nbf: number;
+  exp: number;
+  jti: string;
+};
+
+export type StrictAccessTokenResult = Awaited<ReturnType<typeof verifyAccessToken>> & {
+  payload: StrictTabloomAccessClaims;
+};
+
 export type AccessTokenInput = {
   sub: string;
   clientId: string;
@@ -23,10 +34,10 @@ export type AccessTokenInput = {
   innerExpiresAt: number;
 };
 
-const MAX_BEARER_TOKEN_BYTES = 32 * 1024;
+export const MAX_BEARER_TOKEN_BYTES = 32 * 1024;
 const MAX_ACCESS_TOKEN_LIFETIME_SECONDS = 10 * 60;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-const DCR_CLIENT_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const DCR_CLIENT_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const OPAQUE_IDENTIFIER_PATTERN = /^[A-Za-z0-9_-]{43}$/;
 const ACCESS_TOKEN_HEADER_KEYS = ["alg", "kid", "typ"];
 const ACCESS_TOKEN_CLAIM_KEYS = [
@@ -139,11 +150,11 @@ export async function verifyAccessToken(
   return result as typeof result & { payload: typeof payload & TabloomAccessClaims };
 }
 
-export async function verifyRevocableAccessToken(
+export async function verifyStrictAccessTokenOuter(
   token: string,
   config: FacadeAuthConfig,
   now = Math.floor(Date.now() / 1000),
-) {
+): Promise<StrictAccessTokenResult> {
   const result = await verifyAccessToken(token, config, now);
   const { payload, protectedHeader } = result;
   if (
@@ -163,9 +174,18 @@ export async function verifyRevocableAccessToken(
     payload.exp - payload.iat > MAX_ACCESS_TOKEN_LIFETIME_SECONDS ||
     payload.supabase_token.length === 0
   ) {
-    throw new Error("Invalid revocable access token");
+    throw new Error("Invalid strict access token");
   }
 
+  return result as StrictAccessTokenResult;
+}
+
+export async function openStrictInnerAccessToken(
+  result: Awaited<ReturnType<typeof verifyStrictAccessTokenOuter>>,
+  config: FacadeAuthConfig,
+  now = Math.floor(Date.now() / 1000),
+): Promise<string> {
+  const { payload } = result;
   const inner = await jwtDecrypt(
     payload.supabase_token,
     async (header) => {
@@ -197,5 +217,16 @@ export async function verifyRevocableAccessToken(
   ) {
     throw new Error("Invalid inner access credential claims");
   }
+
+  return inner.payload.token;
+}
+
+export async function verifyRevocableAccessToken(
+  token: string,
+  config: FacadeAuthConfig,
+  now = Math.floor(Date.now() / 1000),
+) {
+  const result = await verifyStrictAccessTokenOuter(token, config, now);
+  await openStrictInnerAccessToken(result, config, now);
   return result;
 }

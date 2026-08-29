@@ -86,6 +86,32 @@ describe("OAuth facade discovery", () => {
     expect(await response.text()).not.toContain("SUPABASE");
   });
 
+  it("returns an opaque correlated server error when MCP initialization fails", async () => {
+    await useFacadeEnvironment();
+    const sensitiveConfigDetail = "sensitive-config-detail";
+    vi.stubEnv("TABLOOM_OAUTH_ISSUER_URL", sensitiveConfigDetail);
+    const route = await import(
+      "../../services/tabloom-mcp/app/api/mcp/route"
+    );
+
+    const response = await route.GET(new Request(`${ORIGIN}/api/mcp`, {
+      headers: { Authorization: "Bearer sensitive-outer-token" },
+    }));
+
+    expect(response.status).toBe(500);
+    expect(response.headers.get("Cache-Control")).toBe("no-store");
+    expect(response.headers.get("Pragma")).toBe("no-cache");
+    const body = await response.json() as Record<string, unknown>;
+    expect(Object.keys(body).sort()).toEqual(["correlation_id", "error"]);
+    expect(body.error).toBe("server_error");
+    expect(body.correlation_id).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
+    );
+    expect(JSON.stringify(body)).not.toContain(sensitiveConfigDetail);
+    expect(JSON.stringify(body)).not.toContain("sensitive-outer-token");
+    expect(JSON.stringify(body)).not.toContain("TABLOOM_OAUTH_ISSUER_URL");
+  });
+
   it("publishes exact authorization-server metadata while disabled", async () => {
     await useFacadeEnvironment();
     const route = await import(

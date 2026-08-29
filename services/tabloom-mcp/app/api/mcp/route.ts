@@ -1,7 +1,7 @@
 import { createMcpHandler, withMcpAuth } from "mcp-handler";
 import { loadFacadeAuthConfig } from "../../../src/auth/config";
 import { createTokenVerifier } from "../../../src/auth/verify-token";
-import { oauthJson } from "../../../src/oauth/responses";
+import { oauthError, oauthJson } from "../../../src/oauth/responses";
 
 export function serviceStatusResult() {
   return {
@@ -68,7 +68,7 @@ async function routeHandler(request: Request): Promise<Response> {
     }
     return authenticatedHandler(request);
   } catch {
-    return oauthJson({ error: "server_error" }, 500);
+    return oauthError("server_error", 500);
   }
 }
 

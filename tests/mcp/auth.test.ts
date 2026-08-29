@@ -99,6 +99,37 @@ async function handSignedToken(
     .sign(await importJWK({ ...signingJwk, alg: "ES256" }, "ES256"));
 }
 
+type NestedTokenOptions = {
+  payloadOverrides?: Record<string, unknown>;
+  headerOverrides?: Record<string, unknown>;
+  keyPurpose?: string;
+  keyBytes?: number;
+};
+
+async function nestedToken(options: NestedTokenOptions = {}): Promise<string> {
+  const facade = config();
+  const keyPurpose = options.keyPurpose ?? "inner_access_token";
+  const derived = facade.encryptionKeys.active!.derived(keyPurpose);
+  const key = options.keyBytes === undefined
+    ? derived
+    : derived.slice(0, options.keyBytes);
+  return new EncryptJWT({
+    token: INNER_TOKEN,
+    iat: NOW,
+    nbf: NOW,
+    exp: NOW + 600,
+    ...options.payloadOverrides,
+  })
+    .setProtectedHeader({
+      alg: "dir",
+      enc: "A256GCM",
+      kid: "encryption-key",
+      typ: "tabloom+inner_access_token",
+      ...options.headerOverrides,
+    })
+    .encrypt(key);
+}
+
 type Harness = {
   events: string[];
   revoked: { value: boolean };
@@ -202,19 +233,32 @@ describe("Tabloom facade bearer verification", () => {
 
   it.each([
     ["generic Supabase audience", { aud: "authenticated" }],
+    ["array resource audience", { aud: [ORIGIN] }],
     ["different resource", { aud: "https://other.example" }],
     ["wrong issuer", { iss: "https://attacker.example" }],
     ["missing subject", { sub: undefined }],
+    ["non-string subject", { sub: 42 }],
     ["invalid subject", { sub: "not-a-uuid" }],
     ["missing client", { client_id: undefined }],
+    ["non-string client", { client_id: 42 }],
     ["non-canonical client", { client_id: " padded-client " }],
     ["non-UUID DCR-shaped client", { client_id: "00000000-0000-0000-0000-000000000000" }],
     ["unsupported scope", { scope: "openid" }],
+    ["non-string scope", { scope: 42 }],
     ["missing scope", { scope: undefined }],
     ["missing JTI", { jti: undefined }],
+    ["non-string JTI", { jti: 42 }],
     ["short JTI", { jti: "short" }],
     ["missing grant", { grant_id: undefined }],
+    ["non-string grant", { grant_id: 42 }],
     ["short grant", { grant_id: "short" }],
+    ["missing issued-at", { iat: undefined }],
+    ["non-integer issued-at", { iat: "now" }],
+    ["missing not-before", { nbf: undefined }],
+    ["non-integer not-before", { nbf: "now" }],
+    ["missing expiry", { exp: undefined }],
+    ["non-integer expiry", { exp: "later" }],
+    ["non-string inner credential", { supabase_token: 42 }],
     ["expired lifetime", { exp: NOW - 1 }],
     ["not-yet-valid lifetime", { nbf: NOW + 1 }],
     ["future issuance", { iat: NOW + 1, nbf: NOW + 1 }],
@@ -319,6 +363,72 @@ describe("Tabloom facade bearer verification", () => {
       ),
     ).resolves.toBeUndefined();
     expect(events).toEqual([`revocation:${GRANT_ID}`]);
+  });
+
+  it.each([
+    ["missing token", { token: undefined }],
+    ["non-string token", { token: 42 }],
+    ["missing issued-at", { iat: undefined }],
+    ["non-integer issued-at", { iat: "now" }],
+    ["missing not-before", { nbf: undefined }],
+    ["non-integer not-before", { nbf: "now" }],
+    ["missing expiry", { exp: undefined }],
+    ["non-integer expiry", { exp: "later" }],
+    ["issued-at mismatch", { iat: NOW - 1 }],
+    ["not-before mismatch", { nbf: NOW - 1 }],
+    ["expiry shorter than outer", { exp: NOW + 599 }],
+  ])("rejects a nested credential with %s", async (_name, payloadOverrides) => {
+    const { events, verifier } = harness();
+    const nested = await nestedToken({ payloadOverrides });
+
+    await expect(
+      verifier(
+        new Request(`${ORIGIN}/api/mcp`),
+        await handSignedToken({ supabase_token: nested }),
+      ),
+    ).resolves.toBeUndefined();
+    expect(events).toEqual([`revocation:${GRANT_ID}`]);
+  });
+
+  it.each([
+    ["wrong key-management algorithm", { headerOverrides: { alg: "A256KW" } }],
+    ["wrong content-encryption algorithm", { headerOverrides: { enc: "A128GCM" }, keyBytes: 16 }],
+    ["unknown encryption key", { headerOverrides: { kid: "unknown-key" } }],
+    ["wrong artifact purpose", {
+      headerOverrides: { typ: "tabloom+refresh_token" },
+      keyPurpose: "refresh_token",
+    }],
+    ["missing artifact type", { headerOverrides: { typ: undefined } }],
+    ["unexpected protected header", { headerOverrides: { unexpected: "header" } }],
+  ])("rejects a nested credential with %s", async (_name, options) => {
+    const { events, verifier } = harness();
+    const nested = await nestedToken(options);
+
+    await expect(
+      verifier(
+        new Request(`${ORIGIN}/api/mcp`),
+        await handSignedToken({ supabase_token: nested }),
+      ),
+    ).resolves.toBeUndefined();
+    expect(events).toEqual([`revocation:${GRANT_ID}`]);
+  });
+
+  it.each([
+    CLIENT_ID,
+    "https://CLIENT.example/oauth.json",
+    "https://client.example:443/oauth.json",
+  ])("accepts the canonical public client identifier %s", async (clientId) => {
+    const { events, verifier } = harness();
+    const token = await handSignedToken({ client_id: clientId });
+
+    await expect(
+      verifier(new Request(`${ORIGIN}/api/mcp`), token),
+    ).resolves.toMatchObject({ clientId, extra: { clientId } });
+    expect(events).toEqual([
+      `revocation:${GRANT_ID}`,
+      `provider:${INNER_TOKEN}`,
+      `context:${USER_ID}:${INNER_TOKEN}`,
+    ]);
   });
 
   it("rejects Supabase validation failure without creating a request context", async () => {

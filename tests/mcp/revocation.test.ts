@@ -253,6 +253,7 @@ describe("POST /oauth/revoke", () => {
 
   it.each([
     ["non-UUID subject", { sub: "attacker-subject" }, {}],
+    ["non-versioned DCR-shaped client", { client_id: "00000000-0000-0000-0000-000000000000" }, {}],
     ["HTTP client metadata identifier", { client_id: "http://client.example/oauth.json" }, {}],
     ["credentialed client metadata identifier", { client_id: "https://user:pass@client.example/oauth.json" }, {}],
     ["fragmented client metadata identifier", { client_id: "https://client.example/oauth.json#fragment" }, {}],
@@ -291,6 +292,7 @@ describe("POST /oauth/revoke", () => {
   });
 
   it.each([
+    CLIENT_ID,
     "https://client.example/oauth/metadata.json",
     "https://client.example",
     "https://CLIENT.example/oauth.json",
