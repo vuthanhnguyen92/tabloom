@@ -31,6 +31,61 @@ afterEach(() => {
 });
 
 describe("OAuth facade discovery", () => {
+  it("returns a standards-shaped unavailable response from MCP while the facade is disabled", async () => {
+    await useFacadeEnvironment();
+    const route = await import(
+      "../../services/tabloom-mcp/app/api/mcp/route"
+    );
+
+    const response = await route.GET(new Request(`${ORIGIN}/api/mcp`));
+
+    expect(response.status).toBe(503);
+    expect(response.headers.get("Cache-Control")).toBe("no-store");
+    expect(response.headers.get("Pragma")).toBe("no-cache");
+    await expect(response.json()).resolves.toEqual({ error: "temporarily_unavailable" });
+  });
+
+  it("keeps service status free of configuration, identity, and token data", async () => {
+    await useFacadeEnvironment();
+    const route = await import(
+      "../../services/tabloom-mcp/app/api/mcp/route"
+    );
+
+    const result = route.serviceStatusResult();
+
+    expect(result).toEqual({
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify({ service: "tabloom-mcp", status: "ok" }),
+        },
+      ],
+      structuredContent: { service: "tabloom-mcp", status: "ok" },
+    });
+    expect(JSON.stringify(result)).not.toMatch(/supabase|user|client|identity|token|config/i);
+  });
+
+  it("advertises the required workspace scope when enabled MCP authentication is missing", async () => {
+    await useFacadeEnvironment();
+    vi.stubEnv("TABLOOM_OAUTH_ENABLED", "true");
+    vi.stubEnv("TABLOOM_OAUTH_ENCRYPTION_KEYS", JSON.stringify([
+      {
+        kid: "current-encryption-key",
+        active: true,
+        rootKey: Buffer.alloc(32, 9).toString("base64url"),
+      },
+    ]));
+    const route = await import(
+      "../../services/tabloom-mcp/app/api/mcp/route"
+    );
+
+    const response = await route.GET(new Request(`${ORIGIN}/api/mcp`));
+
+    expect(response.status).toBe(401);
+    expect(response.headers.get("WWW-Authenticate")).toContain("scope=\"tabloom:workspace\"");
+    expect(await response.text()).not.toContain("SUPABASE");
+  });
+
   it("publishes exact authorization-server metadata while disabled", async () => {
     await useFacadeEnvironment();
     const route = await import(
