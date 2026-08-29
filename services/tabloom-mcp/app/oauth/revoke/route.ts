@@ -1,44 +1,23 @@
 import { loadFacadeAuthConfig } from "../../../src/auth/config";
 import {
-  OAuthPersistenceUnavailableError,
   createOAuthPersistence,
+  OAuthPersistenceUnavailableError,
 } from "../../../src/oauth/persistence";
+import { revokeOAuthToken } from "../../../src/oauth/revocation-service";
 import { noStoreHeaders, oauthJson } from "../../../src/oauth/responses";
-import {
-  exchangeAuthorizationCode,
-  exchangeRefreshToken,
-  TokenServiceError,
-  type AuthorizationCodeTokenRequest,
-  type RefreshTokenRequest,
-} from "../../../src/oauth/token-service";
 
-const MAX_TOKEN_FORM_BODY_BYTES = 32 * 1024;
-const AUTHORIZATION_CODE_FORM_KEYS = new Set([
-  "grant_type",
-  "code",
-  "client_id",
-  "redirect_uri",
-  "resource",
-  "code_verifier",
-]);
-const REFRESH_TOKEN_FORM_KEYS = new Set([
-  "grant_type",
-  "refresh_token",
-  "client_id",
-  "resource",
-  "scope",
-]);
-type TokenRequest = AuthorizationCodeTokenRequest | RefreshTokenRequest;
+const MAX_REVOCATION_FORM_BODY_BYTES = 32 * 1024;
+const ALLOWED_FORM_KEYS = new Set(["token", "token_type_hint"]);
 
-class TokenRequestError extends Error {
+class RevocationRequestError extends Error {
   constructor(readonly status: 400 | 413, readonly error: "invalid_request" | "invalid_client") {
     super(error);
-    this.name = "TokenRequestError";
+    this.name = "RevocationRequestError";
   }
 }
 
 function errorResponse(
-  error: "invalid_request" | "invalid_client" | "invalid_grant" | "server_error" | "temporarily_unavailable",
+  error: "invalid_request" | "invalid_client" | "server_error" | "temporarily_unavailable",
   status: 400 | 401 | 405 | 413 | 500 | 503,
   headers: HeadersInit = {},
 ): Response {
@@ -62,16 +41,16 @@ function isFormContentType(value: string | null): boolean {
 
 function declaredBodyTooLarge(value: string | null): boolean {
   if (value === null) return false;
-  if (!/^\d+$/.test(value)) throw new TokenRequestError(400, "invalid_request");
-  return BigInt(value) > BigInt(MAX_TOKEN_FORM_BODY_BYTES);
+  if (!/^\d+$/.test(value)) throw new RevocationRequestError(400, "invalid_request");
+  return BigInt(value) > BigInt(MAX_REVOCATION_FORM_BODY_BYTES);
 }
 
 async function readBoundedBody(request: Request): Promise<string> {
   if (!isFormContentType(request.headers.get("Content-Type")) || !request.body) {
-    throw new TokenRequestError(400, "invalid_request");
+    throw new RevocationRequestError(400, "invalid_request");
   }
   if (declaredBodyTooLarge(request.headers.get("Content-Length"))) {
-    throw new TokenRequestError(413, "invalid_request");
+    throw new RevocationRequestError(413, "invalid_request");
   }
 
   const reader = request.body.getReader();
@@ -82,15 +61,15 @@ async function readBoundedBody(request: Request): Promise<string> {
       const { done, value } = await reader.read();
       if (done) break;
       size += value.byteLength;
-      if (size > MAX_TOKEN_FORM_BODY_BYTES) {
+      if (size > MAX_REVOCATION_FORM_BODY_BYTES) {
         await reader.cancel();
-        throw new TokenRequestError(413, "invalid_request");
+        throw new RevocationRequestError(413, "invalid_request");
       }
       chunks.push(value);
     }
   } catch (error) {
-    if (error instanceof TokenRequestError) throw error;
-    throw new TokenRequestError(400, "invalid_request");
+    if (error instanceof RevocationRequestError) throw error;
+    throw new RevocationRequestError(400, "invalid_request");
   }
 
   const bytes = new Uint8Array(size);
@@ -102,7 +81,7 @@ async function readBoundedBody(request: Request): Promise<string> {
   try {
     return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
   } catch {
-    throw new TokenRequestError(400, "invalid_request");
+    throw new RevocationRequestError(400, "invalid_request");
   }
 }
 
@@ -110,7 +89,7 @@ function decodeFormComponent(value: string): string {
   try {
     return decodeURIComponent(value.replace(/\+/g, " "));
   } catch {
-    throw new TokenRequestError(400, "invalid_request");
+    throw new RevocationRequestError(400, "invalid_request");
   }
 }
 
@@ -123,55 +102,38 @@ function parseFormEntries(text: string): Array<[string, string]> {
   });
 }
 
-function hasExactKeys(values: Record<string, string>, expected: ReadonlySet<string>): boolean {
-  const keys = Object.keys(values);
-  return keys.length === expected.size &&
-    keys.every((key) => expected.has(key)) &&
-    keys.every((key) => values[key]!.length > 0);
-}
-
-async function readTokenRequest(request: Request): Promise<TokenRequest> {
+async function readRevocationToken(request: Request): Promise<string> {
   if (request.headers.has("Authorization")) {
-    throw new TokenRequestError(400, "invalid_client");
+    throw new RevocationRequestError(400, "invalid_client");
   }
   const text = await readBoundedBody(request);
-  if (!text) {
-    throw new TokenRequestError(400, "invalid_request");
-  }
+  if (!text) throw new RevocationRequestError(400, "invalid_request");
 
   const entries = parseFormEntries(text);
   if (entries.some(([key]) => key === "client_secret" ||
       key === "client_assertion" || key === "client_assertion_type")) {
-    throw new TokenRequestError(400, "invalid_client");
+    throw new RevocationRequestError(400, "invalid_client");
   }
 
   const values: Record<string, string> = Object.create(null) as Record<string, string>;
   for (const [key, value] of entries) {
-    if (Object.hasOwn(values, key)) throw new TokenRequestError(400, "invalid_request");
+    if (Object.hasOwn(values, key)) {
+      throw new RevocationRequestError(400, "invalid_request");
+    }
     values[key] = value;
   }
-  if (values.grant_type === "authorization_code" &&
-      hasExactKeys(values, AUTHORIZATION_CODE_FORM_KEYS)) {
-    return {
-      grantType: "authorization_code",
-      code: values.code!,
-      clientId: values.client_id!,
-      redirectUri: values.redirect_uri!,
-      resource: values.resource!,
-      codeVerifier: values.code_verifier!,
-    };
+  const keys = Object.keys(values);
+  if (
+    keys.some((key) => !ALLOWED_FORM_KEYS.has(key)) ||
+    keys.length < 1 ||
+    keys.length > ALLOWED_FORM_KEYS.size ||
+    typeof values.token !== "string" ||
+    values.token.length === 0 ||
+    (Object.hasOwn(values, "token_type_hint") && values.token_type_hint!.length === 0)
+  ) {
+    throw new RevocationRequestError(400, "invalid_request");
   }
-  if (values.grant_type === "refresh_token" &&
-      hasExactKeys(values, REFRESH_TOKEN_FORM_KEYS)) {
-    return {
-      grantType: "refresh_token",
-      refreshToken: values.refresh_token!,
-      clientId: values.client_id!,
-      resource: values.resource!,
-      scope: values.scope!,
-    };
-  }
-  throw new TokenRequestError(400, "invalid_request");
+  return values.token;
 }
 
 export async function POST(request: Request): Promise<Response> {
@@ -183,11 +145,11 @@ export async function POST(request: Request): Promise<Response> {
   }
   if (!config.oauthEnabled) return errorResponse("temporarily_unavailable", 503);
 
-  let tokenRequest: TokenRequest;
+  let token: string;
   try {
-    tokenRequest = await readTokenRequest(request);
+    token = await readRevocationToken(request);
   } catch (error) {
-    if (error instanceof TokenRequestError) {
+    if (error instanceof RevocationRequestError) {
       return errorResponse(
         error.error,
         error.error === "invalid_client" ? 401 : error.status,
@@ -197,18 +159,9 @@ export async function POST(request: Request): Promise<Response> {
   }
 
   try {
-    const persistence = createOAuthPersistence(config);
-    const response = tokenRequest.grantType === "authorization_code"
-      ? await exchangeAuthorizationCode(tokenRequest, config, persistence)
-      : await exchangeRefreshToken(tokenRequest, config, persistence);
-    return oauthJson(response);
+    await revokeOAuthToken(token, config, createOAuthPersistence(config));
+    return new Response(null, { status: 200, headers: noStoreHeaders() });
   } catch (error) {
-    if (error instanceof TokenServiceError) {
-      return errorResponse(
-        error.error,
-        error.error === "temporarily_unavailable" ? 503 : 400,
-      );
-    }
     if (error instanceof OAuthPersistenceUnavailableError) {
       return errorResponse("temporarily_unavailable", 503);
     }

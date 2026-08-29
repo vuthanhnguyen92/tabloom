@@ -4,7 +4,7 @@ import { createClient } from "@supabase/supabase-js";
 import { exportJWK, generateKeyPair, jwtDecrypt, jwtVerify, type JWK } from "jose";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { openArtifact } from "../../services/tabloom-mcp/src/auth/artifacts";
+import { openArtifact, sealArtifact } from "../../services/tabloom-mcp/src/auth/artifacts";
 import { loadFacadeAuthConfig } from "../../services/tabloom-mcp/src/auth/config";
 import { signingPublicKey } from "../../services/tabloom-mcp/src/auth/key-rings";
 import type { ValidatedAuthorizationRequest } from "../../services/tabloom-mcp/src/oauth/authorization-request";
@@ -15,6 +15,10 @@ import {
   OAuthPersistenceUnavailableError,
   type OAuthPersistence,
 } from "../../services/tabloom-mcp/src/oauth/persistence";
+import {
+  REFRESH_TOKEN_LIFETIME_SECONDS,
+  type RefreshTokenPayload,
+} from "../../services/tabloom-mcp/src/oauth/token-service";
 
 vi.mock("@supabase/supabase-js", () => ({ createClient: vi.fn() }));
 vi.mock("../../services/tabloom-mcp/src/oauth/persistence", async () => {
@@ -35,10 +39,13 @@ const CODE_VERIFIER = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
 const CODE_CHALLENGE = createHash("sha256").update(CODE_VERIFIER, "ascii").digest("base64url");
 const ACCESS_TOKEN = "original-supabase-access-token";
 const REFRESH_TOKEN = "original-supabase-refresh-token";
+const ROTATED_ACCESS_TOKEN = "rotated-supabase-access-token";
+const ROTATED_REFRESH_TOKEN = "rotated-supabase-refresh-token";
 let privateJwk: JWK;
 let consumed: Set<string>;
 let revoked: boolean;
 let getUser: ReturnType<typeof vi.fn>;
+let refreshSession: ReturnType<typeof vi.fn>;
 
 const authorizationRequest: ValidatedAuthorizationRequest = {
   client: {
@@ -88,8 +95,8 @@ function persistence(): OAuthPersistence {
   return {
     async registerClient() { throw new Error("not used"); },
     async getClient() { return null; },
-    async consume(kind, jti) {
-      if (kind !== "authorization_code" || consumed.has(jti)) return false;
+    async consume(_kind, jti) {
+      if (consumed.has(jti)) return false;
       consumed.add(jti);
       return true;
     },
@@ -100,7 +107,18 @@ function persistence(): OAuthPersistence {
 
 function mockSupabaseUser(userId = USER_ID): void {
   getUser = vi.fn().mockResolvedValue({ data: { user: { id: userId } }, error: null });
-  vi.mocked(createClient).mockReturnValue({ auth: { getUser } } as never);
+  refreshSession = vi.fn().mockResolvedValue({
+    data: {
+      user: { id: userId },
+      session: {
+        access_token: ROTATED_ACCESS_TOKEN,
+        refresh_token: ROTATED_REFRESH_TOKEN,
+        expires_at: NOW + 300,
+      },
+    },
+    error: null,
+  });
+  vi.mocked(createClient).mockReturnValue({ auth: { getUser, refreshSession } } as never);
 }
 
 async function authorizationCode(
@@ -164,6 +182,61 @@ function authorizationCodeForm(code: string): URLSearchParams {
     resource: ORIGIN,
     code_verifier: CODE_VERIFIER,
   });
+}
+
+function refreshPayload(overrides: Partial<RefreshTokenPayload> = {}): RefreshTokenPayload {
+  return {
+    supabaseRefreshToken: REFRESH_TOKEN,
+    userId: USER_ID,
+    clientId: CLIENT_ID,
+    resource: ORIGIN,
+    scope: "tabloom:workspace",
+    grantId: consentSession.grantId,
+    jti: "r".repeat(43),
+    issuedAt: NOW,
+    expiresAt: NOW + REFRESH_TOKEN_LIFETIME_SECONDS,
+    ...overrides,
+  };
+}
+
+async function refreshArtifact(
+  overrides: Partial<RefreshTokenPayload> = {},
+  issuedAt = NOW,
+  purpose: "refresh_token" | "authorization_code" = "refresh_token",
+): Promise<string> {
+  return sealArtifact(
+    purpose,
+    refreshPayload(overrides),
+    purpose === "refresh_token" ? REFRESH_TOKEN_LIFETIME_SECONDS : 120,
+    loadFacadeAuthConfig(process.env).encryptionKeys,
+    issuedAt,
+  );
+}
+
+async function refreshTokenRequest(
+  refreshToken: string,
+  overrides: Record<string, string> = {},
+  requestOverrides: RequestInit = {},
+): Promise<Response> {
+  const body = new URLSearchParams({
+    grant_type: "refresh_token",
+    refresh_token: refreshToken,
+    client_id: CLIENT_ID,
+    resource: ORIGIN,
+    scope: "tabloom:workspace",
+    ...overrides,
+  });
+  const headers = new Headers(requestOverrides.headers);
+  if (!headers.has("Content-Type")) {
+    headers.set("Content-Type", "application/x-www-form-urlencoded");
+  }
+  const route = await import("../../services/tabloom-mcp/app/oauth/token/route");
+  return route.POST(new Request(`${ORIGIN}/oauth/token`, {
+    method: "POST",
+    body,
+    ...requestOverrides,
+    headers,
+  }));
 }
 
 function expectNoStore(response: Response): void {
@@ -465,5 +538,257 @@ describe("POST /oauth/token authorization_code", () => {
 
     await expectError(await tokenRequest(), "temporarily_unavailable", 503);
     expect(getUser).not.toHaveBeenCalled();
+  });
+});
+
+describe("POST /oauth/token refresh_token", () => {
+  it("rotates both credentials with fresh JTIs while preserving the bound grant", async () => {
+    const initialResponse = await tokenRequest();
+    const initialBody = await initialResponse.json() as Record<string, unknown>;
+    const config = loadFacadeAuthConfig(process.env);
+    const initialAccess = await jwtVerify(
+      initialBody.access_token as string,
+      signingPublicKey(config.signingKeys, "signing-key"),
+      { issuer: ORIGIN, audience: ORIGIN, currentDate: new Date(NOW * 1000) },
+    );
+    const initialRefresh = await openArtifact<RefreshTokenPayload>(
+      "refresh_token",
+      initialBody.refresh_token as string,
+      config.encryptionKeys,
+      NOW,
+    );
+
+    const response = await refreshTokenRequest(initialBody.refresh_token as string);
+    const body = await response.json() as Record<string, unknown>;
+
+    expect(response.status).toBe(200);
+    expectNoStore(response);
+    expect(body).toMatchObject({
+      token_type: "Bearer",
+      expires_in: 300,
+      scope: "tabloom:workspace",
+    });
+    expect(JSON.stringify(body)).not.toContain(ROTATED_ACCESS_TOKEN);
+    expect(JSON.stringify(body)).not.toContain(ROTATED_REFRESH_TOKEN);
+    expect(refreshSession).toHaveBeenCalledExactlyOnceWith({
+      refresh_token: REFRESH_TOKEN,
+    });
+
+    const rotatedAccess = await jwtVerify(
+      body.access_token as string,
+      signingPublicKey(config.signingKeys, "signing-key"),
+      { issuer: ORIGIN, audience: ORIGIN, currentDate: new Date(NOW * 1000) },
+    );
+    expect(rotatedAccess.payload).toMatchObject({
+      sub: USER_ID,
+      client_id: CLIENT_ID,
+      scope: "tabloom:workspace",
+      grant_id: consentSession.grantId,
+      iat: NOW,
+      nbf: NOW,
+      exp: NOW + 300,
+    });
+    expect(rotatedAccess.payload.jti).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect(rotatedAccess.payload.jti).not.toBe(initialAccess.payload.jti);
+    const inner = await jwtDecrypt(
+      rotatedAccess.payload.supabase_token as string,
+      config.encryptionKeys.active!.derived("inner_access_token"),
+      { currentDate: new Date(NOW * 1000) },
+    );
+    expect(inner.payload).toMatchObject({ token: ROTATED_ACCESS_TOKEN, exp: NOW + 300 });
+    expect(JSON.stringify(inner.payload)).not.toContain(ROTATED_REFRESH_TOKEN);
+
+    const rotatedRefresh = await openArtifact<RefreshTokenPayload>(
+      "refresh_token",
+      body.refresh_token as string,
+      config.encryptionKeys,
+      NOW,
+    );
+    expect(rotatedRefresh).toMatchObject({
+      supabaseRefreshToken: ROTATED_REFRESH_TOKEN,
+      userId: USER_ID,
+      clientId: CLIENT_ID,
+      resource: ORIGIN,
+      scope: "tabloom:workspace",
+      grantId: consentSession.grantId,
+      issuedAt: NOW,
+      expiresAt: NOW + REFRESH_TOKEN_LIFETIME_SECONDS,
+    });
+    expect(rotatedRefresh.jti).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect(rotatedRefresh.jti).not.toBe(initialRefresh.jti);
+    expect(Object.keys(rotatedRefresh).sort()).toEqual([
+      "clientId",
+      "expiresAt",
+      "grantId",
+      "issuedAt",
+      "jti",
+      "resource",
+      "scope",
+      "supabaseRefreshToken",
+      "userId",
+    ]);
+    expect(consumed).toEqual(new Set([
+      consentSession.authorizationCodeJti,
+      initialRefresh.jti,
+    ]));
+  });
+
+  it.each([
+    ["client", { client_id: OTHER_USER_ID }],
+    ["resource", { resource: "https://other.example" }],
+    ["scope", { scope: "other:scope" }],
+  ])("rejects a %s binding mismatch before consuming", async (_label, overrides) => {
+    const token = await refreshArtifact();
+
+    await expectError(await refreshTokenRequest(token, overrides), "invalid_grant");
+
+    expect(consumed).toEqual(new Set());
+    expect(refreshSession).not.toHaveBeenCalled();
+  });
+
+  it("rejects expired, wrong-purpose, and wrong-key artifacts identically", async () => {
+    const expired = await refreshArtifact(
+      {
+        issuedAt: NOW - REFRESH_TOKEN_LIFETIME_SECONDS - 1,
+        expiresAt: NOW - 1,
+      },
+      NOW - REFRESH_TOKEN_LIFETIME_SECONDS - 1,
+    );
+    const wrongPurpose = await refreshArtifact({}, NOW, "authorization_code");
+
+    vi.stubEnv("TABLOOM_OAUTH_ENCRYPTION_KEYS", JSON.stringify([
+      { kid: "other-key", active: true, rootKey: Buffer.alloc(32, 8).toString("base64url") },
+    ]));
+    const wrongKey = await refreshArtifact();
+    useFacadeEnvironment();
+
+    for (const token of [expired, wrongPurpose, wrongKey]) {
+      await expectError(await refreshTokenRequest(token), "invalid_grant");
+    }
+    expect(consumed).toEqual(new Set());
+    expect(refreshSession).not.toHaveBeenCalled();
+  });
+
+  it("rejects a refresh artifact without an upstream refresh credential", async () => {
+    const token = await refreshArtifact({ supabaseRefreshToken: undefined as never });
+
+    await expectError(await refreshTokenRequest(token), "invalid_grant");
+
+    expect(consumed).toEqual(new Set());
+    expect(refreshSession).not.toHaveBeenCalled();
+  });
+
+  it("rejects a revoked family before consuming or contacting Supabase", async () => {
+    revoked = true;
+    const token = await refreshArtifact();
+
+    await expectError(await refreshTokenRequest(token), "invalid_grant");
+
+    expect(consumed).toEqual(new Set());
+    expect(refreshSession).not.toHaveBeenCalled();
+  });
+
+  it("burns the refresh JTI when Supabase rejects the upstream credential", async () => {
+    const token = await refreshArtifact();
+    refreshSession.mockResolvedValue({
+      data: { user: null, session: null },
+      error: { message: "provider detail" },
+    });
+
+    const first = await refreshTokenRequest(token);
+    const second = await refreshTokenRequest(token);
+
+    await expectError(first, "invalid_grant");
+    await expectError(second, "invalid_grant");
+    expect(consumed).toEqual(new Set(["r".repeat(43)]));
+    expect(refreshSession).toHaveBeenCalledTimes(1);
+  });
+
+  it("burns the refresh JTI when a transient Supabase failure returns 503", async () => {
+    const token = await refreshArtifact();
+    refreshSession.mockRejectedValue(new Error("upstream unavailable with secret detail"));
+
+    const first = await refreshTokenRequest(token);
+    const second = await refreshTokenRequest(token);
+
+    await expectError(first, "temporarily_unavailable", 503);
+    await expectError(second, "invalid_grant");
+    expect(consumed).toEqual(new Set(["r".repeat(43)]));
+    expect(refreshSession).toHaveBeenCalledTimes(1);
+  });
+
+  it("burns the refresh JTI when Supabase returns a changed user", async () => {
+    const token = await refreshArtifact();
+    refreshSession.mockResolvedValue({
+      data: {
+        user: { id: OTHER_USER_ID },
+        session: {
+          access_token: ROTATED_ACCESS_TOKEN,
+          refresh_token: ROTATED_REFRESH_TOKEN,
+          expires_at: NOW + 300,
+        },
+      },
+      error: null,
+    });
+
+    await expectError(await refreshTokenRequest(token), "invalid_grant");
+    await expectError(await refreshTokenRequest(token), "invalid_grant");
+
+    expect(consumed).toEqual(new Set(["r".repeat(43)]));
+    expect(refreshSession).toHaveBeenCalledTimes(1);
+  });
+
+  it("burns the refresh JTI when Supabase omits a rotated credential", async () => {
+    const token = await refreshArtifact();
+    refreshSession.mockResolvedValue({
+      data: {
+        user: { id: USER_ID },
+        session: {
+          access_token: ROTATED_ACCESS_TOKEN,
+          refresh_token: "",
+          expires_at: NOW + 300,
+        },
+      },
+      error: null,
+    });
+
+    await expectError(await refreshTokenRequest(token), "invalid_grant");
+
+    expect(consumed).toEqual(new Set(["r".repeat(43)]));
+    expect(refreshSession).toHaveBeenCalledTimes(1);
+  });
+
+  it("has exactly one upstream winner when a refresh token is reused concurrently", async () => {
+    const token = await refreshArtifact();
+
+    const responses = await Promise.all([
+      refreshTokenRequest(token),
+      refreshTokenRequest(token),
+    ]);
+
+    expect(responses.map((response) => response.status).sort()).toEqual([200, 400]);
+    const loser = responses.find((response) => response.status === 400)!;
+    await expect(loser.json()).resolves.toEqual({ error: "invalid_grant" });
+    expect(refreshSession).toHaveBeenCalledTimes(1);
+    expect(consumed).toEqual(new Set(["r".repeat(43)]));
+  });
+
+  it("keeps refresh requests form-only, public-client, exact, and bounded", async () => {
+    const token = await refreshArtifact();
+    await expectError(
+      await refreshTokenRequest(token, {}, { headers: { "Content-Type": "application/json" } }),
+      "invalid_request",
+    );
+    await expectError(await refreshTokenRequest(token, { extra: "x" }), "invalid_request");
+    await expectError(
+      await refreshTokenRequest(token, { client_secret: "secret" }),
+      "invalid_client",
+      401,
+    );
+    await expectError(
+      await refreshTokenRequest(token, {}, { headers: { Authorization: "Basic Zm9vOmJhcg==" } }),
+      "invalid_client",
+      401,
+    );
   });
 });
