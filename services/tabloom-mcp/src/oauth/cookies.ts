@@ -5,6 +5,7 @@ import type { ValidatedAuthorizationRequest } from "./authorization-request";
 export const OAUTH_STATE_COOKIE_NAME = "__Host-tabloom_oauth_state";
 export const CONSENT_COOKIE_NAME = "__Host-tabloom_consent";
 export const MAX_OAUTH_COOKIE_AGE_SECONDS = 10 * 60;
+export const MAX_OAUTH_SET_COOKIE_BYTES = 3_800;
 
 export type UpstreamLoginState = {
   request: ValidatedAuthorizationRequest;
@@ -23,6 +24,13 @@ export type ConsentSession = {
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const PKCE_VERIFIER_PATTERN = /^[A-Za-z0-9._~-]{43,128}$/;
 const NONCE_PATTERN = /^[A-Za-z0-9_-]{43}$/;
+
+export class OAuthCookieTooLargeError extends Error {
+  constructor() {
+    super("OAuth cookie exceeds storage limit");
+    this.name = "OAuthCookieTooLargeError";
+  }
+}
 
 function invalidCookie(): Error {
   return new Error("Invalid OAuth cookie");
@@ -91,7 +99,11 @@ function isConsentSession(value: unknown): value is ConsentSession {
 }
 
 function serializeCookie(name: string, value: string, maxAge: number): string {
-  return `${name}=${value}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${maxAge}`;
+  const cookie = `${name}=${value}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${maxAge}`;
+  if (Buffer.byteLength(cookie, "utf8") > MAX_OAUTH_SET_COOKIE_BYTES) {
+    throw new OAuthCookieTooLargeError();
+  }
+  return cookie;
 }
 
 function cookieValue(request: Request, name: string): string {

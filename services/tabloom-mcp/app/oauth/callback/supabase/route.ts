@@ -3,15 +3,23 @@ import { randomBytes } from "node:crypto";
 import { loadFacadeAuthConfig } from "../../../../src/auth/config";
 import {
   MAX_OAUTH_COOKIE_AGE_SECONDS,
+  OAuthCookieTooLargeError,
   clearUpstreamStateCookie,
   createConsentCookie,
   readUpstreamLoginState,
   type UpstreamLoginState,
 } from "../../../../src/oauth/cookies";
-import { noStoreHeaders, oauthError, oauthJson } from "../../../../src/oauth/responses";
+import { noStoreHeaders, oauthError } from "../../../../src/oauth/responses";
 import { createUpstreamSupabaseAuth } from "../../../../src/oauth/upstream-supabase";
 
 type CallbackError = "access_denied" | "invalid_request" | "temporarily_unavailable";
+
+function terminalError(
+  error: "invalid_request" | "server_error" | "temporarily_unavailable",
+  status: 400 | 500 | 503,
+): Response {
+  return oauthError(error, status, { "Set-Cookie": clearUpstreamStateCookie() });
+}
 
 function clientError(state: UpstreamLoginState, error: CallbackError): Response {
   const location = new URL(state.request.redirectUri);
@@ -31,16 +39,16 @@ export async function GET(request: Request): Promise<Response> {
   try {
     config = loadFacadeAuthConfig(process.env);
   } catch {
-    return oauthError("server_error", 500);
+    return terminalError("server_error", 500);
   }
-  if (!config.oauthEnabled) return oauthError("temporarily_unavailable", 503);
+  if (!config.oauthEnabled) return terminalError("temporarily_unavailable", 503);
 
   let state: UpstreamLoginState;
   try {
     state = await readUpstreamLoginState(request, config.encryptionKeys);
     if (state.request.resource !== config.resourceUrl.origin) throw new Error();
   } catch {
-    return oauthJson({ error: "invalid_request" }, 400);
+    return terminalError("invalid_request", 400);
   }
 
   const params = new URL(request.url).searchParams;
@@ -74,7 +82,10 @@ export async function GET(request: Request): Promise<Response> {
     headers.append("Set-Cookie", clearUpstreamStateCookie());
     headers.append("Set-Cookie", consentCookie);
     return new Response(null, { status: 302, headers });
-  } catch {
+  } catch (error) {
+    if (error instanceof OAuthCookieTooLargeError) {
+      return terminalError("invalid_request", 400);
+    }
     return clientError(state, "temporarily_unavailable");
   }
 }

@@ -239,10 +239,41 @@ describe("GET /oauth/authorize", () => {
     expect(new URL(location).searchParams.get("state")).toBe("original-client-state");
     expect(location).not.toContain("provider+detail");
   });
+
+  it("returns a fixed error instead of redirecting upstream when transaction state exceeds the cookie limit", async () => {
+    useFacadeEnvironment(true);
+    const store = persistence();
+    vi.spyOn(store, "getClient").mockResolvedValue({
+      clientId: DCR_CLIENT_ID,
+      clientName: "DCR Client",
+      redirectUris: [
+        REDIRECT_URI,
+        `https://one.example/${"a".repeat(1_380)}`,
+        `https://two.example/${"b".repeat(1_380)}`,
+      ],
+      createdAt: "2026-08-29T01:02:03.000Z",
+      expiresAt: null,
+    });
+    vi.mocked(createOAuthPersistence).mockReturnValue(store);
+    const auth = upstream();
+    vi.mocked(createUpstreamSupabaseAuth).mockReturnValue(auth);
+    const route = await authorizeRoute();
+
+    const response = await route.GET(new Request(authorizationUrl()));
+
+    expect(response.status).toBe(400);
+    expectNoStore(response);
+    expect(response.headers.get("Location")).toBeNull();
+    expect(response.headers.get("Set-Cookie")).toBeNull();
+    const body = await response.text();
+    expect(JSON.parse(body)).toEqual({ error: "invalid_request" });
+    expect(body).not.toContain("original-client-state");
+    expect(body).not.toContain("one.example");
+  });
 });
 
 describe("GET /oauth/callback/supabase", () => {
-  async function stateCookie(): Promise<string> {
+  async function stateCookie(now?: number): Promise<string> {
     const client = {
       clientId: DCR_CLIENT_ID,
       clientName: "DCR Client",
@@ -260,21 +291,74 @@ describe("GET /oauth/callback/supabase", () => {
     return createUpstreamStateCookie(
       { request, supabaseCodeVerifier: VERIFIER },
       loadFacadeAuthConfig(process.env).encryptionKeys,
+      now,
     );
   }
 
-  it("returns a safe disabled response before reading callback state", async () => {
+  it("returns a safe disabled response and clears existing callback state", async () => {
+    useFacadeEnvironment(true);
+    const cookie = await stateCookie();
     useFacadeEnvironment(false);
     const auth = upstream();
     vi.mocked(createUpstreamSupabaseAuth).mockReturnValue(auth);
     const route = await callbackRoute();
 
-    const response = await route.GET(new Request(`${ORIGIN}/oauth/callback/supabase?code=supabase-code`));
+    const response = await route.GET(cookieRequest(
+      OAUTH_STATE_COOKIE_NAME,
+      cookie,
+      `${ORIGIN}/oauth/callback/supabase?code=supabase-code`,
+    ));
 
     expect(response.status).toBe(503);
     expectNoStore(response);
     await expect(response.json()).resolves.toEqual({ error: "temporarily_unavailable" });
+    expect(response.headers.get("Set-Cookie")).toContain(`${OAUTH_STATE_COOKIE_NAME}=;`);
+    expect(response.headers.get("Set-Cookie")).toContain("Max-Age=0");
     expect(auth.exchange).not.toHaveBeenCalled();
+  });
+
+  it("clears existing callback state when facade configuration is invalid", async () => {
+    useFacadeEnvironment(true);
+    const cookie = await stateCookie();
+    vi.stubEnv("SUPABASE_URL", "not-a-url");
+    const route = await callbackRoute();
+
+    const response = await route.GET(cookieRequest(
+      OAUTH_STATE_COOKIE_NAME,
+      cookie,
+      `${ORIGIN}/oauth/callback/supabase?code=supabase-code`,
+    ));
+
+    expect(response.status).toBe(500);
+    expectNoStore(response);
+    expect(response.headers.get("Set-Cookie")).toContain(`${OAUTH_STATE_COOKIE_NAME}=;`);
+    expect(response.headers.get("Set-Cookie")).toContain("Max-Age=0");
+    const body = await response.text();
+    expect(JSON.parse(body)).toMatchObject({ error: "server_error" });
+    expect(body).not.toContain("not-a-url");
+  });
+
+  it.each([
+    ["malformed", "not-an-artifact"],
+    ["expired", null],
+  ])("clears %s callback state that cannot be opened", async (_label, cookieValue) => {
+    useFacadeEnvironment(true);
+    const cookie = cookieValue === null
+      ? await stateCookie(Math.floor(Date.now() / 1000) - 601)
+      : `${OAUTH_STATE_COOKIE_NAME}=${cookieValue}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=600`;
+    const route = await callbackRoute();
+
+    const response = await route.GET(cookieRequest(
+      OAUTH_STATE_COOKIE_NAME,
+      cookie,
+      `${ORIGIN}/oauth/callback/supabase?code=supabase-code`,
+    ));
+
+    expect(response.status).toBe(400);
+    expectNoStore(response);
+    await expect(response.json()).resolves.toEqual({ error: "invalid_request" });
+    expect(response.headers.get("Set-Cookie")).toContain(`${OAUTH_STATE_COOKIE_NAME}=;`);
+    expect(response.headers.get("Set-Cookie")).toContain("Max-Age=0");
   });
 
   it("rejects a callback without the encrypted transaction cookie", async () => {
@@ -288,6 +372,8 @@ describe("GET /oauth/callback/supabase", () => {
     expect(response.status).toBe(400);
     expectNoStore(response);
     await expect(response.json()).resolves.toEqual({ error: "invalid_request" });
+    expect(response.headers.get("Set-Cookie")).toContain(`${OAUTH_STATE_COOKIE_NAME}=;`);
+    expect(response.headers.get("Set-Cookie")).toContain("Max-Age=0");
     expect(auth.exchange).not.toHaveBeenCalled();
   });
 
@@ -377,5 +463,35 @@ describe("GET /oauth/callback/supabase", () => {
     expect(new URL(failedLocation).searchParams.get("state")).toBe("original-client-state");
     expect(failedLocation).not.toContain("provider+exchange+detail");
     expect(failed.headers.get("Set-Cookie")).toContain("Max-Age=0");
+  });
+
+  it("returns a fixed error and clears transaction state when consent state exceeds the cookie limit", async () => {
+    useFacadeEnvironment(true);
+    const cookie = await stateCookie();
+    const auth = upstream();
+    vi.mocked(auth.exchange).mockResolvedValue({
+      userId: USER_ID,
+      accessToken: "a".repeat(3_000),
+      refreshToken: "supabase-refresh-token",
+      accessTokenExpiresAt: Math.floor(Date.now() / 1000) + 3600,
+    });
+    vi.mocked(createUpstreamSupabaseAuth).mockReturnValue(auth);
+    const route = await callbackRoute();
+
+    const response = await route.GET(cookieRequest(
+      OAUTH_STATE_COOKIE_NAME,
+      cookie,
+      `${ORIGIN}/oauth/callback/supabase?code=supabase-code`,
+    ));
+
+    expect(response.status).toBe(400);
+    expectNoStore(response);
+    expect(response.headers.get("Location")).toBeNull();
+    expect(response.headers.get("Set-Cookie")).toContain(`${OAUTH_STATE_COOKIE_NAME}=;`);
+    expect(response.headers.get("Set-Cookie")).toContain("Max-Age=0");
+    const body = await response.text();
+    expect(JSON.parse(body)).toEqual({ error: "invalid_request" });
+    expect(body).not.toContain("original-client-state");
+    expect(body).not.toContain("aaa");
   });
 });

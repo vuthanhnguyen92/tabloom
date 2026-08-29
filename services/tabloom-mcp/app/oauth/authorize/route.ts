@@ -4,7 +4,10 @@ import {
   validateAuthorizationRequest,
 } from "../../../src/oauth/authorization-request";
 import { resolveClient } from "../../../src/oauth/client-metadata";
-import { createUpstreamStateCookie } from "../../../src/oauth/cookies";
+import {
+  OAuthCookieTooLargeError,
+  createUpstreamStateCookie,
+} from "../../../src/oauth/cookies";
 import { createOAuthPersistence } from "../../../src/oauth/persistence";
 import { noStoreHeaders, oauthError, oauthJson } from "../../../src/oauth/responses";
 import { createUpstreamSupabaseAuth } from "../../../src/oauth/upstream-supabase";
@@ -62,7 +65,10 @@ export async function GET(request: Request): Promise<Response> {
         "Set-Cookie": cookie,
       }),
     });
-  } catch {
+  } catch (error) {
+    if (error instanceof OAuthCookieTooLargeError) {
+      return oauthJson({ error: "invalid_request" }, 400);
+    }
     return redirectError(
       authorization.redirectUri,
       "temporarily_unavailable",

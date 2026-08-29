@@ -46,6 +46,28 @@ const consent: ConsentSession = {
   csrfNonce: "n".repeat(43),
 };
 
+function uriWithLength(length: number): string {
+  const prefix = "https://extra.example/";
+  return `${prefix}${"a".repeat(length - prefix.length)}`;
+}
+
+function boundaryRequest(...extraRedirectUriLengths: number[]): ValidatedAuthorizationRequest {
+  const redirectUri = "https://client.example/callback";
+  return {
+    client: {
+      clientId: "5c177e69-8954-4c57-a777-07c732513bea",
+      clientName: "Client",
+      redirectUris: [redirectUri, ...extraRedirectUriLengths.map(uriWithLength)],
+      source: "dcr",
+    },
+    redirectUri,
+    state: "s",
+    codeChallenge: "x".repeat(43),
+    resource: "https://tabloom-mcp.vercel.app",
+    scope: "tabloom:workspace",
+  };
+}
+
 function requestWithCookie(name: string, cookie: string): Request {
   const value = cookie.slice(`${name}=`.length).split(";", 1)[0]!;
   return new Request("https://tabloom-mcp.vercel.app/oauth/callback/supabase", {
@@ -154,5 +176,34 @@ describe("OAuth encrypted cookies", () => {
   it("clears each cookie with the same host-only security attributes", () => {
     expectSecureHostCookie(clearUpstreamStateCookie(), OAUTH_STATE_COOKIE_NAME, 0);
     expectSecureHostCookie(clearConsentCookie(), CONSENT_COOKIE_NAME, 0);
+  });
+
+  it("accepts a complete transaction Set-Cookie at 3,800 bytes and rejects the next byte", async () => {
+    const atLimit = await createUpstreamStateCookie({
+      request: boundaryRequest(2048, 120),
+      supabaseCodeVerifier: "v".repeat(64),
+    }, keys, NOW);
+
+    expect(Buffer.byteLength(atLimit, "utf8")).toBe(3_800);
+    await expect(createUpstreamStateCookie({
+      request: boundaryRequest(2048, 121),
+      supabaseCodeVerifier: "v".repeat(64),
+    }, keys, NOW)).rejects.toThrow("OAuth cookie exceeds storage limit");
+  });
+
+  it("accepts a complete consent Set-Cookie at 3,800 bytes and rejects the next size", async () => {
+    const session = (redirectUriLength: number): ConsentSession => ({
+      request: boundaryRequest(redirectUriLength),
+      userId: consent.userId,
+      supabaseAccessToken: "a".repeat(100),
+      supabaseRefreshToken: "r".repeat(40),
+      supabaseAccessTokenExpiresAt: consent.supabaseAccessTokenExpiresAt,
+      csrfNonce: consent.csrfNonce,
+    });
+    const atLimit = await createConsentCookie(session(1924), keys, 600, NOW);
+
+    expect(Buffer.byteLength(atLimit, "utf8")).toBe(3_800);
+    await expect(createConsentCookie(session(1925), keys, 600, NOW))
+      .rejects.toThrow("OAuth cookie exceeds storage limit");
   });
 });
