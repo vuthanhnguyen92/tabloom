@@ -8,8 +8,9 @@ import {
 
 const resource = process.env.TABLOOM_E2E_MCP_RESOURCE_URL;
 const fixturePath = process.env.TABLOOM_E2E_MCP_FIXTURE_PATH;
+const signingKeyPath = process.env.TABLOOM_E2E_MCP_SIGNING_KEY_PATH;
 const liveEnabled = process.env.TABLOOM_E2E_MCP_LIVE === "1" &&
-  Boolean(resource) && Boolean(fixturePath);
+  Boolean(resource) && Boolean(fixturePath) && Boolean(signingKeyPath);
 
 test("two-user live facade acceptance remains an explicit human-auth opt-in", async ({ browser }) => {
   test.skip(
@@ -23,5 +24,10 @@ test("two-user live facade acceptance remains an explicit human-auth opt-in", as
     repositoryRoot: resolve("."),
   });
   expect(fixture.resource).toBe(resource);
-  await runMcpFacadeLiveAcceptance({ browser, fixture });
+  await runMcpFacadeLiveAcceptance({
+    browser,
+    fixture,
+    signingKeyPath: signingKeyPath!,
+    repositoryRoot: resolve("."),
+  });
 });

@@ -70,6 +70,11 @@ absolute paths outside this repository; it never imports external executable
 fixture code. Storage-state files are identity-checked and parsed through
 no-follow handles, and live Supabase SDK traffic is confined to the exact
 approved production origin.
+The live mismatch gate additionally requires a separate one-shot operator-only
+mode-`0600` active ES256 signing JWK outside the repository. It constructs the
+negative bearer from the two freshly issued active grants, verifies the key
+against live JWKS, performs the mismatch check before either revocation, and
+never reports private key or token material.
 
 The current local checkout is connected through ignored `.env.local` values to Supabase project `tctjlsvfufzxhauhywsm`. Its migrations, RLS policies, production site URL, and web redirect URLs have been configured. Google remains disabled until a Google OAuth client ID and client secret are entered in **Authentication → Sign In / Providers → Google**.
 

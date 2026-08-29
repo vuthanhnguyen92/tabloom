@@ -164,9 +164,11 @@ production works.
 
 `tests/e2e/mcp-facade-live.spec.ts` is skipped unless
 `TABLOOM_E2E_MCP_LIVE=1`, the exact production resource is set, and
-`TABLOOM_E2E_MCP_FIXTURE_PATH` names a complete fixture. The fixture is JSON
-data, never JavaScript. The checked-in acceptance code never imports or
-executes an external module and never trusts precomputed pass/fail booleans.
+`TABLOOM_E2E_MCP_FIXTURE_PATH` names a complete fixture, and
+`TABLOOM_E2E_MCP_SIGNING_KEY_PATH` names the separate active acceptance
+signing key described below. These inputs are JSON data, never JavaScript. The
+checked-in acceptance code never imports or executes an external module and
+never trusts precomputed pass/fail booleans.
 
 The fixture and its two Playwright storage-state files must be owner-only
 regular files with mode `0600`, addressed by absolute paths outside the
@@ -185,21 +187,24 @@ fixture shape is:
   "resource": "https://tabloom-mcp.vercel.app",
   "supabaseUrl": "https://tctjlsvfufzxhauhywsm.supabase.co",
   "supabaseAnonKey": "SUPABASE_PUBLIC_ANON_KEY_VALUE",
-  "subjectMismatchBearer": "FACADE_BEARER_WITH_MISMATCHED_OUTER_AND_INNER_SUBJECTS",
   "users": [
     {
       "label": "user-a",
       "userId": "00000000-0000-4000-8000-000000000001",
       "storageStatePath": "/absolute/external/user-a-storage.json",
       "supabaseAccessToken": "USER_A_SUPABASE_ACCESS_TOKEN",
-      "ownedSpaceId": "00000000-0000-4000-8000-00000000000a"
+      "ownedSpaceId": "00000000-0000-4000-8000-00000000000a",
+      "ownedCollectionId": "00000000-0000-4000-8000-00000000000b",
+      "ownedLinkId": "00000000-0000-4000-8000-00000000000c"
     },
     {
       "label": "user-b",
       "userId": "00000000-0000-4000-8000-000000000002",
       "storageStatePath": "/absolute/external/user-b-storage.json",
       "supabaseAccessToken": "USER_B_SUPABASE_ACCESS_TOKEN",
-      "ownedSpaceId": "00000000-0000-4000-8000-00000000000b"
+      "ownedSpaceId": "00000000-0000-4000-8000-00000000000d",
+      "ownedCollectionId": "00000000-0000-4000-8000-00000000000e",
+      "ownedLinkId": "00000000-0000-4000-8000-00000000000f"
     }
   ]
 }
@@ -208,27 +213,63 @@ fixture shape is:
 The values above are templates, not valid credentials. Each storage-state file
 must use Playwright's JSON `{ "cookies": [], "origins": [] }` schema and hold
 an already human-authenticated browser session for its distinct Google test
-user. `subjectMismatchBearer` is credential data for a deliberately mismatched
-outer facade subject and nested Supabase subject; it is not a claimed result.
-Before sending it, the checked-in test verifies its ES256 signature against the
-live JWKS, exact issuer/audience/scope/header/times, User A subject/client/grant
-bindings, and proves its encrypted `supabase_token` ciphertext is exactly User
-B's freshly issued ciphertext rather than User A's. Random, malformed, expired,
-or unrelated bearers fail locally and are never sent. Provisioning those
-external data files remains an approved operator action.
+user. Each user must independently own the named space, collection, and link;
+all six record UUIDs must be distinct.
+
+The signing-key path is intentionally separate from the general fixture. It is
+an especially sensitive, operator-only copy of the currently active production
+ES256 private JWK, required solely to construct the negative subject-mismatch
+token at runtime. It must be an owner-only mode-`0600`, current-UID,
+non-symlink regular file at an absolute path outside the repository, with this
+exact shape (template values only):
+
+```json
+{
+  "version": 1,
+  "active": true,
+  "kid": "ACTIVE_SIGNING_KID",
+  "privateJwk": {
+    "kty": "EC",
+    "crv": "P-256",
+    "x": "PUBLIC_X",
+    "y": "PUBLIC_Y",
+    "d": "PRIVATE_D",
+    "alg": "ES256"
+  }
+}
+```
+
+Do not create this file without explicit operator approval, do not derive it
+from a fixture bearer, and never place it in the repository, shell history, or
+logs. The test opens it once with `O_NOFOLLOW`, validates its owner/mode/type/
+size/schema through that handle, zeroes the read buffer, and keeps the imported
+key only in a one-shot closure. It requires the derived public key and `kid` to
+exactly match one published live JWKS entry before signing, then drops the
+private-key reference after use as far as JavaScript permits. The generated
+bearer copies User A's freshly verified live header and claims, changes only the
+`jti` and encrypted `supabase_token` (to User B's fresh ciphertext), is locally
+verified while active, and is never serialized or printed. Random, malformed,
+expired, unrelated, or unpublished-key bearers fail locally and are never sent.
+Provisioning any external input remains an approved operator action.
 
 The checked-in test performs DCR and browser login/consent for both users, reads
 the published JWKS, validates exact ES256 issuer/resource/scope claims, parses
-the real `get_service_status` JSON-RPC response, refreshes, rejects replay of
-the original refresh credential, revokes, and requires post-revocation MCP
-failure. Private in-memory results bind both first and rotated facade subjects
+the real `get_service_status` JSON-RPC response, refreshes, and rejects replay
+of the original refresh credential. It pauses both users with their rotated
+grants active, constructs and submits the runtime mismatch bearer and requires
+`401`, then resumes both probe phases, revokes each grant, and requires each
+rotated access token to receive post-revocation MCP `401`. Private in-memory
+results bind both first and rotated facade subjects
 to the fixture UUID and prove the two browser runs issued four distinct access
 tokens. It independently resolves each Supabase token's subject, submits the
 cryptographically validated mismatch bearer and requires `401`, and loads both
-request-local workspaces to prove that each user sees its own named space and
-not the other's. User A then attempts to update User B's named space to a random
-sentinel: the SDK must return zero affected rows, and User B must reload the
-original unchanged name. Every Supabase Auth and repository request uses a
+request-local workspaces to prove that every visible space, collection, and
+link has the correct `user_id`, includes the expected independently owned
+fixture record, and excludes the other user's fixture record. User A then
+attempts a no-op update of one User B space, collection, and link, setting each
+field to its already stored value. Each SDK call must return zero affected rows,
+and User B must reload all three original records unchanged. No cleanup write is
+needed or authorized. Every Supabase Auth and repository request uses a
 silent SDK fetch wrapper confined to the exact approved production origin,
 manual redirects, and all-`3xx` rejection. Console, stdout, and stderr are
 disabled during all sensitive steps, errors are replaced with a fixed message,
@@ -241,6 +282,7 @@ Run it only after explicit approval and complete fixture preparation:
 TABLOOM_E2E_MCP_LIVE=1 \
 TABLOOM_E2E_MCP_RESOURCE_URL=https://tabloom-mcp.vercel.app \
 TABLOOM_E2E_MCP_FIXTURE_PATH=/absolute/external/mcp-live-fixture.json \
+TABLOOM_E2E_MCP_SIGNING_KEY_PATH=/absolute/external/mcp-live-active-signing-key.json \
   npx playwright test tests/e2e/mcp-facade-live.spec.ts --project=chromium
 ```
 

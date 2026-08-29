@@ -19,12 +19,14 @@ import * as probeModule from "../../scripts/probe-mcp-oauth.mjs";
 import {
   buildAuthorizationUrl,
   buildDynamicClientRegistration,
+  beginProbeAcceptance,
   classifyHttpStatus,
   createCallbackListener,
   createPrivateProbeResultChannel,
   derivePkceChallenge,
   evaluateDiscovery,
   parseOAuthCallback,
+  probeRequest,
   runCli,
   runProbe,
   writeReport,
@@ -34,6 +36,8 @@ import {
   runKeyGeneratorCli,
 } from "../../services/tabloom-mcp/scripts/generate-oauth-keys.mjs";
 import {
+  completeLiveAcceptancePhases,
+  loadAcceptanceMismatchSigner,
   createExactSupabaseFetch,
   loadLiveAcceptanceFixture,
   parseLiveAcceptanceFixture,
@@ -375,7 +379,7 @@ describe("MCP OAuth readiness probe", () => {
       throw new Error("Unexpected request");
     };
 
-    await runProbe({
+    const phase = await beginProbeAcceptance({
       env: { NODE_ENV: "test", TABLOOM_MCP_RESOURCE_URL: RESOURCE },
       request,
       privateResultChannel: privateResults.channel,
@@ -401,9 +405,36 @@ describe("MCP OAuth readiness probe", () => {
           client_id: "public-client",
         },
       }),
-      writeReport: async (report) => { reports.push(report); },
+      writeReport: async (report: Record<string, unknown>) => { reports.push(report); },
       log: (message) => { logs.push(message); },
     });
+
+    expect(requests.some((entry) => entry.url.endsWith("/oauth/revoke")))
+      .toBe(false);
+    expect(requests.filter((entry) => entry.url.endsWith("/api/mcp")))
+      .toHaveLength(1);
+    expect(reports.at(-1)).toMatchObject({
+      refreshRotated: true,
+      refreshReplayRejected: true,
+      mcpContractMatch: true,
+      mcpBeforeRevocationResult: "success",
+      revocationResult: "server_error",
+      pass: false,
+    });
+    expect(privateResults.take()).toMatchObject({
+      first: {
+        accessToken: firstAccessToken,
+        verified: { payload: { sub: "private-user-a" } },
+      },
+      rotated: {
+        accessToken: rotatedAccessToken,
+        verified: { payload: { sub: "private-user-a" } },
+      },
+      jwks: { keys: [] },
+    });
+    expect(() => privateResults.take()).toThrow();
+
+    await phase.complete();
 
     expect(Object.fromEntries(new URL(handoffUrl).searchParams)).toEqual({
       response_type: "code",
@@ -449,18 +480,6 @@ describe("MCP OAuth readiness probe", () => {
     expect(requests.every((entry) => entry.init?.redirect === "manual"))
       .toBe(true);
     const report = reports.at(-1)!;
-    expect(privateResults.take()).toMatchObject({
-      first: {
-        accessToken: firstAccessToken,
-        verified: { payload: { sub: "private-user-a" } },
-      },
-      rotated: {
-        accessToken: rotatedAccessToken,
-        verified: { payload: { sub: "private-user-a" } },
-      },
-      jwks: { keys: [] },
-    });
-    expect(() => privateResults.take()).toThrow();
     expect(report).toEqual({
       discoverySupported: true,
       resource: RESOURCE,
@@ -503,6 +522,7 @@ describe("MCP OAuth readiness probe", () => {
   it("fails closed and reports only allowlisted fields when revocation is not enforced", async () => {
     const reports: Array<Record<string, unknown>> = [];
     let mcpCalls = 0;
+    let refreshCalls = 0;
     const request = async (url: string, init?: RequestInit) => {
       if (url.endsWith("/.well-known/oauth-protected-resource")) return jsonResponse(200, PROTECTED_RESOURCE);
       if (url.endsWith("/.well-known/oauth-authorization-server")) return jsonResponse(200, AUTHORIZATION_SERVER);
@@ -510,6 +530,9 @@ describe("MCP OAuth readiness probe", () => {
       if (url.endsWith("/oauth/register")) return jsonResponse(201, { client_id: "public-client" });
       if (url.endsWith("/oauth/token")) {
         const refresh = new URLSearchParams(String(init?.body)).get("grant_type") === "refresh_token";
+        if (refresh && ++refreshCalls > 1) {
+          return jsonResponse(400, { error: "invalid_grant" });
+        }
         return jsonResponse(200, {
           access_token: refresh ? "rotated-access" : "first-access",
           refresh_token: refresh ? "rotated-refresh" : "first-refresh",
@@ -534,12 +557,14 @@ describe("MCP OAuth readiness probe", () => {
         protectedHeader: { alg: "ES256" },
         payload: { iss: ISSUER, aud: RESOURCE, scope: SCOPE },
       }),
-      writeReport: async (report) => { reports.push(report); },
+      writeReport: async (report: Record<string, unknown>) => {
+        reports.push(report);
+      },
       log: () => undefined,
     })).rejects.toThrow("readiness gate");
     expect(mcpCalls).toBe(2);
     expect(reports.at(-1)).toMatchObject({
-      refreshReplayRejected: false,
+      refreshReplayRejected: true,
       revocationEnforced: false,
       mcpAfterRevocationResult: "success",
       pass: false,
@@ -772,7 +797,6 @@ describe("live MCP facade acceptance fixture schema", () => {
       resource: "https://tabloom-mcp.vercel.app",
       supabaseUrl: "https://tctjlsvfufzxhauhywsm.supabase.co",
       supabaseAnonKey: "public-anon-key",
-      subjectMismatchBearer: "mismatch-bearer-credential",
       users: [
         {
           label: "user-a",
@@ -780,6 +804,8 @@ describe("live MCP facade acceptance fixture schema", () => {
           storageStatePath: join(directory, "user-a-storage.json"),
           supabaseAccessToken: "user-a-access-token",
           ownedSpaceId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          ownedCollectionId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaab",
+          ownedLinkId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaac",
         },
         {
           label: "user-b",
@@ -787,6 +813,8 @@ describe("live MCP facade acceptance fixture schema", () => {
           storageStatePath: join(directory, "user-b-storage.json"),
           supabaseAccessToken: "user-b-access-token",
           ownedSpaceId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+          ownedCollectionId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbc",
+          ownedLinkId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbd",
         },
       ],
     };
@@ -839,7 +867,9 @@ describe("live MCP facade acceptance fixture schema", () => {
 
   it("accepts only a valid signed A-subject token carrying B's fresh nested ciphertext", async () => {
     const now = 1_800_000_000;
-    const { privateKey, publicKey } = await generateKeyPair("ES256");
+    const { privateKey, publicKey } = await generateKeyPair("ES256", {
+      extractable: true,
+    });
     const publicJwk = {
       ...await exportJWK(publicKey),
       alg: "ES256",
@@ -925,6 +955,106 @@ describe("live MCP facade acceptance fixture schema", () => {
         expiresAt: now - 1,
       }),
     })).rejects.toThrow();
+
+    const directory = await mkdtemp(join(tmpdir(), "tabloom-live-signer-"));
+    const signingPath = join(directory, "acceptance-signing-key.json");
+    try {
+      const privateJwk = await exportJWK(privateKey);
+      const signingDocument = {
+        version: 1,
+        active: true,
+        kid: publicJwk.kid,
+        privateJwk: {
+          kty: "EC",
+          crv: "P-256",
+          x: privateJwk.x,
+          y: privateJwk.y,
+          d: privateJwk.d,
+          alg: "ES256",
+        },
+      };
+      await writeFile(signingPath, JSON.stringify(signingDocument), {
+        mode: 0o644,
+      });
+      await expect(loadAcceptanceMismatchSigner(signingPath, {
+        repositoryRoot: resolve("."),
+      })).rejects.toThrow();
+      await chmod(signingPath, 0o600);
+      await writeFile(signingPath, JSON.stringify({
+        ...signingDocument,
+        untrustedExtra: true,
+      }));
+      await expect(loadAcceptanceMismatchSigner(signingPath, {
+        repositoryRoot: resolve("."),
+      })).rejects.toThrow();
+      await writeFile(signingPath, JSON.stringify(signingDocument));
+      const signer = await loadAcceptanceMismatchSigner(signingPath, {
+        repositoryRoot: resolve("."),
+      });
+      const generated = await signer.sign({
+        userAAccessToken,
+        userBAccessToken,
+        expectedUserAId: userAId,
+        expectedUserBId: userBId,
+        jwks: { keys: [publicJwk] },
+        resource: RESOURCE,
+        now,
+      });
+      await expect(verifySubjectMismatchBearer({
+        ...input,
+        mismatchBearer: generated,
+      })).resolves.toBeUndefined();
+      await expect(signer.sign({
+        userAAccessToken,
+        userBAccessToken,
+        expectedUserAId: userAId,
+        expectedUserBId: userBId,
+        jwks: { keys: [publicJwk] },
+        resource: RESOURCE,
+        now,
+      })).rejects.toThrow();
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("runs active mismatch checks before either grant is revoked", async () => {
+    const events: string[] = [];
+    let revoked = false;
+    const server = createServer((request, response) => {
+      if (request.url === "/mismatch") {
+        events.push("mismatch-request");
+        response.writeHead(revoked ? 401 : 200).end();
+        return;
+      }
+      events.push(String(request.url).slice(1));
+      revoked = true;
+      response.writeHead(200).end();
+    });
+    const origin = await listen(server);
+    const phases = ["user-a", "user-b"].map((label) => ({
+      complete: async () => {
+        await probeRequest(`${origin}/revoke-${label}`, { method: "POST" });
+      },
+    }));
+    try {
+      await expect(completeLiveAcceptancePhases(phases, async () => {
+        const response = await probeRequest(`${origin}/mismatch`, {
+          method: "POST",
+          headers: { authorization: "Bearer synthetic-secret" },
+        });
+        if (response.status !== 401) {
+          throw new Error("mismatch bearer was accepted while active");
+        }
+      })).rejects.toThrow("mismatch bearer was accepted while active");
+      expect(events[0]).toBe("mismatch-request");
+      expect(events.slice(1).sort()).toEqual([
+        "revoke-user-a",
+        "revoke-user-b",
+      ]);
+    } finally {
+      await closeServer(server);
+    }
   });
 
   it("loads only private regular JSON fixture and storage-state files outside the repository", async () => {

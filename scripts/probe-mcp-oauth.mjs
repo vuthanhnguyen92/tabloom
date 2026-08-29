@@ -610,7 +610,7 @@ async function waitForCallback(callback, timeoutMs) {
   }
 }
 
-export async function runProbe({
+export async function beginProbeAcceptance({
   env = process.env,
   reportPath = REPORT_PATH,
   request: requestFn = probeRequest,
@@ -764,23 +764,6 @@ export async function runProbe({
         beforeRevocation.status,
       );
       const mcpContractMatch = evaluateMcpServiceStatus(beforeRevocation, 1);
-      const revocation = await safeRequest(metadata.revocation_endpoint, {
-        method: "POST",
-        headers: { "content-type": "application/x-www-form-urlencoded" },
-        body: new URLSearchParams({
-          token: rotated.accessToken,
-          token_type_hint: "access_token",
-        }),
-      });
-      const revocationResult = classifyHttpStatus(revocation.status);
-      const afterRevocation = await safeRequest(
-        `${expectedResource}/api/mcp`,
-        mcpRequest(rotated.accessToken, 2),
-      );
-      const mcpAfterRevocationResult = classifyHttpStatus(
-        afterRevocation.status,
-      );
-
       latestReport = reportFromResult({
         discovery,
         firstVerified,
@@ -789,13 +772,18 @@ export async function runProbe({
         refreshReplayRejected,
         mcpContractMatch,
         mcpBeforeRevocationResult,
-        revocationResult,
-        mcpAfterRevocationResult,
+        revocationResult: "server_error",
+        mcpAfterRevocationResult: "server_error",
       });
       await writeReportFn(latestReport, reportPath);
-      log(`Redacted readiness report written to ${reportPath}`);
-      if (!latestReport.pass) {
-        throw new Error("OAuth flow failed the readiness gate");
+      const activeGrantReady = latestReport.discoverySupported &&
+        latestReport.resourceMatch && latestReport.issuerMatch &&
+        latestReport.algorithm === "ES256" && latestReport.audienceMatch &&
+        latestReport.scopeMatch && latestReport.refreshRotated &&
+        latestReport.refreshReplayRejected && latestReport.mcpContractMatch &&
+        latestReport.mcpBeforeRevocationResult === "success";
+      if (!activeGrantReady) {
+        throw new Error("OAuth flow failed the active-grant readiness gate");
       }
       const privateState = PRIVATE_PROBE_CHANNELS.get(privateResultChannel);
       if (privateState) {
@@ -811,6 +799,50 @@ export async function runProbe({
           jwks,
         });
       }
+      let completed = false;
+      return Object.freeze({
+        async complete() {
+          if (completed) throw new Error("OAuth probe phase was already completed");
+          completed = true;
+          try {
+            const revocation = await safeRequest(metadata.revocation_endpoint, {
+              method: "POST",
+              headers: { "content-type": "application/x-www-form-urlencoded" },
+              body: new URLSearchParams({
+                token: rotated.accessToken,
+                token_type_hint: "access_token",
+              }),
+            });
+            const revocationResult = classifyHttpStatus(revocation.status);
+            const afterRevocation = await safeRequest(
+              `${expectedResource}/api/mcp`,
+              mcpRequest(rotated.accessToken, 2),
+            );
+            const mcpAfterRevocationResult = classifyHttpStatus(
+              afterRevocation.status,
+            );
+            latestReport = reportFromResult({
+              discovery,
+              firstVerified,
+              rotatedVerified,
+              refreshRotated,
+              refreshReplayRejected,
+              mcpContractMatch,
+              mcpBeforeRevocationResult,
+              revocationResult,
+              mcpAfterRevocationResult,
+            });
+            await writeReportFn(latestReport, reportPath);
+            log(`Redacted readiness report written to ${reportPath}`);
+            if (!latestReport.pass) {
+              throw new Error("OAuth flow failed the readiness gate");
+            }
+          } catch (error) {
+            await writeReportFn(latestReport, reportPath);
+            throw error;
+          }
+        },
+      });
     } finally {
       await listener.close();
     }
@@ -818,6 +850,11 @@ export async function runProbe({
     await writeReportFn(latestReport, reportPath);
     throw error;
   }
+}
+
+export async function runProbe(options = {}) {
+  const phase = await beginProbeAcceptance(options);
+  await phase.complete();
 }
 
 export async function runCli({

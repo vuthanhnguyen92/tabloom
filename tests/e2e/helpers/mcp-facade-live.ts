@@ -1,5 +1,5 @@
 import type { Browser, BrowserContext, BrowserContextOptions } from "@playwright/test";
-import { randomUUID } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import { constants } from "node:fs";
 import { lstat, open, realpath } from "node:fs/promises";
 import { isAbsolute, relative, resolve, sep } from "node:path";
@@ -7,10 +7,16 @@ import { isAbsolute, relative, resolve, sep } from "node:path";
 import { SupabaseWorkspaceRepository } from "../../../shared/repository";
 import {
   createPrivateProbeResultChannel,
+  beginProbeAcceptance,
   probeRequest,
-  runProbe,
 } from "../../../scripts/probe-mcp-oauth.mjs";
-import { createLocalJWKSet, jwtVerify, type JWTPayload } from "jose";
+import {
+  createLocalJWKSet,
+  importJWK,
+  jwtVerify,
+  SignJWT,
+  type JWTPayload,
+} from "jose";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 
 const LIVE_RESOURCE = "https://tabloom-mcp.vercel.app";
@@ -58,6 +64,8 @@ export type LiveAcceptanceUserInput = {
   storageStatePath: string;
   supabaseAccessToken: string;
   ownedSpaceId: string;
+  ownedCollectionId: string;
+  ownedLinkId: string;
 };
 
 export type ParsedLiveAcceptanceFixture = {
@@ -65,7 +73,6 @@ export type ParsedLiveAcceptanceFixture = {
   resource: typeof LIVE_RESOURCE;
   supabaseUrl: string;
   supabaseAnonKey: string;
-  subjectMismatchBearer: string;
   users: [LiveAcceptanceUserInput, LiveAcceptanceUserInput];
 };
 
@@ -107,7 +114,30 @@ function validFacadePayload(payload: JWTPayload, resource: string, now: number) 
   }
 }
 
-export async function verifySubjectMismatchBearer(input: {
+async function verifyFacadeBearer(
+  token: string,
+  jwks: { keys: JsonWebKey[] },
+  resource: string,
+  now: number,
+) {
+  const result = await jwtVerify(token, createLocalJWKSet(jwks), {
+    algorithms: ["ES256"],
+    issuer: resource,
+    audience: resource,
+    currentDate: new Date(now * 1000),
+    requiredClaims: [...ACCESS_TOKEN_CLAIMS],
+  });
+  if (!hasExactKeys(result.protectedHeader as JsonRecord, ["alg", "kid", "typ"]) ||
+      result.protectedHeader.alg !== "ES256" ||
+      result.protectedHeader.typ !== "at+jwt" ||
+      typeof result.protectedHeader.kid !== "string") {
+    throw new Error("Invalid facade access-token header");
+  }
+  validFacadePayload(result.payload, resource, now);
+  return result;
+}
+
+type SubjectMismatchInput = {
   mismatchBearer: string;
   userAAccessToken: string;
   userBAccessToken: string;
@@ -116,7 +146,11 @@ export async function verifySubjectMismatchBearer(input: {
   jwks: { keys: JsonWebKey[] };
   resource: string;
   now?: number;
-}): Promise<void> {
+};
+
+export async function verifySubjectMismatchBearer(
+  input: SubjectMismatchInput,
+): Promise<void> {
   const now = input.now ?? Math.floor(Date.now() / 1000);
   if (new Set([
     input.mismatchBearer,
@@ -125,41 +159,26 @@ export async function verifySubjectMismatchBearer(input: {
   ]).size !== 3) {
     throw new Error("Facade acceptance tokens must be distinct");
   }
-  const verify = async (token: string) => {
-    const result = await jwtVerify(
-      token,
-      createLocalJWKSet(input.jwks),
-      {
-        algorithms: ["ES256"],
-        issuer: input.resource,
-        audience: input.resource,
-        currentDate: new Date(now * 1000),
-        requiredClaims: [...ACCESS_TOKEN_CLAIMS],
-      },
-    );
-    if (!hasExactKeys(result.protectedHeader as JsonRecord, ["alg", "kid", "typ"]) ||
-        result.protectedHeader.alg !== "ES256" ||
-        result.protectedHeader.typ !== "at+jwt" ||
-        typeof result.protectedHeader.kid !== "string") {
-      throw new Error("Invalid facade access-token header");
-    }
-    validFacadePayload(result.payload, input.resource, now);
-    return result.payload;
-  };
   const [mismatch, userA, userB] = await Promise.all([
-    verify(input.mismatchBearer),
-    verify(input.userAAccessToken),
-    verify(input.userBAccessToken),
+    verifyFacadeBearer(input.mismatchBearer, input.jwks, input.resource, now),
+    verifyFacadeBearer(input.userAAccessToken, input.jwks, input.resource, now),
+    verifyFacadeBearer(input.userBAccessToken, input.jwks, input.resource, now),
   ]);
   if (input.expectedUserAId === input.expectedUserBId ||
-      userA.sub !== input.expectedUserAId || userB.sub !== input.expectedUserBId ||
-      mismatch.sub !== input.expectedUserAId ||
-      userA.supabase_token === userB.supabase_token ||
-      mismatch.supabase_token !== userB.supabase_token ||
-      mismatch.supabase_token === userA.supabase_token ||
-      mismatch.client_id !== userA.client_id || mismatch.grant_id !== userA.grant_id ||
-      mismatch.iat !== userA.iat || mismatch.nbf !== userA.nbf ||
-      mismatch.exp !== userA.exp || mismatch.jti === userA.jti || mismatch.jti === userB.jti) {
+      userA.payload.sub !== input.expectedUserAId ||
+      userB.payload.sub !== input.expectedUserBId ||
+      mismatch.payload.sub !== input.expectedUserAId ||
+      userA.payload.supabase_token === userB.payload.supabase_token ||
+      mismatch.payload.supabase_token !== userB.payload.supabase_token ||
+      mismatch.payload.supabase_token === userA.payload.supabase_token ||
+      mismatch.payload.client_id !== userA.payload.client_id ||
+      mismatch.payload.grant_id !== userA.payload.grant_id ||
+      mismatch.payload.iat !== userA.payload.iat ||
+      mismatch.payload.nbf !== userA.payload.nbf ||
+      mismatch.payload.exp !== userA.payload.exp ||
+      mismatch.payload.jti === userA.payload.jti ||
+      mismatch.payload.jti === userB.payload.jti ||
+      JSON.stringify(mismatch.protectedHeader) !== JSON.stringify(userA.protectedHeader)) {
     throw new Error("Subject-mismatch bearer was not bound to fresh A/B tokens");
   }
 }
@@ -198,6 +217,8 @@ function parseUser(value: unknown, repositoryRoot: string): LiveAcceptanceUserIn
     "storageStatePath",
     "supabaseAccessToken",
     "ownedSpaceId",
+    "ownedCollectionId",
+    "ownedLinkId",
   ])) {
     throw new Error("Invalid live acceptance user fixture");
   }
@@ -205,7 +226,9 @@ function parseUser(value: unknown, repositoryRoot: string): LiveAcceptanceUserIn
     throw new Error("Invalid live acceptance user label");
   }
   if (typeof value.userId !== "string" || !UUID.test(value.userId) ||
-      typeof value.ownedSpaceId !== "string" || !UUID.test(value.ownedSpaceId)) {
+      typeof value.ownedSpaceId !== "string" || !UUID.test(value.ownedSpaceId) ||
+      typeof value.ownedCollectionId !== "string" || !UUID.test(value.ownedCollectionId) ||
+      typeof value.ownedLinkId !== "string" || !UUID.test(value.ownedLinkId)) {
     throw new Error("Invalid live acceptance UUID");
   }
   return {
@@ -221,6 +244,8 @@ function parseUser(value: unknown, repositoryRoot: string): LiveAcceptanceUserIn
       "supabaseAccessToken",
     ),
     ownedSpaceId: value.ownedSpaceId,
+    ownedCollectionId: value.ownedCollectionId,
+    ownedLinkId: value.ownedLinkId,
   };
 }
 
@@ -233,7 +258,6 @@ export function parseLiveAcceptanceFixture(
     "resource",
     "supabaseUrl",
     "supabaseAnonKey",
-    "subjectMismatchBearer",
     "users",
   ])) {
     throw new Error("Invalid live acceptance fixture");
@@ -259,6 +283,11 @@ export function parseLiveAcceptanceFixture(
   if (new Set(users.map((user) => user.label)).size !== 2 ||
       new Set(users.map((user) => user.userId)).size !== 2 ||
       new Set(users.map((user) => user.ownedSpaceId)).size !== 2 ||
+      new Set(users.flatMap((user) => [
+        user.ownedSpaceId,
+        user.ownedCollectionId,
+        user.ownedLinkId,
+      ])).size !== 6 ||
       new Set(users.map((user) => user.supabaseAccessToken)).size !== 2) {
     throw new Error("Live acceptance users must be distinct");
   }
@@ -267,10 +296,6 @@ export function parseLiveAcceptanceFixture(
     resource: LIVE_RESOURCE,
     supabaseUrl: LIVE_SUPABASE_ORIGIN,
     supabaseAnonKey: privateCredential(value.supabaseAnonKey, "supabaseAnonKey"),
-    subjectMismatchBearer: privateCredential(
-      value.subjectMismatchBearer,
-      "subjectMismatchBearer",
-    ),
     users,
   };
 }
@@ -301,17 +326,109 @@ async function readPrivateExternalJson(
         canonicalMetadata.dev !== metadata.dev || canonicalMetadata.ino !== metadata.ino) {
       throw new Error("Live acceptance input must be a private owned regular file");
     }
-    const text = await handle.readFile({ encoding: "utf8" });
-    return {
-      value: JSON.parse(text),
-      canonicalPath: canonical,
-      identity: { dev: metadata.dev, ino: metadata.ino },
-    };
+    const bytes = await handle.readFile();
+    try {
+      return {
+        value: JSON.parse(bytes.toString("utf8")),
+        canonicalPath: canonical,
+        identity: { dev: metadata.dev, ino: metadata.ino },
+      };
+    } finally {
+      bytes.fill(0);
+    }
   } catch {
     throw new Error("Live acceptance input must be valid JSON");
   } finally {
     await handle.close();
   }
+}
+
+const PRIVATE_JWK_KEYS = ["alg", "crv", "d", "kty", "x", "y"] as const;
+const PUBLIC_JWK_KEYS = ["alg", "crv", "kid", "kty", "use", "x", "y"] as const;
+
+export async function loadAcceptanceMismatchSigner(
+  signingKeyPath: string,
+  options: ParseOptions,
+) {
+  const loaded = await readPrivateExternalJson(
+    signingKeyPath,
+    options.repositoryRoot,
+    MAX_FIXTURE_BYTES,
+  );
+  let document = loaded.value;
+  if (!isRecord(document) || !hasExactKeys(document, [
+    "version", "active", "kid", "privateJwk",
+  ]) || document.version !== 1 || document.active !== true ||
+      typeof document.kid !== "string" ||
+      !/^[A-Za-z0-9_-]{1,128}$/.test(document.kid) ||
+      !isRecord(document.privateJwk) ||
+      !hasExactKeys(document.privateJwk, PRIVATE_JWK_KEYS) ||
+      document.privateJwk.kty !== "EC" ||
+      document.privateJwk.crv !== "P-256" ||
+      document.privateJwk.alg !== "ES256") {
+    throw new Error("Invalid live acceptance signing-key schema");
+  }
+  const parsedJwk = document.privateJwk;
+  if (!["x", "y", "d"].every((name) =>
+    typeof parsedJwk[name] === "string" &&
+    /^[A-Za-z0-9_-]+$/.test(String(parsedJwk[name])))) {
+    throw new Error("Invalid live acceptance signing-key schema");
+  }
+  const kid = document.kid;
+  let privateJwk: JsonRecord | undefined = parsedJwk;
+  const expectedPublic = {
+    kty: "EC",
+    crv: "P-256",
+    x: privateJwk.x,
+    y: privateJwk.y,
+    alg: "ES256",
+    use: "sig",
+    kid,
+  };
+  let privateKey: Awaited<ReturnType<typeof importJWK>> | undefined =
+    await importJWK({ ...privateJwk }, "ES256");
+  document = undefined;
+  privateJwk = undefined;
+  let used = false;
+
+  return Object.freeze({
+    async sign(input: Omit<SubjectMismatchInput, "mismatchBearer">) {
+      if (used || !privateKey) {
+        throw new Error("Live acceptance signer is no longer available");
+      }
+      used = true;
+      const signingKey = privateKey;
+      try {
+        const now = input.now ?? Math.floor(Date.now() / 1000);
+        const [userA, userB] = await Promise.all([
+          verifyFacadeBearer(input.userAAccessToken, input.jwks, input.resource, now),
+          verifyFacadeBearer(input.userBAccessToken, input.jwks, input.resource, now),
+        ]);
+        if (userA.payload.sub !== input.expectedUserAId ||
+            userB.payload.sub !== input.expectedUserBId ||
+            input.expectedUserAId === input.expectedUserBId ||
+            userA.payload.supabase_token === userB.payload.supabase_token ||
+            userA.protectedHeader.kid !== kid) {
+          throw new Error("Fresh facade tokens did not match acceptance users");
+        }
+        const publishedMatches = input.jwks.keys.filter((key) =>
+          isRecord(key) && hasExactKeys(key, PUBLIC_JWK_KEYS) &&
+          PUBLIC_JWK_KEYS.every((name) => key[name] === expectedPublic[name]));
+        if (publishedMatches.length !== 1) {
+          throw new Error("Acceptance signing key did not exactly match live JWKS");
+        }
+        const mismatchBearer = await new SignJWT({
+          ...userA.payload,
+          jti: randomBytes(32).toString("base64url"),
+          supabase_token: userB.payload.supabase_token,
+        }).setProtectedHeader({ ...userA.protectedHeader }).sign(signingKey);
+        await verifySubjectMismatchBearer({ ...input, mismatchBearer, now });
+        return mismatchBearer;
+      } finally {
+        privateKey = undefined;
+      }
+    },
+  });
 }
 
 function validateStorageState(value: unknown): asserts value is StorageState {
@@ -368,6 +485,8 @@ export async function loadLiveAcceptanceFixture(
       userId: user.userId,
       supabaseAccessToken: user.supabaseAccessToken,
       ownedSpaceId: user.ownedSpaceId,
+      ownedCollectionId: user.ownedCollectionId,
+      ownedLinkId: user.ownedLinkId,
       storageState: storageFile.value,
     });
   }
@@ -407,14 +526,18 @@ async function authorizeWithStorageState(
   resource: string,
 ) {
   let context: BrowserContext | undefined;
-  const reports: Array<{ pass?: boolean }> = [];
+  let phase: Awaited<ReturnType<typeof beginProbeAcceptance>> | undefined;
+  const reports: Array<{
+    refreshReplayRejected?: boolean;
+    mcpBeforeRevocationResult?: string;
+  }> = [];
   const privateResults = createPrivateProbeResultChannel();
   try {
     context = await browser.newContext({ storageState: user.storageState });
     const page = await context.newPage();
     page.on("console", () => undefined);
     page.on("pageerror", () => undefined);
-    await runProbe({
+    phase = await beginProbeAcceptance({
       env: {
         NODE_ENV: "test",
         TABLOOM_MCP_RESOURCE_URL: resource,
@@ -429,18 +552,27 @@ async function authorizeWithStorageState(
           approve.click(),
         ]);
       },
-      writeReport: async (report: { pass?: boolean }) => { reports.push(report); },
+      writeReport: async (report: {
+        refreshReplayRejected?: boolean;
+        mcpBeforeRevocationResult?: string;
+      }) => { reports.push(report); },
       privateResultChannel: privateResults.channel,
       log: () => undefined,
     });
-    if (reports.at(-1)?.pass !== true) throw new Error("Probe did not pass");
+    if (reports.at(-1)?.refreshReplayRejected !== true ||
+        reports.at(-1)?.mcpBeforeRevocationResult !== "success") {
+      throw new Error("Probe did not reach an active verified grant");
+    }
     const result = privateResults.take() as ProbePrivateResult;
     if (result.first.verified.payload.sub !== user.userId ||
         result.rotated.verified.payload.sub !== user.userId ||
         result.first.accessToken === result.rotated.accessToken) {
       throw new Error("Facade subject did not match the browser fixture user");
     }
-    return result;
+    return { phase, result };
+  } catch (error) {
+    if (phase) await phase.complete().catch(() => undefined);
+    throw error;
   } finally {
     await context?.close();
   }
@@ -485,28 +617,68 @@ async function verifyTwoUserRls(fixture: LiveAcceptanceFixture) {
     a.repository.load(),
     b.repository.load(),
   ]);
-  const aIds = new Set(workspaceA.spaces.map((space) => space.id));
-  const bIds = new Set(workspaceB.spaces.map((space) => space.id));
-  if (!aIds.has(userA.ownedSpaceId) || aIds.has(userB.ownedSpaceId) ||
-      !bIds.has(userB.ownedSpaceId) || bIds.has(userA.ownedSpaceId) ||
-      workspaceA.spaces.some((space) => space.user_id !== userA.userId) ||
-      workspaceB.spaces.some((space) => space.user_id !== userB.userId)) {
-    throw new Error("Two-user RLS isolation failed");
+  const assertIsolated = (
+    workspace: typeof workspaceA,
+    owner: LiveAcceptanceUser,
+    foreign: LiveAcceptanceUser,
+  ) => {
+    const expectations = [
+      [workspace.spaces, owner.ownedSpaceId, foreign.ownedSpaceId],
+      [workspace.collections, owner.ownedCollectionId, foreign.ownedCollectionId],
+      [workspace.links, owner.ownedLinkId, foreign.ownedLinkId],
+    ] as const;
+    for (const [records, expectedId, foreignId] of expectations) {
+      const ids = new Set(records.map((record) => record.id));
+      if (!ids.has(expectedId) || ids.has(foreignId) ||
+          records.some((record) => record.user_id !== owner.userId)) {
+        throw new Error("Two-user RLS isolation failed");
+      }
+    }
+    const collection = workspace.collections.find(
+      (record) => record.id === owner.ownedCollectionId,
+    );
+    const link = workspace.links.find((record) => record.id === owner.ownedLinkId);
+    if (collection?.space_id !== owner.ownedSpaceId ||
+        link?.collection_id !== owner.ownedCollectionId) {
+      throw new Error("Live acceptance records were not independently owned");
+    }
+  };
+  assertIsolated(workspaceA, userA, userB);
+  assertIsolated(workspaceB, userB, userA);
+
+  const originalB = {
+    space: workspaceB.spaces.find((record) => record.id === userB.ownedSpaceId),
+    collection: workspaceB.collections.find(
+      (record) => record.id === userB.ownedCollectionId,
+    ),
+    link: workspaceB.links.find((record) => record.id === userB.ownedLinkId),
+  };
+  if (!originalB.space || !originalB.collection || !originalB.link) {
+    throw new Error("Live acceptance owner records were missing");
   }
-  const originalB = workspaceB.spaces.find((space) => space.id === userB.ownedSpaceId)!;
-  const sentinel = `forbidden-${randomUUID()}`;
-  const denied = await a.client
-    .from("spaces")
-    .update({ name: sentinel })
-    .eq("id", userB.ownedSpaceId)
-    .select("id,name");
-  if (denied.error || !Array.isArray(denied.data) || denied.data.length !== 0) {
-    throw new Error("Cross-user RLS update was not denied");
+  const deniedUpdates = await Promise.all([
+    a.client.from("spaces").update({ name: originalB.space.name })
+      .eq("id", userB.ownedSpaceId).select("id"),
+    a.client.from("collections").update({ name: originalB.collection.name })
+      .eq("id", userB.ownedCollectionId).select("id"),
+    a.client.from("links").update({ title: originalB.link.title })
+      .eq("id", userB.ownedLinkId).select("id"),
+  ]);
+  if (deniedUpdates.some((denied) => denied.error ||
+      !Array.isArray(denied.data) || denied.data.length !== 0)) {
+    throw new Error("Cross-user RLS no-op update was not denied");
   }
   const afterDeniedUpdate = await b.repository.load();
-  const reloadedB = afterDeniedUpdate.spaces.find((space) => space.id === userB.ownedSpaceId);
-  if (!reloadedB || reloadedB.name !== originalB.name || reloadedB.name === sentinel) {
-    throw new Error("Cross-user RLS update changed the owner record");
+  assertIsolated(afterDeniedUpdate, userB, userA);
+  const reloadedB = {
+    space: afterDeniedUpdate.spaces.find((record) => record.id === userB.ownedSpaceId),
+    collection: afterDeniedUpdate.collections.find(
+      (record) => record.id === userB.ownedCollectionId,
+    ),
+    link: afterDeniedUpdate.links.find((record) => record.id === userB.ownedLinkId),
+  };
+  if (JSON.stringify(reloadedB) !== JSON.stringify(originalB)) {
+    throw new Error("Cross-user RLS update changed an owner record");
   }
 }
 
@@ -514,10 +686,19 @@ async function verifySubjectMismatch(
   fixture: LiveAcceptanceFixture,
   userAResult: ProbePrivateResult,
   userBResult: ProbePrivateResult,
+  signer: Awaited<ReturnType<typeof loadAcceptanceMismatchSigner>>,
 ) {
   const [userA, userB] = fixture.users;
+  const mismatchBearer = await signer.sign({
+    userAAccessToken: userAResult.rotated.accessToken,
+    userBAccessToken: userBResult.rotated.accessToken,
+    expectedUserAId: userA.userId,
+    expectedUserBId: userB.userId,
+    jwks: userAResult.jwks,
+    resource: fixture.resource,
+  });
   await verifySubjectMismatchBearer({
-    mismatchBearer: fixture.subjectMismatchBearer,
+    mismatchBearer,
     userAAccessToken: userAResult.rotated.accessToken,
     userBAccessToken: userBResult.rotated.accessToken,
     expectedUserAId: userA.userId,
@@ -528,7 +709,7 @@ async function verifySubjectMismatch(
   const response = await probeRequest(`${fixture.resource}/api/mcp`, {
     method: "POST",
     headers: {
-      authorization: `Bearer ${fixture.subjectMismatchBearer}`,
+      authorization: `Bearer ${mismatchBearer}`,
       accept: "application/json, text/event-stream",
       "content-type": "application/json",
     },
@@ -542,12 +723,38 @@ async function verifySubjectMismatch(
   if (response.status !== 401) throw new Error("Subject mismatch was not rejected");
 }
 
+type CompletableProbePhase = { complete(): Promise<void> };
+
+export async function completeLiveAcceptancePhases(
+  phases: CompletableProbePhase[],
+  activeChecks: () => Promise<void>,
+) {
+  let activeFailure: unknown;
+  try {
+    await activeChecks();
+  } catch (error) {
+    activeFailure = error;
+  }
+  const completions = await Promise.allSettled(
+    phases.map((phase) => phase.complete()),
+  );
+  if (activeFailure) throw activeFailure;
+  if (completions.some((completion) => completion.status === "rejected")) {
+    throw new Error("Post-acceptance revocation failed");
+  }
+}
+
 export async function runMcpFacadeLiveAcceptance(options: {
   browser: Browser;
   fixture: LiveAcceptanceFixture;
+  signingKeyPath: string;
+  repositoryRoot: string;
 }) {
   return withSuppressedOutput(async () => {
-    const results = await Promise.all(options.fixture.users.map(async (user) => {
+    const signer = await loadAcceptanceMismatchSigner(options.signingKeyPath, {
+      repositoryRoot: options.repositoryRoot,
+    });
+    const starts = await Promise.allSettled(options.fixture.users.map(async (user) => {
       await verifySupabaseSubject(options.fixture, user);
       return authorizeWithStorageState(
         options.browser,
@@ -555,6 +762,13 @@ export async function runMcpFacadeLiveAcceptance(options: {
         options.fixture.resource,
       );
     }));
+    const active = starts.flatMap((start) =>
+      start.status === "fulfilled" ? [start.value] : []);
+    if (starts.some((start) => start.status === "rejected")) {
+      await Promise.allSettled(active.map((entry) => entry.phase.complete()));
+      throw new Error("Two-user active-grant setup failed");
+    }
+    const results = active.map((entry) => entry.result);
     const allAccessTokens = results.flatMap((result) => [
       result.first.accessToken,
       result.rotated.accessToken,
@@ -562,7 +776,17 @@ export async function runMcpFacadeLiveAcceptance(options: {
     if (new Set(allAccessTokens).size !== allAccessTokens.length) {
       throw new Error("Two-user browser OAuth results were not distinct");
     }
-    await verifySubjectMismatch(options.fixture, results[0]!, results[1]!);
-    await verifyTwoUserRls(options.fixture);
+    await completeLiveAcceptancePhases(
+      active.map((entry) => entry.phase),
+      async () => {
+        await verifySubjectMismatch(
+          options.fixture,
+          results[0]!,
+          results[1]!,
+          signer,
+        );
+        await verifyTwoUserRls(options.fixture);
+      },
+    );
   });
 }
