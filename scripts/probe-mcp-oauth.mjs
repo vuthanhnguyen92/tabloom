@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { createHash, randomBytes } from "node:crypto";
-import { mkdir, writeFile } from "node:fs/promises";
+import { chmod, mkdir, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { dirname, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -92,6 +92,48 @@ function base64Url(bytes) {
   return Buffer.from(bytes).toString("base64url");
 }
 
+export function derivePkceChallenge(verifier) {
+  return base64Url(createHash("sha256").update(verifier).digest());
+}
+
+function createPkce() {
+  const state = base64Url(randomBytes(32));
+  const verifier = base64Url(randomBytes(64));
+  return { state, verifier, challenge: derivePkceChallenge(verifier) };
+}
+
+export function buildDynamicClientRegistration(callbackUrl) {
+  return {
+    client_name: "Tabloom MCP OAuth readiness probe",
+    redirect_uris: [callbackUrl],
+    grant_types: ["authorization_code"],
+    response_types: ["code"],
+    token_endpoint_auth_method: "none",
+  };
+}
+
+export function buildAuthorizationUrl({
+  authorizationEndpoint,
+  clientId,
+  callbackUrl,
+  state,
+  challenge,
+  resource,
+}) {
+  const authorizationUrl = new URL(authorizationEndpoint);
+  authorizationUrl.search = new URLSearchParams({
+    response_type: "code",
+    client_id: clientId,
+    redirect_uri: callbackUrl,
+    state,
+    code_challenge: challenge,
+    code_challenge_method: "S256",
+    resource,
+    scope: "email",
+  }).toString();
+  return authorizationUrl.href;
+}
+
 function requiredHttpsOrigin(value, name) {
   if (!value?.trim()) {
     throw new Error(`${name} is required`);
@@ -142,41 +184,78 @@ async function fetchDiscovery(supabaseOrigin) {
   throw lastError ?? new Error("OAuth discovery failed");
 }
 
-async function createCallbackListener(expectedState) {
+export function parseOAuthCallback(requestTarget, expectedState) {
+  let requestUrl;
+  try {
+    requestUrl = new URL(requestTarget, "http://127.0.0.1");
+  } catch {
+    return {
+      status: 400,
+      body: "Invalid OAuth callback.",
+      terminal: false,
+    };
+  }
+
+  if (requestUrl.pathname !== CALLBACK_PATH) {
+    return { status: 404, body: "Not found", terminal: false };
+  }
+  if (requestUrl.searchParams.get("state") !== expectedState) {
+    return {
+      status: 400,
+      body: "Invalid OAuth callback.",
+      terminal: false,
+    };
+  }
+  if (requestUrl.searchParams.has("error")) {
+    return {
+      status: 400,
+      body: "OAuth authorization was not approved.",
+      terminal: true,
+      error: "OAuth authorization was not approved",
+    };
+  }
+
+  const code = requestUrl.searchParams.get("code");
+  if (!code) {
+    return {
+      status: 400,
+      body: "OAuth callback did not include an authorization code.",
+      terminal: true,
+      error: "OAuth callback did not include a code",
+    };
+  }
+  return {
+    status: 200,
+    body: "Tabloom OAuth readiness probe received the response. You can close this tab.",
+    terminal: true,
+    code,
+  };
+}
+
+export async function createCallbackListener(expectedState) {
   let settle;
+  let settled = false;
   const callback = new Promise((resolveCallback, rejectCallback) => {
     settle = { resolve: resolveCallback, reject: rejectCallback };
   });
 
   const server = createServer((request, response) => {
-    const requestUrl = new URL(request.url ?? "/", "http://127.0.0.1");
-    if (requestUrl.pathname !== CALLBACK_PATH) {
-      response.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
-      response.end("Not found");
-      return;
-    }
-
-    response.writeHead(200, {
+    const result = parseOAuthCallback(request.url ?? "/", expectedState);
+    response.writeHead(result.status, {
       "content-type": "text/plain; charset=utf-8",
       "cache-control": "no-store",
     });
-    response.end("Tabloom OAuth readiness probe received the response. You can close this tab.");
+    response.end(result.body);
 
-    if (requestUrl.searchParams.get("state") !== expectedState) {
-      settle.reject(new Error("OAuth callback state mismatch"));
+    if (!result.terminal || settled) {
       return;
     }
-    const error = requestUrl.searchParams.get("error");
-    if (error) {
-      settle.reject(new Error("OAuth authorization was not approved"));
-      return;
+    settled = true;
+    if ("code" in result) {
+      settle.resolve(result.code);
+    } else {
+      settle.reject(new Error(result.error));
     }
-    const code = requestUrl.searchParams.get("code");
-    if (!code) {
-      settle.reject(new Error("OAuth callback did not include a code"));
-      return;
-    }
-    settle.resolve(code);
   });
 
   await new Promise((resolveListen, rejectListen) => {
@@ -198,7 +277,6 @@ async function createCallbackListener(expectedState) {
 }
 
 function openAuthorizationUrl(url) {
-  console.log(`Approve the OAuth request in your browser:\n${url}`);
   if (process.platform === "darwin") {
     const child = spawn("open", [url], { detached: true, stdio: "ignore" });
     child.unref();
@@ -219,21 +297,50 @@ function emptyReport(discovery, issuer) {
   };
 }
 
-async function writeReport(report) {
-  await mkdir(dirname(REPORT_PATH), { recursive: true });
-  await writeFile(REPORT_PATH, `${JSON.stringify(report, null, 2)}\n`, {
+export async function writeReport(report, reportPath = REPORT_PATH) {
+  await mkdir(dirname(reportPath), { recursive: true });
+  await writeFile(reportPath, `${JSON.stringify(report, null, 2)}\n`, {
     encoding: "utf8",
     mode: 0o600,
   });
+  await chmod(reportPath, 0o600);
 }
 
-async function runProbe() {
+async function verifyAccessToken(accessToken, { metadata, expectedIssuer }) {
+  const { createRemoteJWKSet, jwtVerify } = await import("jose");
+  const jwksUrl =
+    typeof metadata.jwks_uri === "string"
+      ? metadata.jwks_uri
+      : `${expectedIssuer}/.well-known/jwks.json`;
+  try {
+    return await jwtVerify(
+      accessToken,
+      createRemoteJWKSet(new URL(jwksUrl)),
+      { algorithms: ["ES256"], issuer: expectedIssuer },
+    );
+  } catch {
+    throw new Error("OAuth access-token verification failed");
+  }
+}
+
+export async function runProbe({
+  env = process.env,
+  reportPath = REPORT_PATH,
+  fetchDiscovery: fetchDiscoveryFn = fetchDiscovery,
+  requestJson = fetchJson,
+  createPkce: createPkceFn = createPkce,
+  createCallbackListener: createCallbackListenerFn = createCallbackListener,
+  openAuthorizationUrl: openAuthorizationUrlFn = openAuthorizationUrl,
+  verifyAccessToken: verifyAccessTokenFn = verifyAccessToken,
+  writeReport: writeReportFn = writeReport,
+  log = console.log,
+} = {}) {
   const supabaseOrigin = requiredHttpsOrigin(
-    process.env.SUPABASE_URL,
+    env.SUPABASE_URL,
     "SUPABASE_URL",
   );
   const expectedResource = requiredHttpsOrigin(
-    process.env.TABLOOM_MCP_RESOURCE_URL,
+    env.TABLOOM_MCP_RESOURCE_URL,
     "TABLOOM_MCP_RESOURCE_URL",
   );
   const expectedIssuer = `${supabaseOrigin}/auth/v1`;
@@ -245,33 +352,27 @@ async function runProbe() {
   let latestReport = emptyReport(discoveryResult, expectedIssuer);
 
   try {
-    const metadata = await fetchDiscovery(supabaseOrigin);
+    const metadata = await fetchDiscoveryFn(supabaseOrigin);
     discoveryResult = evaluateDiscovery(metadata, expectedIssuer);
     latestReport = emptyReport(discoveryResult, discoveryResult.issuer);
-    await writeReport(latestReport);
+    await writeReportFn(latestReport, reportPath);
     if (!discoveryResult.discoverySupported || !discoveryResult.issuerMatch) {
       throw new Error("OAuth discovery does not meet the readiness gate");
     }
 
-    const state = base64Url(randomBytes(32));
-    const verifier = base64Url(randomBytes(64));
-    const challenge = base64Url(createHash("sha256").update(verifier).digest());
-    const listener = await createCallbackListener(state);
+    const { state, verifier, challenge } = createPkceFn();
+    const listener = await createCallbackListenerFn(state);
 
     try {
-      console.log(`Local OAuth callback: ${listener.callbackUrl}`);
-      const registration = await fetchJson(
+      log(`Local OAuth callback: ${listener.callbackUrl}`);
+      const registration = await requestJson(
         metadata.registration_endpoint,
         {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({
-            client_name: "Tabloom MCP OAuth readiness probe",
-            redirect_uris: [listener.callbackUrl],
-            grant_types: ["authorization_code"],
-            response_types: ["code"],
-            token_endpoint_auth_method: "none",
-          }),
+          body: JSON.stringify(
+            buildDynamicClientRegistration(listener.callbackUrl),
+          ),
         },
         "Dynamic client registration",
       );
@@ -279,20 +380,18 @@ async function runProbe() {
         throw new Error("Dynamic client registration returned no client ID");
       }
 
-      const authorizationUrl = new URL(metadata.authorization_endpoint);
-      authorizationUrl.search = new URLSearchParams({
-        response_type: "code",
-        client_id: registration.client_id,
-        redirect_uri: listener.callbackUrl,
+      const authorizationUrl = buildAuthorizationUrl({
+        authorizationEndpoint: metadata.authorization_endpoint,
+        clientId: registration.client_id,
+        callbackUrl: listener.callbackUrl,
         state,
-        code_challenge: challenge,
-        code_challenge_method: "S256",
+        challenge,
         resource: expectedResource,
-        scope: "email",
-      }).toString();
-      openAuthorizationUrl(authorizationUrl.href);
+      });
+      log(`Approve the OAuth request in your browser:\n${authorizationUrl}`);
+      openAuthorizationUrlFn(authorizationUrl);
 
-      const timeoutMs = Number(process.env.TABLOOM_MCP_OAUTH_TIMEOUT_MS) || DEFAULT_TIMEOUT_MS;
+      const timeoutMs = Number(env.TABLOOM_MCP_OAUTH_TIMEOUT_MS) || DEFAULT_TIMEOUT_MS;
       const code = await Promise.race([
         listener.callback,
         new Promise((_, rejectTimeout) => {
@@ -303,7 +402,7 @@ async function runProbe() {
         }),
       ]);
 
-      const tokenResponse = await fetchJson(
+      const tokenResponse = await requestJson(
         metadata.token_endpoint,
         {
           method: "POST",
@@ -322,21 +421,10 @@ async function runProbe() {
         throw new Error("OAuth token exchange returned no access token");
       }
 
-      const { createRemoteJWKSet, jwtVerify } = await import("jose");
-      const jwksUrl =
-        typeof metadata.jwks_uri === "string"
-          ? metadata.jwks_uri
-          : `${expectedIssuer}/.well-known/jwks.json`;
-      let verified;
-      try {
-        verified = await jwtVerify(
-          tokenResponse.access_token,
-          createRemoteJWKSet(new URL(jwksUrl)),
-          { algorithms: ["ES256"], issuer: expectedIssuer },
-        );
-      } catch {
-        throw new Error("OAuth access-token verification failed");
-      }
+      const verified = await verifyAccessTokenFn(tokenResponse.access_token, {
+        metadata,
+        expectedIssuer,
+      });
 
       const report = redactTokenResult({
         ...verified,
@@ -345,8 +433,8 @@ async function runProbe() {
         discovery: discoveryResult,
       });
       latestReport = report;
-      await writeReport(latestReport);
-      console.log(`Redacted readiness report written to ${REPORT_PATH}`);
+      await writeReportFn(latestReport, reportPath);
+      log(`Redacted readiness report written to ${reportPath}`);
       if (!report.pass) {
         throw new Error("OAuth token failed the exact resource-audience gate");
       }
@@ -354,8 +442,21 @@ async function runProbe() {
       await listener.close();
     }
   } catch (error) {
-    await writeReport(latestReport);
+    await writeReportFn(latestReport, reportPath);
     throw error;
+  }
+}
+
+export async function runCli({
+  run = () => runProbe(),
+  error = console.error,
+} = {}) {
+  try {
+    await run();
+    return 0;
+  } catch {
+    error("OAuth readiness gate failed. See the redacted report for details.");
+    return 1;
   }
 }
 
@@ -363,9 +464,7 @@ const isEntrypoint =
   process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href;
 
 if (isEntrypoint) {
-  runProbe().catch((error) => {
-    const message = error instanceof Error ? error.message : "OAuth readiness gate failed";
-    console.error(`OAuth readiness gate failed: ${message}`);
-    process.exitCode = 1;
+  runCli().then((exitCode) => {
+    process.exitCode = exitCode;
   });
 }

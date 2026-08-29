@@ -14,10 +14,12 @@ let client: SupabaseClient | undefined;
 let clientConfig: { url: string; anonKey: string } | undefined;
 
 function validConfig(config?: SupabaseBrowserConfig) {
-  const url = (config?.url ?? process.env.NEXT_PUBLIC_SUPABASE_URL)?.trim();
-  const anonKey = (
-    config?.anonKey ?? process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
-  )?.trim();
+  const source = config ?? {
+    url: process.env.NEXT_PUBLIC_SUPABASE_URL,
+    anonKey: process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY,
+  };
+  const url = source.url?.trim();
+  const anonKey = source.anonKey?.trim();
   if (!url || !anonKey || TEMPLATE_VALUE.test(url) || TEMPLATE_VALUE.test(anonKey)) {
     return null;
   }

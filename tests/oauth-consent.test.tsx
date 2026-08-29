@@ -147,6 +147,42 @@ describe("OAuthConsent", () => {
     ).toBeInTheDocument();
   });
 
+  it.each([
+    {
+      explicit: { url: "https://explicit.supabase.co" },
+      missing: "anon key",
+    },
+    {
+      explicit: { anonKey: "explicit-public-anon-key" },
+      missing: "URL",
+    },
+  ])(
+    "does not fill a missing explicit $missing from the environment",
+    async ({ explicit }) => {
+      vi.stubEnv(
+        "NEXT_PUBLIC_SUPABASE_URL",
+        "https://environment.supabase.co",
+      );
+      vi.stubEnv(
+        "NEXT_PUBLIC_SUPABASE_ANON_KEY",
+        "environment-public-anon-key",
+      );
+
+      render(
+        <OAuthConsent
+          authorizationId="authorization-1"
+          supabaseConfig={explicit}
+        />,
+      );
+
+      expect(
+        await screen.findByRole("heading", {
+          name: "Authorization request unavailable",
+        }),
+      ).toBeInTheDocument();
+    },
+  );
+
   it("shows the requesting client and whole-workspace permission", async () => {
     render(<OAuthConsent authorizationId="authorization-1" client={oauthClient(details)} />);
 
