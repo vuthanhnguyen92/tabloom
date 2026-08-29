@@ -1,4 +1,13 @@
-import { exportJWK, generateKeyPair, type JWK } from "jose";
+import {
+  decodeJwt,
+  exportJWK,
+  generateKeyPair,
+  importJWK,
+  SignJWT,
+  type JWK,
+  type JWSHeaderParameters,
+  type JWTPayload,
+} from "jose";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { issueAccessToken } from "../../services/tabloom-mcp/src/auth/access-token";
@@ -27,6 +36,7 @@ const SUPABASE_URL = "https://exact-project.supabase.co";
 const CLIENT_ID = "5c177e69-8954-4c57-a777-07c732513bea";
 const USER_ID = "4f6f8607-9439-4ce3-a19e-f5a302ef3e68";
 const GRANT_ID = "g".repeat(43);
+const ATTACKER_GRANT_ID = "a".repeat(43);
 const REFRESH_JTI = "r".repeat(43);
 let privateJwk: JWK;
 let revoked: boolean;
@@ -82,6 +92,26 @@ async function accessToken(
     supabaseToken: "upstream-access-token",
     innerExpiresAt,
   }, loadFacadeAuthConfig(process.env), issuedAt);
+}
+
+async function handSignedAccessToken(
+  payloadOverrides: Record<string, unknown> = {},
+  headerOverrides: Partial<JWSHeaderParameters> = {},
+): Promise<string> {
+  const issuedPayload = decodeJwt(await accessToken());
+  const payload = {
+    ...issuedPayload,
+    grant_id: ATTACKER_GRANT_ID,
+    ...payloadOverrides,
+  } as JWTPayload;
+  return new SignJWT(payload)
+    .setProtectedHeader({
+      alg: "ES256",
+      kid: "signing-key",
+      typ: "at+jwt",
+      ...headerOverrides,
+    })
+    .sign(await importJWK({ ...privateJwk, alg: "ES256" }, "ES256"));
 }
 
 function refreshPayload(overrides: Partial<RefreshTokenPayload> = {}): RefreshTokenPayload {
@@ -219,6 +249,54 @@ describe("POST /oauth/revoke", () => {
     expect(consoleError).not.toHaveBeenCalled();
     expect(JSON.stringify(revokeCalls)).not.toContain("upstream-access-token");
     expect(JSON.stringify(revokeCalls)).not.toContain("upstream-refresh-token");
+  });
+
+  it.each([
+    ["non-UUID subject", { sub: "attacker-subject" }, {}],
+    ["non-canonical public client", { client_id: "https://CLIENT.example/oauth.json" }, {}],
+    ["invalid grant identifier", { grant_id: "attacker-grant" }, {}],
+    ["invalid access JTI", { jti: "attacker-jti" }, {}],
+    ["wrong scope", { scope: "other:scope" }, {}],
+    ["wrong issuer", { iss: "https://attacker.example" }, {}],
+    ["wrong audience", { aud: "https://attacker.example" }, {}],
+    ["overlong access lifetime", { exp: NOW + 601 }, {}],
+    ["inconsistent issue/not-before time", { iat: NOW - 1, nbf: NOW }, {}],
+    ["unexpected claim", { attacker_claim: "present" }, {}],
+    ["malformed inner credential", { supabase_token: "not-an-inner-jwe" }, {}],
+    ["empty inner credential", { supabase_token: "" }, {}],
+    ["wrong access-token type", {}, { typ: "JWT" }],
+  ])(
+    "does not revoke an attacker-chosen grant from a hand-signed token with %s",
+    async (_label, payloadOverrides, headerOverrides) => {
+      const token = await handSignedAccessToken(payloadOverrides, headerOverrides);
+
+      await expectEmptySuccess(await revokeRequest(token, "access_token"));
+
+      expect(revokeCalls).toEqual([]);
+      expect(consumeCalls).toEqual([]);
+    },
+  );
+
+  it("does not treat another encrypted artifact purpose as an inner access credential", async () => {
+    const token = await handSignedAccessToken({ supabase_token: await refreshToken() });
+
+    await expectEmptySuccess(await revokeRequest(token, "access_token"));
+
+    expect(revokeCalls).toEqual([]);
+    expect(consumeCalls).toEqual([]);
+  });
+
+  it("accepts a canonical HTTPS client metadata identifier in a strict access token", async () => {
+    const token = await handSignedAccessToken({
+      client_id: "https://client.example/oauth/metadata.json",
+    });
+
+    await expectEmptySuccess(await revokeRequest(token, "access_token"));
+
+    expect(revokeCalls).toEqual([{
+      grantId: ATTACKER_GRANT_ID,
+      expiresAt: new Date((NOW + REFRESH_TOKEN_LIFETIME_SECONDS) * 1000),
+    }]);
   });
 
   it.each(["revoke", "consume"])(

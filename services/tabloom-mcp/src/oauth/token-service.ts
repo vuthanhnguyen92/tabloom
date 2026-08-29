@@ -344,6 +344,7 @@ export async function exchangeRefreshToken(
     config,
     now,
   );
+  if (await persistence.isGrantRevoked(refresh.grantId)) throw invalidGrant();
 
   return issueTokenPair({
     userId: refresh.userId,

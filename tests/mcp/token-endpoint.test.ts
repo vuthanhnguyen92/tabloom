@@ -44,6 +44,7 @@ const ROTATED_REFRESH_TOKEN = "rotated-supabase-refresh-token";
 let privateJwk: JWK;
 let consumed: Set<string>;
 let revoked: boolean;
+let revocationExpiries: Date[];
 let getUser: ReturnType<typeof vi.fn>;
 let refreshSession: ReturnType<typeof vi.fn>;
 
@@ -100,7 +101,10 @@ function persistence(): OAuthPersistence {
       consumed.add(jti);
       return true;
     },
-    async revokeGrant() {},
+    async revokeGrant(_grantId, expiresAt) {
+      revoked = true;
+      revocationExpiries.push(expiresAt);
+    },
     async isGrantRevoked() { return revoked; },
   };
 }
@@ -239,6 +243,15 @@ async function refreshTokenRequest(
   }));
 }
 
+async function revokeTokenRequest(token: string): Promise<Response> {
+  const route = await import("../../services/tabloom-mcp/app/oauth/revoke/route");
+  return route.POST(new Request(`${ORIGIN}/oauth/revoke`, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({ token, token_type_hint: "refresh_token" }),
+  }));
+}
+
 function expectNoStore(response: Response): void {
   expect(response.headers.get("Cache-Control")).toBe("no-store");
   expect(response.headers.get("Pragma")).toBe("no-cache");
@@ -256,6 +269,7 @@ beforeEach(() => {
   useFacadeEnvironment();
   consumed = new Set();
   revoked = false;
+  revocationExpiries = [];
   vi.mocked(createOAuthPersistence).mockReturnValue(persistence());
   mockSupabaseUser();
 });
@@ -717,6 +731,26 @@ describe("POST /oauth/token refresh_token", () => {
     expect(refreshSession).toHaveBeenCalledTimes(1);
   });
 
+  it("burns the refresh JTI and returns 503 when the post-provider revocation check is unavailable", async () => {
+    const token = await refreshArtifact();
+    const base = persistence();
+    let revokedChecks = 0;
+    vi.mocked(createOAuthPersistence).mockReturnValue({
+      ...base,
+      async isGrantRevoked(grantId) {
+        revokedChecks += 1;
+        if (revokedChecks === 2) throw new OAuthPersistenceUnavailableError();
+        return base.isGrantRevoked(grantId);
+      },
+    });
+
+    await expectError(await refreshTokenRequest(token), "temporarily_unavailable", 503);
+
+    expect(consumed).toEqual(new Set(["r".repeat(43)]));
+    expect(refreshSession).toHaveBeenCalledTimes(1);
+    expect(revokedChecks).toBe(2);
+  });
+
   it("burns the refresh JTI when Supabase returns a changed user", async () => {
     const token = await refreshArtifact();
     refreshSession.mockResolvedValue({
@@ -771,6 +805,50 @@ describe("POST /oauth/token refresh_token", () => {
     await expect(loser.json()).resolves.toEqual({ error: "invalid_grant" });
     expect(refreshSession).toHaveBeenCalledTimes(1);
     expect(consumed).toEqual(new Set(["r".repeat(43)]));
+  });
+
+  it("does not mint or resurrect a descendant when an aged refresh is revoked during provider work", async () => {
+    const tenDays = 10 * 24 * 60 * 60;
+    const agedIssuedAt = NOW - tenDays;
+    const agedExpiresAt = agedIssuedAt + REFRESH_TOKEN_LIFETIME_SECONDS;
+    const token = await refreshArtifact({
+      issuedAt: agedIssuedAt,
+      expiresAt: agedExpiresAt,
+    }, agedIssuedAt);
+    let providerStarted!: () => void;
+    let finishProvider!: (value: unknown) => void;
+    const started = new Promise<void>((resolve) => { providerStarted = resolve; });
+    const providerResult = new Promise((resolve) => { finishProvider = resolve; });
+    refreshSession.mockImplementation(() => {
+      providerStarted();
+      return providerResult;
+    });
+
+    const refreshing = refreshTokenRequest(token);
+    await started;
+    const revocation = await revokeTokenRequest(token);
+    await expect(revocation.text()).resolves.toBe("");
+    expect(revocation.status).toBe(200);
+    finishProvider({
+      data: {
+        user: { id: USER_ID },
+        session: {
+          access_token: ROTATED_ACCESS_TOKEN,
+          refresh_token: ROTATED_REFRESH_TOKEN,
+          expires_at: NOW + 300,
+        },
+      },
+      error: null,
+    });
+
+    await expectError(await refreshing, "invalid_grant");
+    await expectError(await refreshTokenRequest(token), "invalid_grant");
+    expect(refreshSession).toHaveBeenCalledTimes(1);
+    expect(consumed).toEqual(new Set(["r".repeat(43)]));
+    expect(revocationExpiries).toEqual([
+      new Date((NOW + REFRESH_TOKEN_LIFETIME_SECONDS) * 1000),
+    ]);
+    expect(revocationExpiries[0]!.getTime()).toBeGreaterThan(agedExpiresAt * 1000);
   });
 
   it("keeps refresh requests form-only, public-client, exact, and bounded", async () => {

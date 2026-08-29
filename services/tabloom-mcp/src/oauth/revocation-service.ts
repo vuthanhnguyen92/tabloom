@@ -1,4 +1,4 @@
-import { verifyAccessToken } from "../auth/access-token";
+import { verifyRevocableAccessToken } from "../auth/access-token";
 import type { FacadeAuthConfig } from "../auth/config";
 import type { OAuthPersistence } from "./persistence";
 import {
@@ -14,7 +14,7 @@ export async function revokeOAuthToken(
 ): Promise<void> {
   let accessGrantId: string | undefined;
   try {
-    const access = await verifyAccessToken(token, config, now);
+    const access = await verifyRevocableAccessToken(token, config, now);
     accessGrantId = access.payload.grant_id;
   } catch {
     // Token validity is intentionally non-disclosing at this endpoint.
@@ -35,7 +35,7 @@ export async function revokeOAuthToken(
     return;
   }
 
-  const expiresAt = new Date(refresh.expiresAt * 1000);
+  const expiresAt = new Date((now + REFRESH_TOKEN_LIFETIME_SECONDS) * 1000);
   await persistence.revokeGrant(refresh.grantId, expiresAt);
   await persistence.consume("refresh_token", refresh.jti, expiresAt);
 }
