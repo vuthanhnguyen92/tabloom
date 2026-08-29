@@ -185,7 +185,7 @@ describe("server-side Supabase upstream authentication", () => {
   });
 
   it("fails closed when Supabase does not persist a PKCE verifier", async () => {
-    const factory: SupabaseAuthClientFactory = (_url, _key, _options) => ({
+    const factory: SupabaseAuthClientFactory = () => ({
       auth: {
         async signInWithOAuth() { return { data: { url: "https://example.supabase.co/auth" }, error: null }; },
         async exchangeCodeForSession() { throw new Error("unused"); },

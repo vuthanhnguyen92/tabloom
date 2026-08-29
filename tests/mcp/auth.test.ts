@@ -50,6 +50,7 @@ function useFacadeEnvironment(): void {
   vi.stubEnv("TABLOOM_OAUTH_ENCRYPTION_KEYS", JSON.stringify([
     { kid: "encryption-key", active: true, rootKey: Buffer.alloc(32, 7).toString("base64url") },
   ]));
+  vi.stubEnv("TABLOOM_OAUTH_DATABASE_SECRET", Buffer.alloc(32, 9).toString("base64url"));
 }
 
 beforeEach(() => {
@@ -464,7 +465,7 @@ describe("Tabloom facade bearer verification", () => {
     const consoleWarn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const persistence = {
       async isGrantRevoked() { throw new Error(`${providerDetail}:${token}`); },
-    } as OAuthPersistence;
+    } as unknown as OAuthPersistence;
     const verifier = createTokenVerifier(config(), {
       persistence,
       now: () => NOW,

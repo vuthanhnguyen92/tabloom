@@ -95,6 +95,7 @@ function useFacadeEnvironment(enabled = true): void {
   vi.stubEnv("TABLOOM_OAUTH_ENCRYPTION_KEYS", JSON.stringify([
     { kid: "encryption-key", active: true, rootKey: Buffer.alloc(32, 7).toString("base64url") },
   ]));
+  vi.stubEnv("TABLOOM_OAUTH_DATABASE_SECRET", Buffer.alloc(32, 9).toString("base64url"));
 }
 
 function persistence(): OAuthPersistence {
@@ -260,6 +261,7 @@ async function revokeTokenRequest(token: string): Promise<Response> {
 function expectNoStore(response: Response): void {
   expect(response.headers.get("Cache-Control")).toBe("no-store");
   expect(response.headers.get("Pragma")).toBe("no-cache");
+  expect(response.headers.get("Access-Control-Allow-Origin")).toBe("*");
 }
 
 async function expectError(response: Response, error: string, status = 400): Promise<void> {
@@ -670,7 +672,6 @@ describe("POST /oauth/token refresh_token", () => {
   it.each([
     ["client", { client_id: OTHER_USER_ID }],
     ["resource", { resource: "https://other.example" }],
-    ["scope", { scope: "other:scope" }],
   ])("rejects a %s binding mismatch before consuming", async (_label, overrides) => {
     const token = await refreshArtifact();
 
@@ -678,6 +679,29 @@ describe("POST /oauth/token refresh_token", () => {
 
     expect(consumed).toEqual(new Set());
     expect(refreshSession).not.toHaveBeenCalled();
+  });
+
+  it("inherits the bound scope when omitted and returns invalid_scope for a conflict", async () => {
+    const omittedToken = await refreshArtifact();
+    const omitted = new URLSearchParams({
+      grant_type: "refresh_token",
+      refresh_token: omittedToken,
+      client_id: CLIENT_ID,
+      resource: ORIGIN,
+    });
+    const inherited = await rawTokenRequest(omitted.toString());
+    expect(inherited.status).toBe(200);
+    await expect(inherited.json()).resolves.toMatchObject({
+      scope: "tabloom:workspace",
+    });
+
+    consumed.clear();
+    const conflictToken = await refreshArtifact({ jti: "s".repeat(43) });
+    await expectError(
+      await refreshTokenRequest(conflictToken, { scope: "other:scope" }),
+      "invalid_scope",
+    );
+    expect(consumed).toEqual(new Set());
   });
 
   it("rejects expired, wrong-purpose, and wrong-key artifacts identically", async () => {

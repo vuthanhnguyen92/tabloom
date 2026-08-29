@@ -151,9 +151,9 @@ export async function resolveClient(
   if (UUID_PATTERN.test(clientId)) {
     const stored = await persistence.getClient(clientId);
     const now = (options.now ?? (() => new Date()))();
-    const expiresAt = stored?.expiresAt === null ? null : Date.parse(stored?.expiresAt ?? "");
+    const expiresAt = Date.parse(stored?.expiresAt ?? "");
     if (!stored || stored.clientId !== clientId ||
-        (expiresAt !== null && (!Number.isFinite(expiresAt) || expiresAt <= now.getTime()))) {
+        !Number.isFinite(expiresAt) || expiresAt <= now.getTime()) {
       throw new InvalidOAuthClientError();
     }
     let clientName: string;

@@ -33,7 +33,7 @@ export type RefreshTokenRequest = {
   refreshToken: string;
   clientId: string;
   resource: string;
-  scope: string;
+  scope?: string;
 };
 
 export type RefreshTokenPayload = {
@@ -48,7 +48,10 @@ export type RefreshTokenPayload = {
   expiresAt: number;
 };
 
-export type TokenServiceErrorCode = "invalid_grant" | "temporarily_unavailable";
+export type TokenServiceErrorCode =
+  | "invalid_grant"
+  | "invalid_scope"
+  | "temporarily_unavailable";
 
 export class TokenServiceError extends Error {
   constructor(readonly error: TokenServiceErrorCode) {
@@ -73,6 +76,10 @@ const REFRESH_PAYLOAD_KEYS = [
 
 function invalidGrant(): TokenServiceError {
   return new TokenServiceError("invalid_grant");
+}
+
+function invalidScope(): TokenServiceError {
+  return new TokenServiceError("invalid_scope");
 }
 
 function randomIdentifier(): string {
@@ -342,10 +349,12 @@ export async function exchangeRefreshToken(
     request.grantType !== "refresh_token" ||
     request.clientId !== refresh.clientId ||
     request.resource !== refresh.resource ||
-    request.resource !== config.resourceUrl.origin ||
-    request.scope !== refresh.scope
+    request.resource !== config.resourceUrl.origin
   ) {
     throw invalidGrant();
+  }
+  if (request.scope !== undefined && request.scope !== refresh.scope) {
+    throw invalidScope();
   }
 
   if (await persistence.isGrantRevoked(refresh.grantId)) throw invalidGrant();

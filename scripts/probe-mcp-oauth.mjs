@@ -15,7 +15,7 @@ const MAX_PROBE_RESPONSE_BYTES = 256 * 1024;
 
 function strings(value) {
   return Array.isArray(value)
-    ? value.filter((entry) => typeof entry === "string")
+    ? value.every((entry) => typeof entry === "string") ? value : []
     : typeof value === "string"
       ? [value]
       : [];
@@ -69,6 +69,7 @@ export function evaluateDiscovery(
       authorizationServer?.grant_types_supported,
       ["authorization_code", "refresh_token"],
     ) &&
+    exactStringArray(authorizationServer?.response_types_supported, ["code"]) &&
     exactStringArray(authorizationServer?.scopes_supported, [REQUIRED_SCOPE]) &&
     exactStringArray(
       authorizationServer?.token_endpoint_auth_methods_supported,
@@ -240,6 +241,33 @@ function successfulJson(response, label) {
     throw new Error(`${label} failed`);
   }
   return response.body;
+}
+
+function validatePublicJwks(value) {
+  if (!isRecord(value) || !Array.isArray(value.keys) || value.keys.length < 1 ||
+      !value.keys.every((key) => isRecord(key) &&
+        key.kty === "EC" && key.crv === "P-256" && key.alg === "ES256" &&
+        typeof key.kid === "string" && key.kid.length > 0 &&
+        typeof key.x === "string" && key.x.length > 0 &&
+        typeof key.y === "string" && key.y.length > 0 &&
+        !Object.hasOwn(key, "d"))) {
+    throw new Error("OAuth JWKS discovery failed");
+  }
+  return value;
+}
+
+function validateRegistrationResponse(body, expectedMetadata) {
+  if (typeof body.client_id !== "string" || !body.client_id ||
+      body.client_name !== expectedMetadata.client_name ||
+      !exactStringArray(body.redirect_uris, expectedMetadata.redirect_uris) ||
+      !exactStringArray(body.grant_types, expectedMetadata.grant_types) ||
+      !exactStringArray(body.response_types, expectedMetadata.response_types) ||
+      body.token_endpoint_auth_method !== "none" ||
+      Object.hasOwn(body, "client_secret") ||
+      Object.hasOwn(body, "registration_access_token")) {
+    throw new Error("Dynamic client registration failed");
+  }
+  return body.client_id;
 }
 
 export function parseOAuthCallback(requestTarget, expectedState) {
@@ -570,7 +598,12 @@ function tokenPair(body, label) {
     typeof body.access_token !== "string" ||
     !body.access_token ||
     typeof body.refresh_token !== "string" ||
-    !body.refresh_token
+    !body.refresh_token ||
+    body.token_type !== "Bearer" ||
+    !Number.isSafeInteger(body.expires_in) ||
+    body.expires_in <= 0 ||
+    body.expires_in > 600 ||
+    body.scope !== REQUIRED_SCOPE
   ) {
     throw new Error(`${label} returned an invalid token pair`);
   }
@@ -659,6 +692,9 @@ export async function beginProbeAcceptance({
       discoveredIssuers[0],
       "Discovered OAuth issuer",
     );
+    if (discoveredIssuer !== expectedResource) {
+      throw new Error("Protected-resource discovery returned an unexpected issuer");
+    }
     const metadata = successfulJson(
       await safeRequest(
         `${discoveredIssuer}/.well-known/oauth-authorization-server`,
@@ -675,30 +711,29 @@ export async function beginProbeAcceptance({
     if (!discovery.discoverySupported) {
       throw new Error("OAuth discovery failed the readiness gate");
     }
-    const jwks = successfulJson(
+    const jwks = validatePublicJwks(successfulJson(
       await safeRequest(metadata.jwks_uri),
       "OAuth JWKS discovery",
-    );
+    ));
 
     const { state, verifier, challenge } = createPkceFn();
     listener = await createCallbackListenerFn(state);
+    const registrationMetadata = buildDynamicClientRegistration(listener.callbackUrl);
     const registration = successfulJson(
         await safeRequest(metadata.registration_endpoint, {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify(
-            buildDynamicClientRegistration(listener.callbackUrl),
+            registrationMetadata,
           ),
         }),
         "Dynamic client registration",
       );
-    if (typeof registration.client_id !== "string" || !registration.client_id) {
-      throw new Error("Dynamic client registration failed");
-    }
+    const clientId = validateRegistrationResponse(registration, registrationMetadata);
 
     const authorizationUrl = buildAuthorizationUrl({
         authorizationEndpoint: metadata.authorization_endpoint,
-        clientId: registration.client_id,
+        clientId,
         callbackUrl: listener.callbackUrl,
         state,
         challenge,
@@ -717,7 +752,7 @@ export async function beginProbeAcceptance({
           body: new URLSearchParams({
             grant_type: "authorization_code",
             code,
-            client_id: registration.client_id,
+            client_id: clientId,
             redirect_uri: listener.callbackUrl,
             resource: expectedResource,
             code_verifier: verifier,
@@ -819,7 +854,7 @@ export async function beginProbeAcceptance({
           body: new URLSearchParams({
             grant_type: "refresh_token",
             refresh_token: first.refreshToken,
-            client_id: registration.client_id,
+            client_id: clientId,
             resource: expectedResource,
             scope: REQUIRED_SCOPE,
           }),
@@ -844,7 +879,7 @@ export async function beginProbeAcceptance({
         body: new URLSearchParams({
           grant_type: "refresh_token",
           refresh_token: first.refreshToken,
-          client_id: registration.client_id,
+          client_id: clientId,
           resource: expectedResource,
           scope: REQUIRED_SCOPE,
         }),

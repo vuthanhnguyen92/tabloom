@@ -56,14 +56,16 @@ https://tabloom-mcp.vercel.app/oauth/callback/supabase
 ```
 
 Keep the existing web and exact extension callbacks when adding it. Private
-signing/encryption rings belong only in Vercel secret storage, and the first
+signing/encryption rings and the request-proof database secret belong only in
+approved Vercel/database secret entry paths, and the first
 deployment must keep `TABLOOM_OAUTH_ENABLED=false`. Linking or pushing
 Supabase, editing redirect URLs, setting Vercel variables, deploying, enabling
 OAuth, inspecting production logs, and performing cutover all require explicit
 operator approval.
 
 See [Tabloom authorization facade operator guide](docs/mcp-setup.md) for local
-key generation, stdin/dashboard secret entry, rotation and rollback order, the
+key/database-proof generation, protected secret entry, public-only signing-key
+retention, rotation and rollback order, the
 redacted interactive probe, and the disabled-first two-user release gate. The
 opt-in live gate accepts only private JSON credential/session-state files at
 absolute paths outside this repository; it never imports external executable

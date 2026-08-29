@@ -1,6 +1,12 @@
 import { createHash, randomUUID } from "node:crypto";
 
-export type OAuthRouteCategory = "register" | "authorize" | "token" | "revoke";
+export type OAuthRouteCategory =
+  | "register"
+  | "authorize"
+  | "callback"
+  | "consent"
+  | "token"
+  | "revoke";
 export type OAuthResultClass =
   | "success"
   | "client_error"

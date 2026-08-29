@@ -11,7 +11,7 @@ import {
   readUpstreamLoginState,
 } from "../../services/tabloom-mcp/src/oauth/cookies";
 import { createCimdFetcher } from "../../services/tabloom-mcp/src/oauth/cimd";
-import { CimdUnavailableError } from "../../services/tabloom-mcp/src/oauth/cimd-errors";
+import { CimdFetchError, CimdUnavailableError } from "../../services/tabloom-mcp/src/oauth/cimd-errors";
 import { resolveClient } from "../../services/tabloom-mcp/src/oauth/client-metadata";
 import {
   createOAuthPersistence,
@@ -84,6 +84,7 @@ function useFacadeEnvironment(enabled: boolean) {
   vi.stubEnv("TABLOOM_OAUTH_ENCRYPTION_KEYS", JSON.stringify([
     { kid: "encryption-key", active: true, rootKey: Buffer.alloc(32, 3).toString("base64url") },
   ]));
+  vi.stubEnv("TABLOOM_OAUTH_DATABASE_SECRET", Buffer.alloc(32, 9).toString("base64url"));
 }
 
 function persistence(): OAuthPersistence {
@@ -96,7 +97,7 @@ function persistence(): OAuthPersistence {
         clientName: "DCR Client",
         redirectUris: [REDIRECT_URI],
         createdAt: "2026-08-29T01:02:03.000Z",
-        expiresAt: null,
+        expiresAt: "2026-08-30T01:02:03.000Z",
       };
     },
     async consume() { return false; },
@@ -334,6 +335,20 @@ describe("GET /oauth/authorize", () => {
     expect(serialized).not.toContain("different.example");
   });
 
+  it("distinguishes transient DNS unavailability from a permanent missing host", async () => {
+    const dnsFailure = (code: string) => Object.assign(new Error("private DNS detail"), { code });
+    const transient = createCimdFetcher({
+      resolve: async () => { throw dnsFailure("EAI_AGAIN"); },
+    });
+    const permanent = createCimdFetcher({
+      resolve: async () => { throw dnsFailure("ENOTFOUND"); },
+    });
+
+    await expect(transient(CIMD_CLIENT_ID)).rejects.toBeInstanceOf(CimdUnavailableError);
+    await expect(permanent(CIMD_CLIENT_ID)).rejects.toBeInstanceOf(CimdFetchError);
+    await expect(permanent(CIMD_CLIENT_ID)).rejects.not.toBeInstanceOf(CimdUnavailableError);
+  });
+
   it.each([
     ["raw Error", new Error("private raw resolver detail")],
     ["spoofed invalid marker", {
@@ -441,7 +456,7 @@ describe("GET /oauth/authorize", () => {
         `https://two.example/${"b".repeat(1_380)}`,
       ],
       createdAt: "2026-08-29T01:02:03.000Z",
-      expiresAt: null,
+      expiresAt: "2026-08-30T01:02:03.000Z",
     });
     vi.mocked(createOAuthPersistence).mockReturnValue(store);
     const auth = upstream();
@@ -572,6 +587,7 @@ describe("GET /oauth/callback/supabase", () => {
     const auth = upstream();
     vi.mocked(createUpstreamSupabaseAuth).mockReturnValue(auth);
     const route = await callbackRoute();
+    const audit = vi.spyOn(console, "info").mockImplementation(() => undefined);
     const request = cookieRequest(
       OAUTH_STATE_COOKIE_NAME,
       cookie,
@@ -590,6 +606,10 @@ describe("GET /oauth/callback/supabase", () => {
     expect(response.headers.get("Set-Cookie")).toContain(`${OAUTH_STATE_COOKIE_NAME}=;`);
     expect(response.headers.get("Set-Cookie")).toContain("Max-Age=0");
     expect(auth.exchange).not.toHaveBeenCalled();
+    expect(audit.mock.calls.at(-1)?.[0]).toMatchObject({
+      routeCategory: "callback",
+      resultClass: "client_error",
+    });
   });
 
   it("exchanges the code without requiring Supabase to echo MCP state and creates consent state", async () => {
@@ -633,28 +653,49 @@ describe("GET /oauth/callback/supabase", () => {
     expect(response.headers.get("Location")).not.toMatch(/token|state|code/i);
   });
 
-  it("fails closed on missing codes and safe-maps exchange failures", async () => {
+  it("separates malformed callbacks, retryable provider failures, and unexpected failures", async () => {
     useFacadeEnvironment(true);
     const cookie = await stateCookie();
     const auth = upstream();
-    vi.mocked(auth.exchange).mockRejectedValue(new Error("provider exchange detail"));
     vi.mocked(createUpstreamSupabaseAuth).mockReturnValue(auth);
+    const audit = vi.spyOn(console, "info").mockImplementation(() => undefined);
     const route = await callbackRoute();
 
     const missing = await route.GET(cookieRequest(OAUTH_STATE_COOKIE_NAME, cookie));
     expect(new URL(missing.headers.get("Location")!).searchParams.get("error")).toBe("invalid_request");
     expect(missing.headers.get("Set-Cookie")).toContain("Max-Age=0");
 
-    const failed = await route.GET(cookieRequest(
+    vi.mocked(auth.exchange).mockRejectedValueOnce(
+      new UpstreamSupabaseAuthError("unavailable"),
+    );
+    const retryable = await route.GET(cookieRequest(
       OAUTH_STATE_COOKIE_NAME,
       cookie,
       `${ORIGIN}/oauth/callback/supabase?code=supabase-code&state=untrusted-upstream-state`,
     ));
-    const failedLocation = failed.headers.get("Location")!;
-    expect(new URL(failedLocation).searchParams.get("error")).toBe("temporarily_unavailable");
-    expect(new URL(failedLocation).searchParams.get("state")).toBe("original-client-state");
-    expect(failedLocation).not.toContain("provider+exchange+detail");
-    expect(failed.headers.get("Set-Cookie")).toContain("Max-Age=0");
+    const retryableLocation = retryable.headers.get("Location")!;
+    expect(new URL(retryableLocation).searchParams.get("error")).toBe("temporarily_unavailable");
+    expect(new URL(retryableLocation).searchParams.has("correlation_id")).toBe(false);
+
+    vi.mocked(auth.exchange).mockRejectedValueOnce(new Error("provider exchange detail"));
+    const unexpected = await route.GET(cookieRequest(
+      OAUTH_STATE_COOKIE_NAME,
+      cookie,
+      `${ORIGIN}/oauth/callback/supabase?code=supabase-code`,
+    ));
+    const unexpectedLocation = new URL(unexpected.headers.get("Location")!);
+    expect(unexpectedLocation.searchParams.get("error")).toBe("server_error");
+    expect(unexpectedLocation.searchParams.get("state")).toBe("original-client-state");
+    expect(unexpectedLocation.searchParams.get("correlation_id")).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
+    );
+    expect(unexpectedLocation.href).not.toContain("provider+exchange+detail");
+    expect(unexpected.headers.get("Set-Cookie")).toContain("Max-Age=0");
+    expect(audit.mock.calls.at(-1)?.[0]).toMatchObject({
+      routeCategory: "callback",
+      resultClass: "server_error",
+      correlationId: unexpectedLocation.searchParams.get("correlation_id"),
+    });
   });
 
   it("returns a fixed error and clears transaction state when consent state exceeds the cookie limit", async () => {

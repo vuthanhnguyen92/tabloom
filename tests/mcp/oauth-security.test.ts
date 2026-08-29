@@ -63,6 +63,7 @@ function useFacadeEnvironment(): void {
   vi.stubEnv("TABLOOM_OAUTH_ENCRYPTION_KEYS", JSON.stringify([
     { kid: "encryption-key", active: true, rootKey: Buffer.alloc(32, 41).toString("base64url") },
   ]));
+  vi.stubEnv("TABLOOM_OAUTH_DATABASE_SECRET", Buffer.alloc(32, 9).toString("base64url"));
 }
 
 function persistence(): OAuthPersistence {
@@ -73,7 +74,7 @@ function persistence(): OAuthPersistence {
         clientName: input.clientName,
         redirectUris: input.redirectUris,
         createdAt: "2026-08-29T01:02:03.000Z",
-        expiresAt: null,
+        expiresAt: "2026-08-30T01:02:03.000Z",
       };
     },
     async getClient(clientId) {
@@ -82,7 +83,7 @@ function persistence(): OAuthPersistence {
         clientName: "Rate Limit Client",
         redirectUris: ["https://client.example/callback"],
         createdAt: "2026-08-29T01:02:03.000Z",
-        expiresAt: null,
+        expiresAt: "2026-08-30T01:02:03.000Z",
       };
     },
     async consume() { return false; },

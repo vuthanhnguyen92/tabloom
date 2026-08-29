@@ -11,6 +11,11 @@ import {
   sealAuthorizationCode,
 } from "../../../src/oauth/consent";
 import { noStoreHeaders, oauthError } from "../../../src/oauth/responses";
+import {
+  createOAuthAuditContext,
+  emitOAuthAudit,
+  type OAuthResultClass,
+} from "../../../src/observability/oauth-audit";
 
 const CONTENT_SECURITY_POLICY =
   "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'";
@@ -20,8 +25,14 @@ type ConsentRedirectError = "access_denied" | "invalid_request" | "server_error"
 function terminalError(
   error: "invalid_request" | "server_error" | "temporarily_unavailable",
   status: 400 | 500 | 503,
+  correlationId?: string,
 ): Response {
-  return oauthError(error, status, { "Set-Cookie": clearConsentCookie() });
+  return oauthError(
+    error,
+    status,
+    { "Set-Cookie": clearConsentCookie() },
+    correlationId,
+  );
 }
 
 function isAllowedRedirectUri(value: string): boolean {
@@ -48,6 +59,7 @@ async function validSession(request: Request, config: FacadeAuthConfig): Promise
 function clientRedirect(
   session: ConsentSession,
   result: { code: string } | { error: ConsentRedirectError },
+  correlationId?: string,
 ): Response {
   const location = new URL(session.request.redirectUri);
   location.searchParams.delete("code");
@@ -55,6 +67,7 @@ function clientRedirect(
   if ("code" in result) location.searchParams.set("code", result.code);
   else location.searchParams.set("error", result.error);
   location.searchParams.set("state", session.request.state);
+  if (correlationId) location.searchParams.set("correlation_id", correlationId);
   return new Response(null, {
     status: 302,
     headers: noStoreHeaders({
@@ -64,29 +77,45 @@ function clientRedirect(
   });
 }
 
-function loadEnabledConfig(): FacadeAuthConfig | Response {
+function loadEnabledConfig(correlationId: string):
+  | { config: FacadeAuthConfig }
+  | { response: Response; resultClass: OAuthResultClass } {
   let config: FacadeAuthConfig;
   try {
     config = loadFacadeAuthConfig(process.env);
   } catch {
-    return terminalError("server_error", 500);
+    return {
+      response: terminalError("server_error", 500, correlationId),
+      resultClass: "server_error",
+    };
   }
-  if (!config.oauthEnabled) return terminalError("temporarily_unavailable", 503);
-  return config;
+  if (!config.oauthEnabled) {
+    return {
+      response: terminalError("temporarily_unavailable", 503),
+      resultClass: "dependency_error",
+    };
+  }
+  return { config };
 }
 
 export async function GET(request: Request): Promise<Response> {
-  const config = loadEnabledConfig();
-  if (config instanceof Response) return config;
+  const audit = createOAuthAuditContext("consent");
+  const respond = (response: Response, resultClass: OAuthResultClass, clientId?: string) => {
+    emitOAuthAudit(audit, { resultClass, clientId });
+    return response;
+  };
+  const loaded = loadEnabledConfig(audit.correlationId);
+  if ("response" in loaded) return respond(loaded.response, loaded.resultClass);
+  const { config } = loaded;
 
   let session: ConsentSession;
   try {
     session = await validSession(request, config);
   } catch {
-    return terminalError("invalid_request", 400);
+    return respond(terminalError("invalid_request", 400), "client_error");
   }
 
-  return new Response(renderConsentPage(session), {
+  return respond(new Response(renderConsentPage(session), {
     status: 200,
     headers: noStoreHeaders({
       "Content-Type": "text/html; charset=utf-8",
@@ -94,37 +123,48 @@ export async function GET(request: Request): Promise<Response> {
       "X-Content-Type-Options": "nosniff",
       "Referrer-Policy": "no-referrer",
     }),
-  });
+  }), "success", session.request.client.clientId);
 }
 
 export async function POST(request: Request): Promise<Response> {
-  const config = loadEnabledConfig();
-  if (config instanceof Response) return config;
+  const audit = createOAuthAuditContext("consent");
+  const respond = (response: Response, resultClass: OAuthResultClass, clientId?: string) => {
+    emitOAuthAudit(audit, { resultClass, clientId });
+    return response;
+  };
+  const loaded = loadEnabledConfig(audit.correlationId);
+  if ("response" in loaded) return respond(loaded.response, loaded.resultClass);
+  const { config } = loaded;
 
   let session: ConsentSession;
   try {
     session = await validSession(request, config);
   } catch {
-    return terminalError("invalid_request", 400);
+    return respond(terminalError("invalid_request", 400), "client_error");
   }
+  const clientId = session.request.client.clientId;
 
   let submission;
   try {
     submission = await readConsentSubmission(request);
   } catch {
-    return clientRedirect(session, { error: "invalid_request" });
+    return respond(clientRedirect(session, { error: "invalid_request" }), "client_error", clientId);
   }
   if (!consentNonceMatches(submission.csrfNonce, session.csrfNonce)) {
-    return clientRedirect(session, { error: "invalid_request" });
+    return respond(clientRedirect(session, { error: "invalid_request" }), "client_error", clientId);
   }
   if (submission.action === "deny") {
-    return clientRedirect(session, { error: "access_denied" });
+    return respond(clientRedirect(session, { error: "access_denied" }), "client_error", clientId);
   }
 
   try {
     const code = await sealAuthorizationCode(session, config.encryptionKeys);
-    return clientRedirect(session, { code });
+    return respond(clientRedirect(session, { code }), "success", clientId);
   } catch {
-    return clientRedirect(session, { error: "server_error" });
+    return respond(
+      clientRedirect(session, { error: "server_error" }, audit.correlationId),
+      "server_error",
+      clientId,
+    );
   }
 }

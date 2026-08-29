@@ -28,13 +28,17 @@ const AUTHORIZATION_CODE_FORM_KEYS = new Set([
   "resource",
   "code_verifier",
 ]);
-const REFRESH_TOKEN_FORM_KEYS = new Set([
+const REFRESH_TOKEN_REQUIRED_FORM_KEYS = new Set([
   "grant_type",
   "refresh_token",
   "client_id",
   "resource",
+]);
+const REFRESH_TOKEN_FORM_KEYS = new Set([
+  ...REFRESH_TOKEN_REQUIRED_FORM_KEYS,
   "scope",
 ]);
+const TOKEN_CORS_HEADERS = { "Access-Control-Allow-Origin": "*" };
 type TokenRequest = AuthorizationCodeTokenRequest | RefreshTokenRequest;
 
 class TokenRequestError extends Error {
@@ -45,14 +49,16 @@ class TokenRequestError extends Error {
 }
 
 function errorResponse(
-  error: "invalid_request" | "invalid_client" | "invalid_grant" | "server_error" | "temporarily_unavailable",
+  error: "invalid_request" | "invalid_client" | "invalid_grant" | "invalid_scope" | "server_error" | "temporarily_unavailable",
   status: 400 | 401 | 405 | 413 | 429 | 500 | 503,
   headers: HeadersInit = {},
   serverErrorCorrelationId?: string,
 ): Response {
+  const responseHeaders = new Headers(headers);
+  responseHeaders.set("Access-Control-Allow-Origin", "*");
   return error === "server_error"
-    ? oauthError(error, status, headers, serverErrorCorrelationId)
-    : oauthJson({ error }, status, headers);
+    ? oauthError(error, status, responseHeaders, serverErrorCorrelationId)
+    : oauthJson({ error }, status, responseHeaders);
 }
 
 function unsupportedMethod(): Response {
@@ -140,6 +146,17 @@ function hasExactKeys(values: Record<string, string>, expected: ReadonlySet<stri
     keys.every((key) => values[key]!.length > 0);
 }
 
+function hasRefreshKeys(values: Record<string, string>): boolean {
+  const keys = Object.keys(values);
+  return keys.length >= REFRESH_TOKEN_REQUIRED_FORM_KEYS.size &&
+    keys.length <= REFRESH_TOKEN_FORM_KEYS.size &&
+    keys.every((key) => REFRESH_TOKEN_FORM_KEYS.has(key)) &&
+    [...REFRESH_TOKEN_REQUIRED_FORM_KEYS].every((key) =>
+      typeof values[key] === "string" && values[key]!.length > 0
+    ) &&
+    (!Object.hasOwn(values, "scope") || values.scope!.length > 0);
+}
+
 async function readTokenRequest(request: Request): Promise<TokenRequest> {
   if (request.headers.has("Authorization")) {
     throw new TokenRequestError(400, "invalid_client");
@@ -172,13 +189,13 @@ async function readTokenRequest(request: Request): Promise<TokenRequest> {
     };
   }
   if (values.grant_type === "refresh_token" &&
-      hasExactKeys(values, REFRESH_TOKEN_FORM_KEYS)) {
+      hasRefreshKeys(values)) {
     return {
       grantType: "refresh_token",
       refreshToken: values.refresh_token!,
       clientId: values.client_id!,
       resource: values.resource!,
-      scope: values.scope!,
+      scope: values.scope,
     };
   }
   throw new TokenRequestError(400, "invalid_request");
@@ -239,7 +256,7 @@ export async function POST(request: Request): Promise<Response> {
     const response = tokenRequest.grantType === "authorization_code"
       ? await exchangeAuthorizationCode(tokenRequest, config, persistence)
       : await exchangeRefreshToken(tokenRequest, config, persistence);
-    return respond(oauthJson(response), "success", tokenRequest.clientId);
+    return respond(oauthJson(response, 200, TOKEN_CORS_HEADERS), "success", tokenRequest.clientId);
   } catch (error) {
     if (error instanceof TokenServiceError) {
       return respond(errorResponse(

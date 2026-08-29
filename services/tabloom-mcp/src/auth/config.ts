@@ -4,6 +4,10 @@ import {
   type EncryptionKeyRing,
   type SigningKeyRing,
 } from "./key-rings";
+import {
+  createOAuthDatabaseProofKey,
+  type OAuthDatabaseProofKey,
+} from "./database-proof";
 
 export type McpAuthConfig = {
   supabaseUrl: URL;
@@ -18,6 +22,7 @@ export type FacadeAuthConfig = McpAuthConfig & {
   issuerUrl: URL;
   signingKeys: SigningKeyRing;
   encryptionKeys: EncryptionKeyRing;
+  databaseProofKey?: OAuthDatabaseProofKey;
 };
 
 const TEMPLATE_VALUE =
@@ -123,9 +128,21 @@ export function loadFacadeAuthConfig(env: NodeJS.ProcessEnv): FacadeAuthConfig {
     parseKeyRing(env.TABLOOM_OAUTH_ENCRYPTION_KEYS, "TABLOOM_OAUTH_ENCRYPTION_KEYS") as Parameters<typeof createEncryptionKeyRing>[0],
   );
 
-  if (oauthEnabled && (!signingKeys.active || !encryptionKeys.active)) {
-    throw new Error("Enabled OAuth facade requires exactly one active signing and encryption key");
+  const databaseProofKey = env.TABLOOM_OAUTH_DATABASE_SECRET === undefined ||
+      env.TABLOOM_OAUTH_DATABASE_SECRET === ""
+    ? undefined
+    : createOAuthDatabaseProofKey(env.TABLOOM_OAUTH_DATABASE_SECRET);
+
+  if (oauthEnabled && (!signingKeys.active || !encryptionKeys.active || !databaseProofKey)) {
+    throw new Error("Enabled OAuth facade requires active cryptographic and database proof keys");
   }
 
-  return { ...base, oauthEnabled, issuerUrl, signingKeys, encryptionKeys };
+  return {
+    ...base,
+    oauthEnabled,
+    issuerUrl,
+    signingKeys,
+    encryptionKeys,
+    databaseProofKey,
+  };
 }

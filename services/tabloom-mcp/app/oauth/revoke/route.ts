@@ -15,6 +15,7 @@ import { checkOAuthRateLimit } from "../../../src/security/oauth-rate-limit";
 
 const MAX_REVOCATION_FORM_BODY_BYTES = 32 * 1024;
 const ALLOWED_FORM_KEYS = new Set(["token", "token_type_hint"]);
+const REVOCATION_CORS_HEADERS = { "Access-Control-Allow-Origin": "*" };
 
 class RevocationRequestError extends Error {
   constructor(readonly status: 400 | 413, readonly error: "invalid_request" | "invalid_client") {
@@ -29,9 +30,11 @@ function errorResponse(
   headers: HeadersInit = {},
   serverErrorCorrelationId?: string,
 ): Response {
+  const responseHeaders = new Headers(headers);
+  responseHeaders.set("Access-Control-Allow-Origin", "*");
   return error === "server_error"
-    ? oauthError(error, status, headers, serverErrorCorrelationId)
-    : oauthJson({ error }, status, headers);
+    ? oauthError(error, status, responseHeaders, serverErrorCorrelationId)
+    : oauthJson({ error }, status, responseHeaders);
 }
 
 function unsupportedMethod(): Response {
@@ -191,7 +194,10 @@ export async function POST(request: Request): Promise<Response> {
   try {
     await revokeOAuthToken(token, config, createOAuthPersistence(config));
     return respond(
-      new Response(null, { status: 200, headers: noStoreHeaders() }),
+      new Response(null, {
+        status: 200,
+        headers: noStoreHeaders(REVOCATION_CORS_HEADERS),
+      }),
       "success",
     );
   } catch (error) {

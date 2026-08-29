@@ -156,7 +156,7 @@ describe("client resolution", () => {
     clientName: "Stored Client",
     redirectUris: ["https://client.example/callback"],
     createdAt: "2026-08-29T00:00:00.000Z",
-    expiresAt: null,
+    expiresAt: "2026-08-30T00:00:00.000Z",
   };
 
   it("classifies a syntactically invalid identifier as an invalid client", async () => {

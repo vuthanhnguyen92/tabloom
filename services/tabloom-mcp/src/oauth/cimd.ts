@@ -203,7 +203,11 @@ export function createCimdFetcher(dependencies: CimdFetcherDependencies = {}) {
       let addresses: readonly ResolvedAddress[];
       try {
         addresses = await resolveDns(new URL(clientId).hostname);
-      } catch {
+      } catch (error) {
+        if (error && typeof error === "object" &&
+            "code" in error && error.code === "EAI_AGAIN") {
+          throw new CimdUnavailableError();
+        }
         throw new CimdFetchError("CIMD DNS resolution failed");
       }
       if (addresses.length === 0 || addresses.some(({ address, family }) =>

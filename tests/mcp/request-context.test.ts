@@ -22,7 +22,7 @@ describe("request-local RLS context", () => {
       authenticatedUserId: USER_ID,
       authenticatedClientId: CLIENT_ID,
       innerAccessToken: "inner-token-a",
-    }, config, factory);
+    }, config, factory as never);
 
     expect(factory).toHaveBeenCalledWith(SUPABASE_URL, "test-anon-key", {
       accessToken: expect.any(Function),
@@ -66,12 +66,12 @@ describe("request-local RLS context", () => {
       authenticatedUserId: USER_ID,
       authenticatedClientId: CLIENT_ID,
       innerAccessToken: "inner-token-a",
-    }, config, factory);
+    }, config, factory as never);
     const second = createTabloomRequestContext({
       authenticatedUserId: USER_ID,
       authenticatedClientId: CLIENT_ID,
       innerAccessToken: "inner-token-b",
-    }, config, factory);
+    }, config, factory as never);
 
     expect(first.supabase).not.toBe(second.supabase);
     await expect(options[0]!.accessToken()).resolves.toBe("inner-token-a");

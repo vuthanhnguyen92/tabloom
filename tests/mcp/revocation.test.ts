@@ -64,6 +64,7 @@ function useFacadeEnvironment(enabled = true, signingJwk = privateJwk, encryptio
       rootKey: Buffer.alloc(32, encryptionByte).toString("base64url"),
     },
   ]));
+  vi.stubEnv("TABLOOM_OAUTH_DATABASE_SECRET", Buffer.alloc(32, 9).toString("base64url"));
 }
 
 function persistence(): OAuthPersistence {
@@ -165,6 +166,7 @@ async function revokeRequest(
 function expectNoStore(response: Response): void {
   expect(response.headers.get("Cache-Control")).toBe("no-store");
   expect(response.headers.get("Pragma")).toBe("no-cache");
+  expect(response.headers.get("Access-Control-Allow-Origin")).toBe("*");
 }
 
 async function expectEmptySuccess(response: Response): Promise<void> {

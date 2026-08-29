@@ -38,6 +38,7 @@ import {
 import {
   closeBrowserContextWithActiveCleanup,
   completeLiveAcceptancePhases,
+  evaluateRlsUpdateSettlements,
   loadAcceptanceMismatchSigner,
   createExactSupabaseFetch,
   loadLiveAcceptanceFixture,
@@ -69,9 +70,30 @@ const AUTHORIZATION_SERVER = {
   revocation_endpoint: `${ISSUER}/oauth/revoke`,
   jwks_uri: `${ISSUER}/.well-known/jwks.json`,
   grant_types_supported: ["authorization_code", "refresh_token"],
+  response_types_supported: ["code"],
   scopes_supported: [SCOPE],
   code_challenge_methods_supported: ["S256"],
   token_endpoint_auth_methods_supported: ["none"],
+};
+
+const PUBLIC_JWKS = {
+  keys: [{
+    kty: "EC",
+    crv: "P-256",
+    alg: "ES256",
+    kid: "public-signing-key",
+    x: "public-x-coordinate",
+    y: "public-y-coordinate",
+  }],
+};
+
+const DCR_RESPONSE = {
+  client_id: "public-client",
+  client_name: "Tabloom MCP OAuth readiness probe",
+  redirect_uris: [CALLBACK_URL],
+  grant_types: ["authorization_code", "refresh_token"],
+  response_types: ["code"],
+  token_endpoint_auth_method: "none",
 };
 
 const REPORT_KEYS = [
@@ -133,7 +155,12 @@ function serviceStatusResponse(id: number) {
 }
 
 function jsonResponse(status: number, body: Record<string, unknown> = {}) {
-  return { status, body };
+  return {
+    status,
+    body: typeof body.access_token === "string"
+      ? { token_type: "Bearer", expires_in: 300, scope: SCOPE, ...body }
+      : body,
+  };
 }
 
 function successfulProbeHarness(options: {
@@ -144,6 +171,9 @@ function successfulProbeHarness(options: {
   firstVerificationError?: Error;
   refreshFailure?: "resolved" | "throw" | "invalid";
   cleanupReject?: boolean;
+  privateJwks?: boolean;
+  secretRegistration?: boolean;
+  invalidTokenMetadata?: boolean;
 } = {}) {
   const reports: Array<Record<string, unknown>> = [];
   let reportCalls = 0;
@@ -159,10 +189,14 @@ function successfulProbeHarness(options: {
       return jsonResponse(200, AUTHORIZATION_SERVER);
     }
     if (url.endsWith("/.well-known/jwks.json")) {
-      return jsonResponse(200, { keys: [] });
+      return jsonResponse(200, options.privateJwks
+        ? { keys: [{ ...PUBLIC_JWKS.keys[0], d: "private-key-material" }] }
+        : PUBLIC_JWKS);
     }
     if (url.endsWith("/oauth/register")) {
-      return jsonResponse(201, { client_id: "public-client" });
+      return jsonResponse(201, options.secretRegistration
+        ? { ...DCR_RESPONSE, client_secret: "must-not-be-accepted" }
+        : DCR_RESPONSE);
     }
     if (url.endsWith("/oauth/token")) {
       const refresh = new URLSearchParams(String(init?.body))
@@ -174,6 +208,7 @@ function successfulProbeHarness(options: {
         return jsonResponse(200, {
           access_token: "first-access",
           refresh_token: "first-refresh",
+          ...(options.invalidTokenMetadata ? { token_type: "Basic" } : {}),
         });
       }
       refreshCalls += 1;
@@ -282,6 +317,56 @@ describe("MCP OAuth readiness probe", () => {
         RESOURCE,
       ).discoverySupported,
     ).toBe(false);
+    expect(evaluateDiscovery(
+      PROTECTED_RESOURCE,
+      { ...AUTHORIZATION_SERVER, grant_types_supported: ["authorization_code", 42] },
+      RESOURCE,
+    ).discoverySupported).toBe(false);
+    expect(evaluateDiscovery(
+      PROTECTED_RESOURCE,
+      { ...AUTHORIZATION_SERVER, response_types_supported: undefined },
+      RESOURCE,
+    ).discoverySupported).toBe(false);
+  });
+
+  it("rejects a foreign discovered issuer before any off-origin request or browser handoff", async () => {
+    const foreignIssuer = "https://attacker.example";
+    const requests: string[] = [];
+    let listenerCalls = 0;
+    let handoffCalls = 0;
+
+    await expect(beginProbeAcceptance({
+      env: { NODE_ENV: "test", TABLOOM_MCP_RESOURCE_URL: RESOURCE },
+      request: async (url) => {
+        requests.push(url);
+        return jsonResponse(200, {
+          resource: RESOURCE,
+          authorization_servers: [foreignIssuer],
+        });
+      },
+      createCallbackListener: async () => {
+        listenerCalls += 1;
+        throw new Error("listener must not start");
+      },
+      handoffAuthorization: async () => { handoffCalls += 1; },
+      writeReport: async () => undefined,
+      log: () => undefined,
+    })).rejects.toThrow("unexpected issuer");
+
+    expect(requests).toEqual([`${RESOURCE}/.well-known/oauth-protected-resource`]);
+    expect(listenerCalls).toBe(0);
+    expect(handoffCalls).toBe(0);
+  });
+
+  it.each([
+    [{ privateJwks: true }, "JWKS discovery"],
+    [{ secretRegistration: true }, "Dynamic client registration"],
+    [{ invalidTokenMetadata: true }, "invalid token pair"],
+  ])("fails readiness for strict public metadata: %j", async (options, expected) => {
+    const harness = successfulProbeHarness(options);
+    await expect(beginProbeAcceptance(
+      harness.probeOptions as Parameters<typeof beginProbeAcceptance>[0],
+    )).rejects.toThrow(expected);
   });
 
   it("registers a public refresh-capable client and builds an exact S256 authorization request", () => {
@@ -423,11 +508,6 @@ describe("MCP OAuth readiness probe", () => {
 
   it.each([
     {
-      name: "invalid first token response after an access token was issued",
-      options: { invalidFirstTokenResponse: true },
-      expected: "invalid token pair",
-    },
-    {
       name: "JSON-RPC error",
       body: { jsonrpc: "2.0", id: 7, error: { code: -32603 } },
     },
@@ -472,10 +552,10 @@ describe("MCP OAuth readiness probe", () => {
         return jsonResponse(200, AUTHORIZATION_SERVER);
       }
       if (url.endsWith("/.well-known/jwks.json")) {
-        return jsonResponse(200, { keys: [] });
+        return jsonResponse(200, PUBLIC_JWKS);
       }
       if (url.endsWith("/oauth/register")) {
-        return jsonResponse(201, { client_id: "public-client" });
+        return jsonResponse(201, DCR_RESPONSE);
       }
       if (url.endsWith("/oauth/token")) {
         const form = new URLSearchParams(String(init?.body));
@@ -557,7 +637,7 @@ describe("MCP OAuth readiness probe", () => {
         accessToken: rotatedAccessToken,
         verified: { payload: { sub: "private-user-a" } },
       },
-      jwks: { keys: [] },
+      jwks: PUBLIC_JWKS,
     });
     expect(() => privateResults.take()).toThrow();
 
@@ -657,8 +737,8 @@ describe("MCP OAuth readiness probe", () => {
     const request = async (url: string, init?: RequestInit) => {
       if (url.endsWith("/.well-known/oauth-protected-resource")) return jsonResponse(200, PROTECTED_RESOURCE);
       if (url.endsWith("/.well-known/oauth-authorization-server")) return jsonResponse(200, AUTHORIZATION_SERVER);
-      if (url.endsWith("/.well-known/jwks.json")) return jsonResponse(200, { keys: [] });
-      if (url.endsWith("/oauth/register")) return jsonResponse(201, { client_id: "public-client" });
+      if (url.endsWith("/.well-known/jwks.json")) return jsonResponse(200, PUBLIC_JWKS);
+      if (url.endsWith("/oauth/register")) return jsonResponse(201, DCR_RESPONSE);
       if (url.endsWith("/oauth/token")) {
         const refresh = new URLSearchParams(String(init?.body)).get("grant_type") === "refresh_token";
         if (refresh && ++refreshCalls > 1) {
@@ -775,6 +855,23 @@ describe("MCP OAuth readiness probe", () => {
     );
   });
 
+  it("revokes a partially returned first access token before surfacing a categorical token-pair failure", async () => {
+    const harness = successfulProbeHarness({ invalidFirstTokenResponse: true });
+    await expect(beginProbeAcceptance(
+      harness.probeOptions as Parameters<typeof beginProbeAcceptance>[0],
+    )).rejects.toThrow("Authorization-code exchange returned an invalid token pair");
+
+    expect(harness.revokedTokens).toEqual(["first-access"]);
+    expect(harness.counts()).toEqual({ mcpCalls: 1, revokeCalls: 1 });
+    expect(harness.reports.at(-1)).toMatchObject({
+      cleanupFailed: false,
+      revocationResult: "success",
+      mcpAfterRevocationResult: "unauthorized",
+      pass: false,
+    });
+    expect(JSON.stringify(harness.reports)).not.toContain("first-access");
+  });
+
   it("returns a fixed nonzero CLI error without echoing unexpected details", async () => {
     const stderr: string[] = [];
     const exitCode = await runCli({
@@ -886,18 +983,21 @@ describe("OAuth facade key generator", () => {
     }
   });
 
-  it("writes one active ES256 private JWK and one 32-byte root only to explicit external files", async () => {
+  it("writes one active private JWK, one encryption root, and one database proof secret externally", async () => {
     const directory = await mkdtemp(join(tmpdir(), "tabloom-oauth-keys-"));
     const signingPath = join(directory, "signing.json");
     const encryptionPath = join(directory, "encryption.json");
+    const databaseSecretPath = join(directory, "database-secret.txt");
     try {
       await generateOAuthKeys({
         signingPath,
         encryptionPath,
+        databaseSecretPath,
         repositoryRoot: resolve("."),
       });
       const signing = JSON.parse(await readFile(signingPath, "utf8"));
       const encryption = JSON.parse(await readFile(encryptionPath, "utf8"));
+      const databaseSecret = (await readFile(databaseSecretPath, "utf8")).trim();
       expect(signing).toHaveLength(1);
       expect(signing[0]).toMatchObject({
         active: true,
@@ -909,8 +1009,11 @@ describe("OAuth facade key generator", () => {
       expect(encryption[0]).toMatchObject({ active: true });
       expect(encryption[0].kid).toMatch(/^encryption-v1-[A-Za-z0-9_-]{16,}$/);
       expect(Buffer.from(encryption[0].rootKey, "base64url")).toHaveLength(32);
+      expect(databaseSecret).toMatch(/^[A-Za-z0-9_-]{43}$/);
+      expect(Buffer.from(databaseSecret, "base64url")).toHaveLength(32);
       expect((await stat(signingPath)).mode & 0o777).toBe(0o600);
       expect((await stat(encryptionPath)).mode & 0o777).toBe(0o600);
+      expect((await stat(databaseSecretPath)).mode & 0o777).toBe(0o600);
     } finally {
       await rm(directory, { recursive: true, force: true });
     }
@@ -955,6 +1058,8 @@ describe("OAuth facade key generator", () => {
           join(directory, "signing.json"),
           "--encryption-out",
           join(directory, "encryption.json"),
+          "--database-secret-out",
+          join(directory, "database-secret.txt"),
         ],
         repositoryRoot: resolve("."),
         stdout: (message) => { stdout.push(message); },
@@ -1373,6 +1478,90 @@ describe("live MCP facade acceptance fixture schema", () => {
     })).rejects.toThrow("cross-user no-op returned rows");
     expect(state).toEqual(original);
     expect(statuses).toEqual([{ cleanupFailed: false }]);
+  });
+
+  it("records every fulfilled sibling success before surfacing a mixed RLS response error", async () => {
+    const evaluation = evaluateRlsUpdateSettlements([
+      { status: "fulfilled", value: { error: { code: "private" }, data: null } },
+      { status: "fulfilled", value: { error: null, data: [{ id: "collection-b" }] } },
+      { status: "fulfilled", value: { error: null, data: [] } },
+    ]);
+    expect(evaluation).toEqual({
+      returnedRecords: ["collection"],
+      ambiguousRecords: [],
+      responseFailure: true,
+    });
+
+    const baseline = {
+      records: {
+        space: { id: "space-b", name: "Space B", updated_at: "before" },
+        collection: { id: "collection-b", name: "Collection B", updated_at: "before" },
+        link: { id: "link-b", title: "Link B", updated_at: "before" },
+      },
+      sync: { revision: 7, updated_at: "before" },
+    };
+    const current = structuredClone(baseline);
+    current.records.collection.updated_at = "known-write";
+    current.sync = { revision: 8, updated_at: "known-write" };
+    expect(planRlsRestoration({
+      baseline,
+      current,
+      returnedRecords: evaluation.returnedRecords,
+      ambiguousRecords: evaluation.ambiguousRecords,
+      expectedRecords: baseline.records,
+    })).toEqual({ restoreRecords: ["collection"], restoreSync: true });
+  });
+
+  it("categorizes a rejected RLS promise as ambiguous while safely identifying only attributable drift", () => {
+    const evaluation = evaluateRlsUpdateSettlements([
+      { status: "fulfilled", value: { error: null, data: [] } },
+      { status: "fulfilled", value: { error: null, data: [] } },
+      { status: "rejected", reason: new Error("private transport detail") },
+    ]);
+    expect(evaluation).toEqual({
+      returnedRecords: [],
+      ambiguousRecords: ["link"],
+      responseFailure: true,
+    });
+    expect(JSON.stringify(evaluation)).not.toContain("private transport detail");
+
+    const baseline = {
+      records: {
+        space: { id: "space-b", name: "Space B", updated_at: "before" },
+        collection: { id: "collection-b", name: "Collection B", updated_at: "before" },
+        link: { id: "link-b", title: "Link B", updated_at: "before" },
+      },
+      sync: { revision: 7, updated_at: "before" },
+    };
+    const attributable = structuredClone(baseline);
+    attributable.records.link.updated_at = "ambiguous-write";
+    attributable.sync = { revision: 8, updated_at: "ambiguous-write" };
+    expect(planRlsRestoration({
+      baseline,
+      current: attributable,
+      returnedRecords: [],
+      ambiguousRecords: evaluation.ambiguousRecords,
+      expectedRecords: baseline.records,
+    })).toEqual({ restoreRecords: ["link"], restoreSync: true });
+
+    const noOpApplied = structuredClone(baseline);
+    noOpApplied.sync = { revision: 8, updated_at: "ambiguous-no-op" };
+    expect(planRlsRestoration({
+      baseline,
+      current: noOpApplied,
+      returnedRecords: [],
+      ambiguousRecords: evaluation.ambiguousRecords,
+      expectedRecords: baseline.records,
+    })).toEqual({ restoreRecords: [], restoreSync: true });
+
+    attributable.records.link.title = "concurrent operator edit";
+    expect(() => planRlsRestoration({
+      baseline,
+      current: attributable,
+      returnedRecords: [],
+      ambiguousRecords: evaluation.ambiguousRecords,
+      expectedRecords: baseline.records,
+    })).toThrow("concurrentFixtureMutation");
   });
 
   it("does not overwrite a concurrent fixture mutation observed before restoration", async () => {

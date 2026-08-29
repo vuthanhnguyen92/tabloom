@@ -83,6 +83,7 @@ function useFacadeEnvironment(): void {
   vi.stubEnv("TABLOOM_OAUTH_ENCRYPTION_KEYS", JSON.stringify([
     { kid: "encryption-key", active: true, rootKey: Buffer.alloc(32, 51).toString("base64url") },
   ]));
+  vi.stubEnv("TABLOOM_OAUTH_DATABASE_SECRET", Buffer.alloc(32, 9).toString("base64url"));
 }
 
 function fakePersistence() {
@@ -96,7 +97,7 @@ function fakePersistence() {
         clientName: input.clientName,
         redirectUris: input.redirectUris,
         createdAt: new Date(NOW * 1_000).toISOString(),
-        expiresAt: null,
+        expiresAt: new Date((NOW + 24 * 60 * 60) * 1_000).toISOString(),
       };
       clients.set(client.clientId, client);
       return client;

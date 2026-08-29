@@ -2,13 +2,17 @@ import { CompactEncrypt, generateKeyPair, exportJWK, importJWK, jwtDecrypt, Sign
 import { describe, expect, it } from "vitest";
 import { issueAccessToken, verifyAccessToken } from "../../services/tabloom-mcp/src/auth/access-token";
 import { sealArtifact, openArtifact, hashOpaqueIdentifier } from "../../services/tabloom-mcp/src/auth/artifacts";
-import { createEncryptionKeyRing, createSigningKeyRing } from "../../services/tabloom-mcp/src/auth/key-rings";
+import {
+  createEncryptionKeyRing,
+  createSigningKeyRing,
+  signingPrivateKey,
+} from "../../services/tabloom-mcp/src/auth/key-rings";
 
 const NOW = 1_750_000_000;
 const ISSUER = "https://mcp.tabloom.app";
 const USER_ID = "2f1c5393-46b8-4d79-a12b-b4624b1bc54c";
 
-async function signing(kid: string, active: boolean) {
+async function signing(kid: string, active: true) {
   const { privateKey } = await generateKeyPair("ES256", { extractable: true });
   return { kid, active, privateJwk: { ...(await exportJWK(privateKey)), alg: "ES256" } };
 }
@@ -19,6 +23,10 @@ function encryption(kid: string, active: boolean) {
 
 async function config() {
   return {
+    supabaseUrl: new URL("https://example.supabase.co"),
+    issuer: "https://example.supabase.co/auth/v1",
+    jwksUrl: new URL("https://example.supabase.co/auth/v1/.well-known/jwks.json"),
+    anonKey: "test-anon-key",
     oauthEnabled: true,
     issuerUrl: new URL(ISSUER),
     resourceUrl: new URL(ISSUER),
@@ -120,6 +128,28 @@ describe("resource-bound Tabloom access tokens", () => {
 
   it("rejects oversized bearer tokens before JWT parsing", async () => {
     await expect(verifyAccessToken("x".repeat(32 * 1024 + 1), await config(), NOW)).rejects.toThrow();
+  });
+
+  it("signs only with the active private key and verifies retained public keys", async () => {
+    const oldActive = await signing("old", true);
+    const newActive = await signing("current", true);
+    const oldPublicJwk = { ...oldActive.privateJwk };
+    delete oldPublicJwk.d;
+    const oldFacade = {
+      ...(await config()),
+      signingKeys: createSigningKeyRing([oldActive]),
+    };
+    const oldToken = await issueAccessToken(input(), oldFacade, NOW);
+    const overlap = createSigningKeyRing([
+      { kid: "old", active: false, publicJwk: oldPublicJwk },
+      newActive,
+    ]);
+    const rotatedFacade = { ...(await config()), signingKeys: overlap };
+
+    await expect(verifyAccessToken(oldToken, rotatedFacade, NOW)).resolves.toBeDefined();
+    expect(() => signingPrivateKey(overlap, "old")).toThrow();
+    const newToken = await issueAccessToken(input(), rotatedFacade, NOW);
+    await expect(verifyAccessToken(newToken, rotatedFacade, NOW)).resolves.toBeDefined();
   });
 
   it("rejects a token whose audience includes the resource but is not exactly the resource", async () => {

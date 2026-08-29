@@ -1,11 +1,19 @@
 import { createPrivateKey, createPublicKey, hkdfSync, type KeyObject } from "node:crypto";
 import type { JWK } from "jose";
 
-export type SigningKeyInput = {
+export type ActiveSigningKeyInput = {
   kid: string;
-  active: boolean;
+  active: true;
   privateJwk: JWK;
 };
+
+export type VerificationSigningKeyInput = {
+  kid: string;
+  active: false;
+  publicJwk: JWK;
+};
+
+export type SigningKeyInput = ActiveSigningKeyInput | VerificationSigningKeyInput;
 
 export type EncryptionKeyDefinition = {
   kid: string;
@@ -37,7 +45,7 @@ export type EncryptionKeyRing = {
 };
 
 type SigningKeyMaterial = {
-  privateKey: KeyObject;
+  privateKey?: KeyObject;
   publicKey: KeyObject;
 };
 
@@ -76,11 +84,24 @@ function isP256JwkParameter(value: unknown): value is string {
   return decoded.length === 32 && decoded.toString("base64url") === value;
 }
 
+function hasExactKeys(value: JWK, expected: readonly string[]): boolean {
+  const actual = Object.keys(value).sort();
+  const sortedExpected = [...expected].sort();
+  return actual.length === sortedExpected.length &&
+    actual.every((key, index) => key === sortedExpected[index]);
+}
+
+function isPublicP256Jwk(value: JWK): boolean {
+  return hasExactKeys(value, ["alg", "crv", "kty", "x", "y"]) &&
+    value.kty === "EC" && value.crv === "P-256" && value.alg === "ES256" &&
+    isP256JwkParameter(value.x) && isP256JwkParameter(value.y) &&
+    value.d === undefined;
+}
+
 function importPrivateSigningKey(value: JWK, kid: string): SigningKeyMaterial {
   if (
-    value.kty !== "EC" ||
-    value.crv !== "P-256" ||
-    (value.alg !== undefined && value.alg !== "ES256") ||
+    !hasExactKeys(value, ["alg", "crv", "d", "kty", "x", "y"]) ||
+    value.kty !== "EC" || value.crv !== "P-256" || value.alg !== "ES256" ||
     !isP256JwkParameter(value.x) ||
     !isP256JwkParameter(value.y) ||
     !isP256JwkParameter(value.d)
@@ -98,6 +119,21 @@ function importPrivateSigningKey(value: JWK, kid: string): SigningKeyMaterial {
   }
 }
 
+function importPublicSigningKey(value: JWK, kid: string): SigningKeyMaterial {
+  if (!isPublicP256Jwk(value)) {
+    throw new Error("Inactive OAuth signing keys must be ES256 public JWKs");
+  }
+  try {
+    const publicKey = createPublicKey({
+      key: { kty: value.kty, crv: value.crv, x: value.x, y: value.y },
+      format: "jwk",
+    });
+    return { publicKey };
+  } catch {
+    throw new Error(`OAuth signing key ${kid} is invalid`);
+  }
+}
+
 export function createSigningKeyRing(
   values: readonly SigningKeyInput[],
 ): SigningKeyRing {
@@ -108,15 +144,24 @@ export function createSigningKeyRing(
   for (const value of values) {
     const kid = requireKid(value?.kid);
     const isActive = requireActive(value?.active);
-    if (!value.privateJwk || typeof value.privateJwk !== "object") {
-      throw new Error("OAuth signing key must contain a private JWK");
-    }
     if (keys.has(kid)) {
       throw new Error("OAuth signing key ids must be unique");
     }
+    const inputKeys = Object.keys(value as unknown as Record<string, unknown>).sort();
+    const expectedInputKeys = isActive
+      ? ["active", "kid", "privateJwk"]
+      : ["active", "kid", "publicJwk"];
+    if (inputKeys.length !== expectedInputKeys.length ||
+        !inputKeys.every((key, index) => key === expectedInputKeys[index])) {
+      throw new Error(isActive
+        ? "Active OAuth signing key must contain only a private JWK"
+        : "Inactive OAuth signing key must contain only a public JWK");
+    }
     const key: SigningKey = { kid, active: isActive, alg: "ES256" };
     keys.set(kid, key);
-    materials.set(kid, importPrivateSigningKey(value.privateJwk, kid));
+    materials.set(kid, isActive
+      ? importPrivateSigningKey((value as ActiveSigningKeyInput).privateJwk, kid)
+      : importPublicSigningKey((value as VerificationSigningKeyInput).publicJwk, kid));
     if (isActive) {
       if (active) throw new Error("OAuth signing keys must have exactly one active key");
       active = key;
@@ -141,7 +186,9 @@ function signingMaterial(ring: SigningKeyRing, kid: string): SigningKeyMaterial 
 }
 
 export function signingPrivateKey(ring: SigningKeyRing, kid: string): KeyObject {
-  return signingMaterial(ring, kid).privateKey;
+  const privateKey = signingMaterial(ring, kid).privateKey;
+  if (!privateKey) throw new Error("OAuth signing key is verification-only");
+  return privateKey;
 }
 
 export function signingPublicKey(ring: SigningKeyRing, kid: string): KeyObject {

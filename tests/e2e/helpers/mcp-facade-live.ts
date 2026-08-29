@@ -621,28 +621,52 @@ export function planRlsRestoration(input: {
   baseline: RlsRestorationSnapshot;
   current: RlsRestorationSnapshot;
   returnedRecords: readonly RlsRecordKey[];
+  ambiguousRecords?: readonly RlsRecordKey[];
+  expectedRecords?: Partial<Record<RlsRecordKey, JsonRecord>>;
 }) {
   const returned = new Set(input.returnedRecords);
+  const ambiguous = new Set(input.ambiguousRecords ?? []);
+  if ([...returned].some((key) => ambiguous.has(key))) {
+    throw new ConcurrentFixtureMutationError();
+  }
   const restoreRecords: RlsRecordKey[] = [];
+  let attributedWrites = returned.size;
+  let unresolvedAmbiguousWrites = 0;
   for (const key of ["space", "collection", "link"] as const) {
     const baseline = input.baseline.records[key];
     const current = input.current.records[key];
-    if (!returned.has(key)) {
+    const expected = input.expectedRecords?.[key] ?? baseline;
+    if (!returned.has(key) && !ambiguous.has(key)) {
       if (!equalJson(current, baseline)) throw new ConcurrentFixtureMutationError();
       continue;
     }
-    if (!equalJson(withoutUpdatedAt(current), withoutUpdatedAt(baseline))) {
+    if (ambiguous.has(key) && equalJson(current, baseline)) {
+      unresolvedAmbiguousWrites += 1;
+      continue;
+    }
+    if (!equalJson(withoutUpdatedAt(current), withoutUpdatedAt(expected))) {
       throw new ConcurrentFixtureMutationError();
     }
+    if (ambiguous.has(key)) attributedWrites += 1;
     if (!equalJson(current, baseline)) restoreRecords.push(key);
   }
 
   const syncChanged = !equalJson(input.current.sync, input.baseline.sync);
-  if (returned.size === 0) {
-    if (syncChanged) throw new ConcurrentFixtureMutationError();
+  if (attributedWrites === 0) {
+    if (syncChanged && unresolvedAmbiguousWrites === 0) {
+      throw new ConcurrentFixtureMutationError();
+    }
   } else if (syncChanged) {
-    if (input.current.sync.revision !==
-          input.baseline.sync.revision + returned.size ||
+    const revisionDelta = input.current.sync.revision - input.baseline.sync.revision;
+    if (revisionDelta < attributedWrites ||
+        revisionDelta > attributedWrites + unresolvedAmbiguousWrites ||
+        typeof input.current.sync.updated_at !== "string") {
+      throw new ConcurrentFixtureMutationError();
+    }
+  }
+  if (attributedWrites === 0 && syncChanged) {
+    const revisionDelta = input.current.sync.revision - input.baseline.sync.revision;
+    if (revisionDelta < 1 || revisionDelta > unresolvedAmbiguousWrites ||
         typeof input.current.sync.updated_at !== "string") {
       throw new ConcurrentFixtureMutationError();
     }
@@ -650,6 +674,40 @@ export function planRlsRestoration(input: {
   return Object.freeze({
     restoreRecords: Object.freeze(restoreRecords),
     restoreSync: syncChanged,
+  });
+}
+
+type RlsUpdateResult = { error: unknown; data: unknown };
+
+export function evaluateRlsUpdateSettlements(
+  settlements: readonly PromiseSettledResult<RlsUpdateResult>[],
+) {
+  const returnedRecords: RlsRecordKey[] = [];
+  const ambiguousRecords: RlsRecordKey[] = [];
+  let responseFailure = false;
+  const keys = ["space", "collection", "link"] as const;
+  settlements.forEach((settlement, index) => {
+    const key = keys[index];
+    if (!key) {
+      responseFailure = true;
+      return;
+    }
+    if (settlement.status === "rejected") {
+      ambiguousRecords.push(key);
+      responseFailure = true;
+      return;
+    }
+    const result = settlement.value;
+    if (result.error || !Array.isArray(result.data) || result.data.length > 1) {
+      responseFailure = true;
+      return;
+    }
+    if (result.data.length === 1) returnedRecords.push(key);
+  });
+  return Object.freeze({
+    returnedRecords: Object.freeze(returnedRecords),
+    ambiguousRecords: Object.freeze(ambiguousRecords),
+    responseFailure,
   });
 }
 
@@ -884,7 +942,193 @@ async function verifyTwoUserRls(
     ),
     link: workspace.links.find((record) => record.id === userB.ownedLinkId),
   });
+
+  const restoreSnapshot = async (
+    baseline: RlsRestorationSnapshot,
+    returned: readonly RlsRecordKey[],
+    ambiguous: readonly RlsRecordKey[],
+    expectedRecords: Record<RlsRecordKey, JsonRecord>,
+  ) => {
+    const currentWorkspace = await b.repository.load();
+    const current = targetRecords(currentWorkspace);
+    if (!current.space || !current.collection || !current.link) {
+      throw new ConcurrentFixtureMutationError();
+    }
+    const currentRecords = {
+      space: current.space,
+      collection: current.collection,
+      link: current.link,
+    };
+    const currentSync = await loadSyncState();
+    const plan = planRlsRestoration({
+      baseline,
+      current: { records: currentRecords, sync: currentSync },
+      returnedRecords: returned,
+      ambiguousRecords: ambiguous,
+      expectedRecords,
+    });
+    if (plan.restoreRecords.includes("space")) {
+      const restored = await b.client.from("spaces").update({
+        name: baseline.records.space.name,
+        color: baseline.records.space.color,
+        position: baseline.records.space.position,
+        created_at: baseline.records.space.created_at,
+        updated_at: baseline.records.space.updated_at,
+      }).eq("id", current.space.id)
+        .eq("user_id", current.space.user_id)
+        .eq("name", current.space.name)
+        .eq("color", current.space.color)
+        .eq("position", current.space.position)
+        .eq("created_at", current.space.created_at)
+        .eq("updated_at", current.space.updated_at)
+        .select("id");
+      requireOptimisticRestorationRow(restored, "Space");
+    }
+    if (plan.restoreRecords.includes("collection")) {
+      const restored = await b.client.from("collections").update({
+        space_id: baseline.records.collection.space_id,
+        name: baseline.records.collection.name,
+        position: baseline.records.collection.position,
+        created_at: baseline.records.collection.created_at,
+        updated_at: baseline.records.collection.updated_at,
+      }).eq("id", current.collection.id)
+        .eq("user_id", current.collection.user_id)
+        .eq("space_id", current.collection.space_id)
+        .eq("name", current.collection.name)
+        .eq("position", current.collection.position)
+        .eq("created_at", current.collection.created_at)
+        .eq("updated_at", current.collection.updated_at)
+        .select("id");
+      requireOptimisticRestorationRow(restored, "Collection");
+    }
+    if (plan.restoreRecords.includes("link")) {
+      let query = b.client.from("links").update({
+        collection_id: baseline.records.link.collection_id,
+        url: baseline.records.link.url,
+        title: baseline.records.link.title,
+        description: baseline.records.link.description,
+        favicon_url: baseline.records.link.favicon_url,
+        position: baseline.records.link.position,
+        created_at: baseline.records.link.created_at,
+        updated_at: baseline.records.link.updated_at,
+      }).eq("id", current.link.id)
+        .eq("user_id", current.link.user_id)
+        .eq("collection_id", current.link.collection_id)
+        .eq("url", current.link.url)
+        .eq("title", current.link.title)
+        .eq("description", current.link.description)
+        .eq("position", current.link.position)
+        .eq("created_at", current.link.created_at)
+        .eq("updated_at", current.link.updated_at);
+      query = current.link.favicon_url === null
+        ? query.is("favicon_url", null)
+        : query.eq("favicon_url", current.link.favicon_url);
+      requireOptimisticRestorationRow(await query.select("id"), "Link");
+    }
+    let observedSyncForRestore = currentSync;
+    if (plan.restoreRecords.length > 0) {
+      const afterRecordRepairs = await loadSyncState();
+      if (afterRecordRepairs.revision !==
+            currentSync.revision + plan.restoreRecords.length) {
+        throw new ConcurrentFixtureMutationError();
+      }
+      observedSyncForRestore = afterRecordRepairs;
+    }
+    if (plan.restoreSync || plan.restoreRecords.length > 0) {
+      const restored = await b.client.from("workspace_sync_state").update({
+        revision: baseline.sync.revision,
+        updated_at: baseline.sync.updated_at,
+      }).eq("user_id", userB.userId)
+        .eq("revision", observedSyncForRestore.revision)
+        .eq("updated_at", observedSyncForRestore.updated_at)
+        .select("user_id");
+      requireOptimisticRestorationRow(restored, "Workspace sync state");
+    }
+  };
+
+  const verifySnapshot = async (baseline: RlsRestorationSnapshot) => {
+    const restoredWorkspace = await b.repository.load();
+    const restoredRecords = targetRecords(restoredWorkspace);
+    const restoredSync = await loadSyncState();
+    if (JSON.stringify(restoredRecords) !== JSON.stringify(baseline.records) ||
+        JSON.stringify(restoredSync) !== JSON.stringify(baseline.sync)) {
+      throw new ConcurrentFixtureMutationError();
+    }
+    assertIsolated(restoredWorkspace, userB, userA);
+  };
+
+  for (const target of [
+    { key: "space", table: "spaces", field: "name", value: "Tabloom owner-write space", id: userB.ownedSpaceId },
+    { key: "collection", table: "collections", field: "name", value: "Tabloom owner-write collection", id: userB.ownedCollectionId },
+    { key: "link", table: "links", field: "title", value: "Tabloom owner-write link", id: userB.ownedLinkId },
+  ] as const) {
+    let ownerReturned: RlsRecordKey[] = [];
+    let ownerAmbiguous: RlsRecordKey[] = [];
+    let ownerExpected: Record<RlsRecordKey, JsonRecord> | undefined;
+    await runRestorableRlsWriteCheck({
+      capture: async () => {
+        const workspace = await b.repository.load();
+        const records = targetRecords(workspace);
+        if (!records.space || !records.collection || !records.link) {
+          throw new Error("Live acceptance owner records were missing");
+        }
+        return {
+          records: {
+            space: records.space,
+            collection: records.collection,
+            link: records.link,
+          },
+          sync: await loadSyncState(),
+        };
+      },
+      attempt: async (baseline) => {
+        const originalValue = baseline.records[target.key][target.field];
+        if (typeof originalValue !== "string") {
+          throw new Error("Owner RLS fixture field was invalid");
+        }
+        const changedValue = originalValue === target.value
+          ? `${target.value} changed`
+          : target.value;
+        ownerExpected = {
+          ...baseline.records,
+          [target.key]: {
+            ...baseline.records[target.key],
+            [target.field]: changedValue,
+          },
+        };
+        const [settled] = await Promise.allSettled([
+          b.client.from(target.table).update({ [target.field]: changedValue })
+            .eq("id", target.id)
+            .eq("user_id", userB.userId)
+            .select("*"),
+        ]);
+        if (settled.status === "rejected") {
+          ownerAmbiguous = [target.key];
+          throw new Error("Owner RLS update could not be evaluated");
+        }
+        const result = settled.value;
+        if (result.error || !Array.isArray(result.data) || result.data.length !== 1 ||
+            !isRecord(result.data[0]) || result.data[0].id !== target.id ||
+            result.data[0].user_id !== userB.userId ||
+            result.data[0][target.field] !== changedValue ||
+            result.data[0][target.field] === originalValue) {
+          throw new Error("Owner RLS update did not return the exact changed record");
+        }
+        ownerReturned = [target.key];
+      },
+      restore: async (baseline) => restoreSnapshot(
+        baseline,
+        ownerReturned,
+        ownerAmbiguous,
+        ownerExpected ?? baseline.records,
+      ),
+      verifyRestored: verifySnapshot,
+      recordCleanupStatus,
+    });
+  }
+
   let returnedRecords: RlsRecordKey[] = [];
+  let ambiguousRecords: RlsRecordKey[] = [];
 
   await runRestorableRlsWriteCheck({
     capture: async () => ({
@@ -892,7 +1136,7 @@ async function verifyTwoUserRls(
       sync: await loadSyncState(),
     }),
     attempt: async () => {
-      const deniedUpdates = await Promise.all([
+      const deniedUpdates = await Promise.allSettled([
         a.client.from("spaces").update({ name: originalRecords.space.name })
           .eq("id", userB.ownedSpaceId).select("id"),
         a.client.from("collections").update({ name: originalRecords.collection.name })
@@ -900,14 +1144,11 @@ async function verifyTwoUserRls(
         a.client.from("links").update({ title: originalRecords.link.title })
           .eq("id", userB.ownedLinkId).select("id"),
       ]);
-      returnedRecords = [];
-      for (const [index, denied] of deniedUpdates.entries()) {
-        if (denied.error || !Array.isArray(denied.data) || denied.data.length > 1) {
-          throw new Error("Cross-user RLS no-op update could not be evaluated");
-        }
-        if (denied.data.length === 1) {
-          returnedRecords.push((["space", "collection", "link"] as const)[index]!);
-        }
+      const evaluation = evaluateRlsUpdateSettlements(deniedUpdates);
+      returnedRecords = [...evaluation.returnedRecords];
+      ambiguousRecords = [...evaluation.ambiguousRecords];
+      if (evaluation.responseFailure) {
+        throw new Error("Cross-user RLS no-op update could not be evaluated");
       }
       if (returnedRecords.length > 0) {
         throw new Error("Cross-user RLS no-op update was not denied");
@@ -929,6 +1170,8 @@ async function verifyTwoUserRls(
         baseline,
         current: { records: currentRecords, sync: currentSync },
         returnedRecords,
+        ambiguousRecords,
+        expectedRecords: baseline.records,
       });
       if (plan.restoreRecords.includes("space")) {
         const restored = await b.client.from("spaces").update({

@@ -25,9 +25,13 @@ The Vercel service requires these public values:
 
 The private `TABLOOM_OAUTH_SIGNING_KEYS` and
 `TABLOOM_OAUTH_ENCRYPTION_KEYS` values are JSON arrays. Disabled mode may use
-`[]`. Enabled production requires exactly one active ES256 private signing JWK
-and exactly one active 32-byte encryption root. Template values in
-`.env.example` are not deployable secrets.
+`[]`. Enabled production requires exactly one active ES256 private signing JWK,
+exactly one active 32-byte encryption root, and a canonical 32-byte base64url
+`TABLOOM_OAUTH_DATABASE_SECRET`. The database stores the same raw 32 bytes in
+the no-grant `oauth_private.facade_secret` table. This secret signs short-lived,
+request-bound mutation proofs; it is never an RPC argument, logged value, or
+replacement for the public anonymous key. Template values in `.env.example`
+are not deployable secrets, and a service-role credential is never used.
 
 Do not commit key files, place them inside this repository, paste them into a
 shell command argument, print them, or copy them into `.env.local`. Generated
@@ -36,7 +40,7 @@ files are local transfer artifacts only.
 ## Generate and enter facade secrets
 
 Create an operator-owned mode-`0700` directory outside the repository, then
-pass two new absolute paths. The generator refuses stdout, relative paths,
+pass three new absolute paths. The generator refuses stdout, relative paths,
 existing files, symlinks, non-owned/non-`0700` parents, and every path inside
 the repository. It captures each parent device/inode, exclusively opens each
 output with no-follow semantics, and compares parent, pathname, and handle
@@ -57,18 +61,29 @@ untrusted same-UID processes.
 ```bash
 node services/tabloom-mcp/scripts/generate-oauth-keys.mjs \
   --signing-out /absolute/external/path/signing-v1.json \
-  --encryption-out /absolute/external/path/encryption-v1.json
+  --encryption-out /absolute/external/path/encryption-v1.json \
+  --database-secret-out /absolute/external/path/database-proof-v1.txt
 ```
 
-Enter each JSON file through the Vercel dashboard's secret-value editor, or
-through stdin so the value is not retained in shell history:
+Enter each generated value through the Vercel dashboard's secret-value editor,
+or through stdin so the value is not retained in shell history:
 
 ```bash
 vercel env add TABLOOM_OAUTH_SIGNING_KEYS production \
   < /absolute/external/path/signing-v1.json
 vercel env add TABLOOM_OAUTH_ENCRYPTION_KEYS production \
   < /absolute/external/path/encryption-v1.json
+vercel env add TABLOOM_OAUTH_DATABASE_SECRET production \
+  < /absolute/external/path/database-proof-v1.txt
 ```
+
+In the separately approved Supabase database session, decode the base64url
+value from `database-proof-v1.txt` and upsert its raw 32 bytes into the single
+`oauth_private.facade_secret` row. Supply the value through the operator's
+protected stdin/secret-entry workflow—not a shell argument, migration, RPC,
+saved query, ticket, or log—and verify only `octet_length(secret) = 32`. Never
+grant the private schema/table to `anon`, `authenticated`, or `service_role`.
+The migration intentionally contains no production secret.
 
 Do not use command substitution or put JSON after the command name. Confirm the
 files are untracked, transfer them through the approved secret channel, and
@@ -78,9 +93,11 @@ securely remove the local copies under the operator's retention policy.
 
 1. Generate a new signing and encryption pair outside the repository.
 2. In the secret editor, create combined rings with the new entries active and
-   every retained entry inactive. Keep the old private signing JWK because the
-   current parser validates every configured signing entry; keep old encryption
-   roots so existing artifacts can still be opened.
+   every retained entry inactive. Convert each former active signing entry to
+   `{ "kid": "...", "active": false, "publicJwk": { "kty": "EC", "crv": "P-256", "alg": "ES256", "x": "...", "y": "..." } }`.
+   Remove `d` and the entire `privateJwk` field before retaining it. Inactive
+   private material and an active public-only entry are rejected. Keep old
+   encryption roots so existing artifacts can still be opened.
 3. Deploy the overlapping rings while the old keys remain available, then run
    the complete redacted probe and two-user gate.
 4. Retain old signing verification material for at least the maximum access
@@ -88,6 +105,12 @@ securely remove the local copies under the operator's retention policy.
    refresh-family overlap (currently 30 days).
 5. Remove expired inactive entries in a later approved deployment and repeat
    the gate. Never switch both rings without an overlap deployment.
+
+The database proof secret has no overlapping-key ring. Rotate it only during an
+approved disabled-facade maintenance window: disable and deploy, update the raw
+database singleton and Vercel secret through protected entry paths, deploy, and
+then re-enable and run the full gate. A mismatch fails every mutation with the
+same fixed error; do not add a service-role fallback.
 
 If rotation fails, disable the facade first, redeploy, revoke facade grant
 families, and only then rotate or remove compromised rings. Ordinary Supabase
@@ -115,7 +138,7 @@ The following is an operator checklist, not authorization to perform it:
 2. Link the existing Supabase project without committing credentials, run the
    complete local pgTAP suite, review the generated diff, and push only
    `202608290002_oauth_facade.sql`.
-3. Configure the public values and versioned rings in Vercel with
+3. Configure the public values, versioned rings, and database proof secret in Vercel with
    `TABLOOM_OAUTH_ENABLED=false`.
 4. Deploy `services/tabloom-mcp`. Confirm health, protected-resource metadata,
    authorization-server metadata, and public JWKS are available. Confirm DCR,

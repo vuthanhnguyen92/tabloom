@@ -1,4 +1,4 @@
-import { createClient } from "@supabase/supabase-js";
+import { createClient, isAuthRetryableFetchError } from "@supabase/supabase-js";
 
 export type ValidatedSupabaseSession = {
   userId: string;
@@ -58,10 +58,16 @@ const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{
 const MAX_CREDENTIAL_BYTES = 16 * 1024;
 
 export class UpstreamSupabaseAuthError extends Error {
-  constructor() {
+  constructor(readonly kind: "invalid" | "unavailable" = "invalid") {
     super("Upstream authentication failed");
     this.name = "UpstreamSupabaseAuthError";
   }
+}
+
+function upstreamFailure(error: unknown): UpstreamSupabaseAuthError {
+  return new UpstreamSupabaseAuthError(
+    isAuthRetryableFetchError(error) ? "unavailable" : "invalid",
+  );
 }
 
 class InMemoryAuthStorage implements SupabaseAuthStorage {
@@ -194,7 +200,8 @@ export class SupabaseUpstreamAuth implements UpstreamSupabaseAuth {
       const exchanged = await client.auth.exchangeCodeForSession(code);
       const session = isRecord(exchanged.data) ? exchanged.data.session : null;
       const outerUserId = isRecord(exchanged.data) ? uuidFrom(exchanged.data.user) : null;
-      if (exchanged.error || !isRecord(session)) throw new UpstreamSupabaseAuthError();
+      if (exchanged.error) throw upstreamFailure(exchanged.error);
+      if (!isRecord(session)) throw new UpstreamSupabaseAuthError();
 
       const accessToken = session.access_token;
       const refreshToken = session.refresh_token;
@@ -208,7 +215,8 @@ export class SupabaseUpstreamAuth implements UpstreamSupabaseAuth {
 
       const validated = await client.auth.getUser(accessToken);
       const validatedUserId = isRecord(validated.data) ? uuidFrom(validated.data.user) : null;
-      if (validated.error || !validatedUserId || validatedUserId !== outerUserId) {
+      if (validated.error) throw upstreamFailure(validated.error);
+      if (!validatedUserId || validatedUserId !== outerUserId) {
         throw new UpstreamSupabaseAuthError();
       }
 
@@ -218,8 +226,9 @@ export class SupabaseUpstreamAuth implements UpstreamSupabaseAuth {
         refreshToken,
         accessTokenExpiresAt: expiresAt as number,
       };
-    } catch {
-      throw new UpstreamSupabaseAuthError();
+    } catch (error) {
+      if (error instanceof UpstreamSupabaseAuthError) throw error;
+      throw new UpstreamSupabaseAuthError("unavailable");
     } finally {
       storage.clear();
     }

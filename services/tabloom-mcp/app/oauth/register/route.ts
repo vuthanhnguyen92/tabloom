@@ -98,10 +98,11 @@ export async function POST(request: Request): Promise<Response> {
   }
 
   try {
+    const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
     const stored = await createOAuthPersistence(config).registerClient({
       clientName: registration.clientName,
       redirectUris: [...registration.redirectUris],
-      expiresAt: null,
+      expiresAt,
     });
     return respond(oauthJson({
       client_id: stored.clientId,

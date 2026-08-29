@@ -61,6 +61,7 @@ function useFacadeEnvironment(enabled = true, origin = ORIGIN) {
   vi.stubEnv("TABLOOM_OAUTH_ENCRYPTION_KEYS", JSON.stringify([
     { kid: "encryption-key", active: true, rootKey: Buffer.alloc(32, 3).toString("base64url") },
   ]));
+  vi.stubEnv("TABLOOM_OAUTH_DATABASE_SECRET", Buffer.alloc(32, 9).toString("base64url"));
 }
 
 function cookieHeader(cookie: string): string {
@@ -115,6 +116,8 @@ afterEach(() => {
   vi.useRealTimers();
   vi.unstubAllEnvs();
   vi.resetModules();
+  vi.restoreAllMocks();
+  vi.doUnmock("../../services/tabloom-mcp/src/oauth/consent");
 });
 afterAll(() => vi.restoreAllMocks());
 
@@ -215,6 +218,7 @@ describe("POST /oauth/consent", () => {
 
   it("returns access_denied with original state and clears consent", async () => {
     const cookie = await consentCookie();
+    const audit = vi.spyOn(console, "info").mockImplementation(() => undefined);
 
     const response = await post(cookie, postBody("deny"));
 
@@ -227,6 +231,42 @@ describe("POST /oauth/consent", () => {
     expect(location.searchParams.get("error")).toBe("access_denied");
     expect(location.searchParams.get("state")).toBe(session.request.state);
     expect(location.searchParams.has("code")).toBe(false);
+    expect(audit.mock.calls.at(-1)?.[0]).toMatchObject({
+      routeCategory: "consent",
+      resultClass: "client_error",
+    });
+  });
+
+  it("uses one opaque correlation ID for an unexpected consent redirect and audit", async () => {
+    const cookie = await consentCookie();
+    const audit = vi.spyOn(console, "info").mockImplementation(() => undefined);
+    vi.doMock("../../services/tabloom-mcp/src/oauth/consent", async () => {
+      const actual = await vi.importActual<typeof import("../../services/tabloom-mcp/src/oauth/consent")>(
+        "../../services/tabloom-mcp/src/oauth/consent",
+      );
+      return {
+        ...actual,
+        sealAuthorizationCode: vi.fn().mockRejectedValue(
+          new Error("private consent failure detail"),
+        ),
+      };
+    });
+
+    const response = await post(cookie, postBody("approve"));
+    const location = new URL(response.headers.get("Location")!);
+    const correlationId = location.searchParams.get("correlation_id");
+
+    expect(location.searchParams.get("error")).toBe("server_error");
+    expect(correlationId).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
+    );
+    expect(audit.mock.calls.at(-1)?.[0]).toMatchObject({
+      routeCategory: "consent",
+      resultClass: "server_error",
+      correlationId,
+    });
+    expect(`${location.href}${JSON.stringify(audit.mock.calls)}`)
+      .not.toContain("private consent failure detail");
   });
 
   it("seals a two-minute authorization code with every validated binding", async () => {

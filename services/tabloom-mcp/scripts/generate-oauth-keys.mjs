@@ -124,6 +124,7 @@ async function unlinkCreatedQuietly(path, expectedIdentity) {
 export async function generateOAuthKeys({
   signingPath,
   encryptionPath,
+  databaseSecretPath = /** @type {string | undefined} */ (undefined),
   repositoryRoot = DEFAULT_REPOSITORY_ROOT,
   closeHandle = (handle) => handle.close(),
   inspectParent = inspectPrivateParent,
@@ -131,14 +132,21 @@ export async function generateOAuthKeys({
 }) {
   const signing = await prepareTarget(signingPath, repositoryRoot, inspectParent);
   const encryption = await prepareTarget(encryptionPath, repositoryRoot, inspectParent);
-  if (signing.target === encryption.target) {
-    throw new Error("Signing and encryption outputs must be different files");
+  const databaseSecret = databaseSecretPath
+    ? await prepareTarget(databaseSecretPath, repositoryRoot, inspectParent)
+    : undefined;
+  const targets = [signing.target, encryption.target, databaseSecret?.target]
+    .filter(Boolean);
+  if (new Set(targets).size !== targets.length) {
+    throw new Error("OAuth key outputs must be different files");
   }
 
   let signingHandle;
   let encryptionHandle;
+  let databaseSecretHandle;
   let signingIdentity;
   let encryptionIdentity;
+  let databaseSecretIdentity;
   let failure;
   try {
     const flags = constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL |
@@ -158,21 +166,44 @@ export async function generateOAuthKeys({
     if (!sameIdentity(encryptionIdentity, encryptionPathIdentity)) {
       throw new Error("OAuth key output identity changed");
     }
+    if (databaseSecret) {
+      databaseSecretHandle = await open(databaseSecret.target, flags, 0o600);
+      databaseSecretIdentity = await inspectCreatedHandle(databaseSecretHandle);
+      const databaseSecretPathIdentity = await inspectOutput(
+        databaseSecretHandle,
+        databaseSecret.target,
+      );
+      if (!sameIdentity(databaseSecretIdentity, databaseSecretPathIdentity)) {
+        throw new Error("OAuth key output identity changed");
+      }
+    }
 
-    const [signingParentAfter, encryptionParentAfter] = await Promise.all([
+    const [signingParentAfter, encryptionParentAfter, databaseSecretParentAfter] = await Promise.all([
       inspectParent(signing.parentPath),
       inspectParent(encryption.parentPath),
+      databaseSecret ? inspectParent(databaseSecret.parentPath) : undefined,
     ]);
     if (!sameIdentity(signing.parentIdentity, signingParentAfter) ||
-        !sameIdentity(encryption.parentIdentity, encryptionParentAfter)) {
+        !sameIdentity(encryption.parentIdentity, encryptionParentAfter) ||
+        (databaseSecret && !sameIdentity(
+          databaseSecret.parentIdentity,
+          databaseSecretParentAfter,
+        ))) {
       throw new Error("OAuth key output parent identity changed");
     }
-    const [signingOutputAfter, encryptionOutputAfter] = await Promise.all([
+    const [signingOutputAfter, encryptionOutputAfter, databaseSecretOutputAfter] = await Promise.all([
       inspectOutput(signingHandle, signing.target),
       inspectOutput(encryptionHandle, encryption.target),
+      databaseSecret
+        ? inspectOutput(databaseSecretHandle, databaseSecret.target)
+        : undefined,
     ]);
     if (!sameIdentity(signingIdentity, signingOutputAfter) ||
-        !sameIdentity(encryptionIdentity, encryptionOutputAfter)) {
+        !sameIdentity(encryptionIdentity, encryptionOutputAfter) ||
+        (databaseSecret && !sameIdentity(
+          databaseSecretIdentity,
+          databaseSecretOutputAfter,
+        ))) {
       throw new Error("OAuth key output identity changed");
     }
 
@@ -198,11 +229,19 @@ export async function generateOAuthKeys({
     await encryptionHandle.writeFile(`${JSON.stringify(encryptionRing)}\n`, "utf8");
     await encryptionHandle.chmod(0o600);
     await encryptionHandle.sync();
+    if (databaseSecretHandle) {
+      await databaseSecretHandle.writeFile(
+        `${randomBytes(32).toString("base64url")}\n`,
+        "utf8",
+      );
+      await databaseSecretHandle.chmod(0o600);
+      await databaseSecretHandle.sync();
+    }
   } catch (error) {
     failure = error;
   } finally {
     const closeResults = await Promise.allSettled(
-      [signingHandle, encryptionHandle]
+      [signingHandle, encryptionHandle, databaseSecretHandle]
         .filter(Boolean)
         .map((handle) => Promise.resolve().then(() => closeHandle(handle))),
     );
@@ -211,6 +250,7 @@ export async function generateOAuthKeys({
       await Promise.all([
         closeQuietly(signingHandle),
         closeQuietly(encryptionHandle),
+        closeQuietly(databaseSecretHandle),
       ]);
     }
   }
@@ -218,30 +258,36 @@ export async function generateOAuthKeys({
     await Promise.all([
       unlinkCreatedQuietly(signing.target, signingIdentity),
       unlinkCreatedQuietly(encryption.target, encryptionIdentity),
+      databaseSecret
+        ? unlinkCreatedQuietly(databaseSecret.target, databaseSecretIdentity)
+        : Promise.resolve(),
     ]);
     throw failure;
   }
 }
 
 function parseArguments(argv) {
-  if (argv.length !== 4) throw new Error("Invalid arguments");
+  if (argv.length !== 6) throw new Error("Invalid arguments");
   const values = new Map();
   for (let index = 0; index < argv.length; index += 2) {
     const flag = argv[index];
     if (
-      (flag !== "--signing-out" && flag !== "--encryption-out") ||
+      (flag !== "--signing-out" && flag !== "--encryption-out" &&
+        flag !== "--database-secret-out") ||
       values.has(flag)
     ) {
       throw new Error("Invalid arguments");
     }
     values.set(flag, argv[index + 1]);
   }
-  if (!values.has("--signing-out") || !values.has("--encryption-out")) {
+  if (!values.has("--signing-out") || !values.has("--encryption-out") ||
+      !values.has("--database-secret-out")) {
     throw new Error("Invalid arguments");
   }
   return {
     signingPath: values.get("--signing-out"),
     encryptionPath: values.get("--encryption-out"),
+    databaseSecretPath: values.get("--database-secret-out"),
   };
 }
 
@@ -258,7 +304,7 @@ export async function runKeyGeneratorCli({
     return 0;
   } catch {
     stderr(
-      "OAuth key generation failed. Supply two new absolute paths outside the repository.",
+      "OAuth key generation failed. Supply three new absolute paths outside the repository.",
     );
     return 1;
   }

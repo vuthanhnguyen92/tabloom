@@ -1,12 +1,17 @@
+import { randomBytes } from "node:crypto";
 import { createClient } from "@supabase/supabase-js";
 import { hashOpaqueIdentifier } from "../auth/artifacts";
+import {
+  signOAuthMutationProof,
+  type OAuthDatabaseProofKey,
+} from "../auth/database-proof";
 
 export type StoredPublicClient = {
   clientId: string;
   clientName: string;
   redirectUris: string[];
   createdAt: string;
-  expiresAt: string | null;
+  expiresAt: string;
 };
 
 export interface OAuthPersistence {
@@ -54,7 +59,12 @@ type StoredPublicClientRow = {
   client_name: string;
   redirect_uris: string[];
   created_at: string;
-  expires_at: string | null;
+  expires_at: string;
+};
+
+export type OAuthMutationProofDependencies = {
+  now?: () => number;
+  randomBytes?: (size: number) => Uint8Array;
 };
 
 const RETRYABLE_DATABASE_CODES = new Set([
@@ -99,7 +109,7 @@ function isStoredPublicClientRow(value: unknown): value is StoredPublicClientRow
     Array.isArray(row.redirect_uris) &&
     row.redirect_uris.every((uri) => typeof uri === "string") &&
     typeof row.created_at === "string" &&
-    (row.expires_at === null || typeof row.expires_at === "string")
+    typeof row.expires_at === "string"
   );
 }
 
@@ -127,7 +137,29 @@ const createAnonymousClient: SupabaseClientFactory = (url, anonKey, options) => 
 };
 
 export class SupabaseOAuthPersistence implements OAuthPersistence {
-  constructor(private readonly client: OAuthRpcClient) {}
+  private readonly now: () => number;
+  private readonly random: (size: number) => Uint8Array;
+
+  constructor(
+    private readonly client: OAuthRpcClient,
+    private readonly databaseProofKey: OAuthDatabaseProofKey,
+    dependencies: OAuthMutationProofDependencies = {},
+  ) {
+    this.now = dependencies.now ?? (() => Math.floor(Date.now() / 1000));
+    this.random = dependencies.randomBytes ?? randomBytes;
+  }
+
+  private proof(action: string, canonicalPayload: string) {
+    const timestamp = this.now();
+    const nonce = Buffer.from(this.random(32)).toString("base64url");
+    return signOAuthMutationProof(
+      this.databaseProofKey,
+      action,
+      canonicalPayload,
+      timestamp,
+      nonce,
+    );
+  }
 
   private async rpc(name: string, args: Record<string, unknown>): Promise<unknown> {
     try {
@@ -146,12 +178,23 @@ export class SupabaseOAuthPersistence implements OAuthPersistence {
   async registerClient(
     input: Omit<StoredPublicClient, "clientId" | "createdAt">,
   ): Promise<StoredPublicClient> {
+    const clientMetadata = {
+      client_name: input.clientName,
+      redirect_uris: input.redirectUris,
+      expires_at: input.expiresAt,
+    };
+    const canonicalPayload = [
+      "client_name",
+      frame(input.clientName),
+      "redirect_uris",
+      String(input.redirectUris.length),
+      input.redirectUris.map(frame).join(""),
+      "expires_at",
+      frame(input.expiresAt),
+    ].join("\n");
     return decodeClient(await this.rpc("register_oauth_client", {
-      client_metadata: {
-        client_name: input.clientName,
-        redirect_uris: input.redirectUris,
-        expires_at: input.expiresAt,
-      },
+      client_metadata: clientMetadata,
+      ...this.proof("register_oauth_client", canonicalPayload),
     }));
   }
 
@@ -169,6 +212,14 @@ export class SupabaseOAuthPersistence implements OAuthPersistence {
       token_hash: hashOpaqueIdentifier(jti),
       token_kind: kind,
       expires_at: expiresAt.toISOString(),
+      ...this.proof("consume_oauth_token", [
+        "token_hash",
+        frame(hashOpaqueIdentifier(jti)),
+        "token_kind",
+        frame(kind),
+        "expires_at",
+        frame(expiresAt.toISOString()),
+      ].join("\n")),
     });
     if (typeof data !== "boolean") {
       throw new Error("OAuth persistence returned an invalid consume result");
@@ -180,6 +231,12 @@ export class SupabaseOAuthPersistence implements OAuthPersistence {
     await this.rpc("revoke_oauth_grant", {
       grant_hash: hashOpaqueIdentifier(grantId),
       expires_at: expiresAt.toISOString(),
+      ...this.proof("revoke_oauth_grant", [
+        "grant_hash",
+        frame(hashOpaqueIdentifier(grantId)),
+        "expires_at",
+        frame(expiresAt.toISOString()),
+      ].join("\n")),
     });
   }
 
@@ -195,9 +252,16 @@ export class SupabaseOAuthPersistence implements OAuthPersistence {
 }
 
 export function createOAuthPersistence(
-  config: { supabaseUrl: URL; anonKey: string },
+  config: {
+    supabaseUrl: URL;
+    anonKey: string;
+    databaseProofKey?: OAuthDatabaseProofKey;
+  },
   factory: SupabaseClientFactory = createAnonymousClient,
 ): OAuthPersistence {
+  if (!config.databaseProofKey) {
+    throw new Error("OAuth database proof key is required");
+  }
   const client = factory(config.supabaseUrl.href, config.anonKey, {
     auth: {
       autoRefreshToken: false,
@@ -205,5 +269,9 @@ export function createOAuthPersistence(
       persistSession: false,
     },
   });
-  return new SupabaseOAuthPersistence(client);
+  return new SupabaseOAuthPersistence(client, config.databaseProofKey);
+}
+
+function frame(value: string): string {
+  return `${Buffer.byteLength(value, "utf8")}:${value}`;
 }

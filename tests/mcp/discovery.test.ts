@@ -4,12 +4,18 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 const ORIGIN = "https://mcp.tabloom.app";
 
 async function signingKey(kid: string, active: boolean) {
-  const { privateKey } = await generateKeyPair("ES256", { extractable: true });
-  return {
-    kid,
-    active,
-    privateJwk: { ...await exportJWK(privateKey), alg: "ES256" },
-  };
+  const { privateKey, publicKey } = await generateKeyPair("ES256", { extractable: true });
+  return active
+    ? {
+      kid,
+      active: true as const,
+      privateJwk: { ...await exportJWK(privateKey), alg: "ES256" },
+    }
+    : {
+      kid,
+      active: false as const,
+      publicJwk: { ...await exportJWK(publicKey), alg: "ES256" },
+    };
 }
 
 async function useFacadeEnvironment() {
@@ -75,6 +81,7 @@ describe("OAuth facade discovery", () => {
         rootKey: Buffer.alloc(32, 9).toString("base64url"),
       },
     ]));
+    vi.stubEnv("TABLOOM_OAUTH_DATABASE_SECRET", Buffer.alloc(32, 9).toString("base64url"));
     const route = await import(
       "../../services/tabloom-mcp/app/api/mcp/route"
     );

@@ -3,11 +3,15 @@ import { describe, expect, it } from "vitest";
 import { loadFacadeAuthConfig } from "../../services/tabloom-mcp/src/auth/config";
 
 const RESOURCE = "https://mcp.tabloom.app";
+const DATABASE_SECRET = Buffer.alloc(32, 9).toString("base64url");
 
 async function signingKey(kid = "signing-a", active = true) {
-  const { privateKey } = await generateKeyPair("ES256", { extractable: true });
+  const { privateKey, publicKey } = await generateKeyPair("ES256", { extractable: true });
   const privateJwk = await exportJWK(privateKey);
-  return { kid, active, privateJwk: { ...privateJwk, alg: "ES256" } };
+  const publicJwk = await exportJWK(publicKey);
+  return active
+    ? { kid, active: true as const, privateJwk: { ...privateJwk, alg: "ES256" } }
+    : { kid, active: false as const, publicJwk: { ...publicJwk, alg: "ES256" } };
 }
 
 function encryptionKey(kid = "encryption-a", active = true) {
@@ -18,8 +22,9 @@ function encryptionKey(kid = "encryption-a", active = true) {
   };
 }
 
-function env(overrides: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
+function env(overrides: Partial<NodeJS.ProcessEnv> = {}): NodeJS.ProcessEnv {
   return {
+    NODE_ENV: "test",
     SUPABASE_URL: "https://example.supabase.co",
     SUPABASE_ANON_KEY: "test-anon-key",
     TABLOOM_MCP_RESOURCE_URL: RESOURCE,
@@ -31,12 +36,15 @@ function env(overrides: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
 
 describe("authorization facade configuration", () => {
   it("supports disabled mode without private facade keys", () => {
-    const config = loadFacadeAuthConfig(env());
+    const config = loadFacadeAuthConfig(env({
+      TABLOOM_OAUTH_DATABASE_SECRET: undefined,
+    }));
 
     expect(config.oauthEnabled).toBe(false);
     expect(config.issuerUrl.href).toBe(`${RESOURCE}/`);
     expect(config.signingKeys.active).toBeUndefined();
     expect(config.encryptionKeys.active).toBeUndefined();
+    expect(config.databaseProofKey).toBeUndefined();
   });
 
   it("loads one active signing and encryption key while retaining inactive rotation keys", async () => {
@@ -51,6 +59,7 @@ describe("authorization facade configuration", () => {
           encryptionKey("old", false),
           encryptionKey("current", true),
         ]),
+        TABLOOM_OAUTH_DATABASE_SECRET: DATABASE_SECRET,
       }),
     );
 
@@ -58,9 +67,54 @@ describe("authorization facade configuration", () => {
     expect(config.encryptionKeys.active?.kid).toBe("current");
     expect([...config.signingKeys.keys.keys()]).toEqual(["old", "current"]);
     expect([...config.encryptionKeys.keys.keys()]).toEqual(["old", "current"]);
+    expect(config.databaseProofKey).toBeDefined();
     const serialized = JSON.stringify(config.signingKeys);
     expect(serialized).toContain('"kid":"current"');
     expect(serialized).not.toContain('"d"');
+    expect(JSON.stringify(config)).not.toContain(DATABASE_SECRET);
+  });
+
+  it("rejects private material on inactive entries and public-only active entries", async () => {
+    const inactivePrivate = await signingKey("old", true);
+    const activePublic = await signingKey("current", false);
+    const currentPrivate = await signingKey("current", true);
+    const encryption = JSON.stringify([encryptionKey()]);
+
+    expect(() => loadFacadeAuthConfig(env({
+      TABLOOM_OAUTH_ENABLED: "true",
+      TABLOOM_OAUTH_DATABASE_SECRET: DATABASE_SECRET,
+      TABLOOM_OAUTH_SIGNING_KEYS: JSON.stringify([
+        { ...inactivePrivate, active: false },
+        currentPrivate,
+      ]),
+      TABLOOM_OAUTH_ENCRYPTION_KEYS: encryption,
+    }))).toThrow();
+    expect(() => loadFacadeAuthConfig(env({
+      TABLOOM_OAUTH_ENABLED: "true",
+      TABLOOM_OAUTH_DATABASE_SECRET: DATABASE_SECRET,
+      TABLOOM_OAUTH_SIGNING_KEYS: JSON.stringify([
+        { ...activePublic, active: true },
+      ]),
+      TABLOOM_OAUTH_ENCRYPTION_KEYS: encryption,
+    }))).toThrow();
+  });
+
+  it("requires one canonical 32-byte database proof secret only while enabled", async () => {
+    const signing = JSON.stringify([await signingKey()]);
+    const encryption = JSON.stringify([encryptionKey()]);
+    const configured = (secret: string | undefined) => env({
+      TABLOOM_OAUTH_ENABLED: "true",
+      TABLOOM_OAUTH_SIGNING_KEYS: signing,
+      TABLOOM_OAUTH_ENCRYPTION_KEYS: encryption,
+      TABLOOM_OAUTH_DATABASE_SECRET: secret,
+    });
+
+    expect(() => loadFacadeAuthConfig(configured(undefined))).toThrow();
+    expect(() => loadFacadeAuthConfig(configured("not base64url!"))).toThrow();
+    expect(() => loadFacadeAuthConfig(configured(
+      Buffer.alloc(31, 9).toString("base64url"),
+    ))).toThrow();
+    expect(() => loadFacadeAuthConfig(configured(DATABASE_SECRET))).not.toThrow();
   });
 
   it.each([
@@ -85,7 +139,8 @@ describe("authorization facade configuration", () => {
     ["short encryption root", async () => JSON.stringify([await signingKey()]), JSON.stringify([{ ...encryptionKey(), rootKey: Buffer.alloc(31).toString("base64url") }])],
     ["missing signing coordinate", async () => {
       const key = await signingKey();
-      const { x: _x, ...privateJwk } = key.privateJwk;
+      const privateJwk = { ...key.privateJwk };
+      delete privateJwk.x;
       return JSON.stringify([{ ...key, privateJwk }]);
     }, JSON.stringify([encryptionKey()])],
     ["invalid signing private material", async () => {
@@ -95,7 +150,7 @@ describe("authorization facade configuration", () => {
   ])("rejects %s without disclosing key material", async (_name, signing, encryption) => {
     const signingJson = await signing();
     const encryptionJson = await encryption;
-    const run = () => loadFacadeAuthConfig(env({ TABLOOM_OAUTH_ENABLED: "true", TABLOOM_OAUTH_SIGNING_KEYS: signingJson, TABLOOM_OAUTH_ENCRYPTION_KEYS: encryptionJson }));
+    const run = () => loadFacadeAuthConfig(env({ TABLOOM_OAUTH_ENABLED: "true", TABLOOM_OAUTH_DATABASE_SECRET: DATABASE_SECRET, TABLOOM_OAUTH_SIGNING_KEYS: signingJson, TABLOOM_OAUTH_ENCRYPTION_KEYS: encryptionJson }));
 
     expect(run).toThrow();
     expect(run).not.toThrow(signingJson);
@@ -106,7 +161,7 @@ describe("authorization facade configuration", () => {
     const signing = JSON.stringify([await signingKey()]);
     const encryption = JSON.stringify([encryptionKey()]);
 
-    expect(() => loadFacadeAuthConfig(env({ TABLOOM_OAUTH_ENABLED: "true", TABLOOM_OAUTH_SIGNING_KEYS: "[" + " ".repeat(65_536) + "]", TABLOOM_OAUTH_ENCRYPTION_KEYS: encryption }))).toThrow();
-    expect(() => loadFacadeAuthConfig(env({ TABLOOM_OAUTH_ENABLED: "true", TABLOOM_OAUTH_SIGNING_KEYS: signing, TABLOOM_OAUTH_ENCRYPTION_KEYS: JSON.stringify([{ ...encryptionKey(), active: false }] ) }))).toThrow();
+    expect(() => loadFacadeAuthConfig(env({ TABLOOM_OAUTH_ENABLED: "true", TABLOOM_OAUTH_DATABASE_SECRET: DATABASE_SECRET, TABLOOM_OAUTH_SIGNING_KEYS: "[" + " ".repeat(65_536) + "]", TABLOOM_OAUTH_ENCRYPTION_KEYS: encryption }))).toThrow();
+    expect(() => loadFacadeAuthConfig(env({ TABLOOM_OAUTH_ENABLED: "true", TABLOOM_OAUTH_DATABASE_SECRET: DATABASE_SECRET, TABLOOM_OAUTH_SIGNING_KEYS: signing, TABLOOM_OAUTH_ENCRYPTION_KEYS: JSON.stringify([{ ...encryptionKey(), active: false }] ) }))).toThrow();
   });
 });
