@@ -76,6 +76,7 @@ export async function generateOAuthKeys({
   signingPath,
   encryptionPath,
   repositoryRoot = DEFAULT_REPOSITORY_ROOT,
+  closeHandle = (handle) => handle.close(),
 }) {
   const signingTarget = await targetPath(signingPath, repositoryRoot);
   const encryptionTarget = await targetPath(encryptionPath, repositoryRoot);
@@ -87,6 +88,7 @@ export async function generateOAuthKeys({
   let encryptionHandle;
   let signingCreated = false;
   let encryptionCreated = false;
+  let failure;
   try {
     signingHandle = await open(signingTarget, "wx", 0o600);
     signingCreated = true;
@@ -116,14 +118,26 @@ export async function generateOAuthKeys({
     await encryptionHandle.chmod(0o600);
     await encryptionHandle.sync();
   } catch (error) {
-    await closeQuietly(signingHandle);
-    await closeQuietly(encryptionHandle);
+    failure = error;
+  } finally {
+    const closeResults = await Promise.allSettled(
+      [signingHandle, encryptionHandle]
+        .filter(Boolean)
+        .map((handle) => Promise.resolve().then(() => closeHandle(handle))),
+    );
+    if (closeResults.some((result) => result.status === "rejected")) {
+      failure ??= new Error("OAuth key output close failed");
+      await Promise.all([
+        closeQuietly(signingHandle),
+        closeQuietly(encryptionHandle),
+      ]);
+    }
+  }
+  if (failure) {
     if (signingCreated) await unlinkQuietly(signingTarget);
     if (encryptionCreated) await unlinkQuietly(encryptionTarget);
-    throw error;
+    throw failure;
   }
-  await signingHandle.close();
-  await encryptionHandle.close();
 }
 
 function parseArguments(argv) {

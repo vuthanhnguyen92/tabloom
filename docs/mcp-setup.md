@@ -143,24 +143,67 @@ production works.
 ## Two-user live acceptance fixture
 
 `tests/e2e/mcp-facade-live.spec.ts` is skipped unless
-`TABLOOM_E2E_MCP_LIVE=1` and every documented live variable is present. The
-fixture module path must be absolute and should point to an ignored,
-operator-controlled module outside the repository. Its
-`createMcpFacadeLiveFixture({ resource })` function keeps codes, tokens,
-verifiers, cookies, and user credentials inside closure state and exposes only:
+`TABLOOM_E2E_MCP_LIVE=1`, the exact production resource is set, and
+`TABLOOM_E2E_MCP_FIXTURE_PATH` names a complete fixture. The fixture is JSON
+data, never JavaScript. The checked-in acceptance code never imports or
+executes an external module and never trusts precomputed pass/fail booleans.
 
-- `authorize(label)` returning a session handle;
-- redacted `claims()`;
-- categorical service-status, refresh, replay, revoke, and post-revoke results;
-- fixture-level nested-subject mismatch and cross-user workspace-isolation
-  checks.
+Both the fixture and its two Playwright storage-state files must be private
+regular files with mode `0600`, addressed by absolute paths outside the
+repository. Symlinks, repository paths, extra JSON properties, duplicate users,
+and incomplete inputs are rejected. The exact version-1 fixture shape is:
 
-The fixture must use two distinct human-authenticated Supabase test users. It
-must never return or log raw credentials. The acceptance proves exact ES256
-issuer/resource/scope claims, service status, one-winner refresh rotation,
-immediate revocation, outer/inner subject binding, and User A/User B RLS
-isolation through request-local repository fixtures. Do not enable future
-workspace MCP tools to run this test.
+```json
+{
+  "version": 1,
+  "resource": "https://tabloom-mcp.vercel.app",
+  "supabaseUrl": "https://your-project.supabase.co",
+  "supabaseAnonKey": "SUPABASE_PUBLIC_ANON_KEY_VALUE",
+  "subjectMismatchBearer": "FACADE_BEARER_WITH_MISMATCHED_OUTER_AND_INNER_SUBJECTS",
+  "users": [
+    {
+      "label": "user-a",
+      "userId": "00000000-0000-4000-8000-000000000001",
+      "storageStatePath": "/absolute/external/user-a-storage.json",
+      "supabaseAccessToken": "USER_A_SUPABASE_ACCESS_TOKEN",
+      "ownedSpaceId": "00000000-0000-4000-8000-00000000000a"
+    },
+    {
+      "label": "user-b",
+      "userId": "00000000-0000-4000-8000-000000000002",
+      "storageStatePath": "/absolute/external/user-b-storage.json",
+      "supabaseAccessToken": "USER_B_SUPABASE_ACCESS_TOKEN",
+      "ownedSpaceId": "00000000-0000-4000-8000-00000000000b"
+    }
+  ]
+}
+```
+
+The values above are templates, not valid credentials. Each storage-state file
+must use Playwright's JSON `{ "cookies": [], "origins": [] }` schema and hold
+an already human-authenticated browser session for its distinct Google test
+user. `subjectMismatchBearer` is credential data for a deliberately mismatched
+outer facade subject and nested Supabase subject; it is not a claimed result.
+Provisioning those external data files remains an approved operator action.
+
+The checked-in test performs DCR and browser login/consent for both users, reads
+the published JWKS, validates exact ES256 issuer/resource/scope claims, parses
+the real `get_service_status` JSON-RPC response, refreshes, revokes, and requires
+post-revocation MCP failure. It independently resolves each Supabase token's
+subject, submits the mismatched bearer and requires `401`, and loads both
+request-local workspaces to prove that each user sees its own named space and
+not the other's. Console, stdout, and stderr are disabled during all sensitive
+steps, errors are replaced with a fixed message, and no credentials or browser
+state are reported. Do not enable future workspace MCP tools to run this test.
+
+Run it only after explicit approval and complete fixture preparation:
+
+```bash
+TABLOOM_E2E_MCP_LIVE=1 \
+TABLOOM_E2E_MCP_RESOURCE_URL=https://tabloom-mcp.vercel.app \
+TABLOOM_E2E_MCP_FIXTURE_PATH=/absolute/external/mcp-live-fixture.json \
+  npx playwright test tests/e2e/mcp-facade-live.spec.ts --project=chromium
+```
 
 ## Log inspection and cutover gate
 

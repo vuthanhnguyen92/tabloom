@@ -1,4 +1,5 @@
 import { createPrivateKey } from "node:crypto";
+import { createServer } from "node:http";
 import {
   chmod,
   mkdtemp,
@@ -11,6 +12,7 @@ import {
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
+import * as probeModule from "../../scripts/probe-mcp-oauth.mjs";
 import {
   buildAuthorizationUrl,
   buildDynamicClientRegistration,
@@ -27,6 +29,10 @@ import {
   generateOAuthKeys,
   runKeyGeneratorCli,
 } from "../../services/tabloom-mcp/scripts/generate-oauth-keys.mjs";
+import {
+  loadLiveAcceptanceFixture,
+  parseLiveAcceptanceFixture,
+} from "../e2e/helpers/mcp-facade-live";
 
 const RESOURCE = "https://tabloom-mcp.example.com";
 const ISSUER = RESOURCE;
@@ -63,12 +69,49 @@ const REPORT_KEYS = [
   "scope",
   "scopeMatch",
   "refreshRotated",
+  "mcpContractMatch",
   "mcpBeforeRevocationResult",
   "revocationResult",
   "mcpAfterRevocationResult",
   "revocationEnforced",
   "pass",
 ];
+
+type ProbeRequest = (
+  url: string,
+  init?: RequestInit,
+) => Promise<{ status: number; body: unknown; mediaType?: string }>;
+
+type EvaluateMcpServiceStatus = (
+  response: { status: number; body: unknown; mediaType?: string },
+  requestId: number,
+) => boolean;
+
+async function listen(server: ReturnType<typeof createServer>) {
+  await new Promise<void>((resolveListen, rejectListen) => {
+    server.once("error", rejectListen);
+    server.listen(0, "127.0.0.1", resolveListen);
+  });
+  const address = server.address();
+  if (!address || typeof address === "string") throw new Error("listen failed");
+  return `http://127.0.0.1:${address.port}`;
+}
+
+async function closeServer(server: ReturnType<typeof createServer>) {
+  await new Promise<void>((resolveClose, rejectClose) => {
+    server.close((error) => error ? rejectClose(error) : resolveClose());
+  });
+}
+
+function serviceStatusResponse(id: number) {
+  return {
+    jsonrpc: "2.0",
+    id,
+    result: {
+      structuredContent: { service: "tabloom-mcp", status: "ok" },
+    },
+  };
+}
 
 function jsonResponse(status: number, body: Record<string, unknown> = {}) {
   return { status, body };
@@ -183,6 +226,92 @@ describe("MCP OAuth readiness probe", () => {
     expect(classifyHttpStatus(status)).toBe(result);
   });
 
+  it.each([307, 308])(
+    "refuses a real cross-origin HTTP %i redirect without forwarding secrets",
+    async (status) => {
+      const probeRequest = (probeModule as unknown as {
+        probeRequest?: ProbeRequest;
+      }).probeRequest;
+      expect(typeof probeRequest).toBe("function");
+      const secret = "private-redirected-refresh-token";
+      const stderr: string[] = [];
+      const directory = await mkdtemp(join(tmpdir(), "tabloom-probe-redirect-"));
+      const reportPath = join(directory, "report.json");
+      let redirectedRequests = 0;
+      const redirected = createServer((_request, response) => {
+        redirectedRequests += 1;
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end("{}");
+      });
+      const redirectedOrigin = await listen(redirected);
+      const source = createServer((request, response) => {
+        request.resume();
+        response.writeHead(status, { Location: `${redirectedOrigin}/stolen` });
+        response.end();
+      });
+      const sourceOrigin = await listen(source);
+      try {
+        const exitCode = await runCli({
+          run: async () => {
+            await probeRequest!(`${sourceOrigin}/.well-known/oauth-protected-resource`, {
+              headers: { authorization: `Bearer ${secret}` },
+            });
+          },
+          error: (message) => { stderr.push(message); },
+        });
+        await writeReport({ pass: false, detail: secret }, reportPath);
+        expect(exitCode).toBe(1);
+        expect(redirectedRequests).toBe(0);
+        const observable = `${stderr.join("\n")}\n${await readFile(reportPath, "utf8")}`;
+        expect(observable).not.toContain(secret);
+      } finally {
+        await closeServer(source);
+        await closeServer(redirected);
+        await rm(directory, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it("accepts exact JSON and SSE JSON-RPC service-status responses", () => {
+    const evaluate = (probeModule as unknown as {
+      evaluateMcpServiceStatus?: EvaluateMcpServiceStatus;
+    }).evaluateMcpServiceStatus;
+    expect(typeof evaluate).toBe("function");
+    expect(evaluate!({
+      status: 200,
+      mediaType: "application/json",
+      body: serviceStatusResponse(7),
+    }, 7)).toBe(true);
+    expect(evaluate!({
+      status: 200,
+      mediaType: "text/event-stream",
+      body: `event: message\ndata: ${JSON.stringify(serviceStatusResponse(8))}\n\n`,
+    }, 8)).toBe(true);
+  });
+
+  it.each([
+    {
+      name: "JSON-RPC error",
+      body: { jsonrpc: "2.0", id: 7, error: { code: -32603 } },
+    },
+    { name: "wrong id", body: serviceStatusResponse(8) },
+    {
+      name: "wrong result",
+      body: {
+        jsonrpc: "2.0",
+        id: 7,
+        result: { structuredContent: { service: "other", status: "ok" } },
+      },
+    },
+  ])("rejects a 200 $name response", ({ body }) => {
+    const evaluate = (probeModule as unknown as {
+      evaluateMcpServiceStatus?: EvaluateMcpServiceStatus;
+    }).evaluateMcpServiceStatus;
+    expect(typeof evaluate).toBe("function");
+    expect(evaluate!({ status: 200, mediaType: "application/json", body }, 7))
+      .toBe(false);
+  });
+
   it("runs discovery through post-revocation rejection with a strict redacted report", async () => {
     const authorizationCode = "private-authorization-code";
     const verifier = "private-pkce-verifier";
@@ -203,6 +332,9 @@ describe("MCP OAuth readiness probe", () => {
       if (url.endsWith("/.well-known/oauth-authorization-server")) {
         return jsonResponse(200, AUTHORIZATION_SERVER);
       }
+      if (url.endsWith("/.well-known/jwks.json")) {
+        return jsonResponse(200, { keys: [] });
+      }
       if (url.endsWith("/oauth/register")) {
         return jsonResponse(201, { client_id: "public-client" });
       }
@@ -220,11 +352,12 @@ describe("MCP OAuth readiness probe", () => {
       }
       if (url.endsWith("/oauth/revoke")) return jsonResponse(200);
       if (url.endsWith("/api/mcp")) {
-        return jsonResponse(
-          requests.filter((entry) => entry.url.endsWith("/api/mcp")).length === 1
-            ? 200
-            : 401,
-        );
+        const callCount = requests.filter(
+          (entry) => entry.url.endsWith("/api/mcp"),
+        ).length;
+        return callCount === 1
+          ? jsonResponse(200, serviceStatusResponse(1))
+          : jsonResponse(401);
       }
       throw new Error("Unexpected request");
     };
@@ -292,6 +425,8 @@ describe("MCP OAuth readiness probe", () => {
         scope: SCOPE,
       },
     ]);
+    expect(requests.every((entry) => entry.init?.redirect === "manual"))
+      .toBe(true);
     const report = reports.at(-1)!;
     expect(report).toEqual({
       discoverySupported: true,
@@ -305,6 +440,7 @@ describe("MCP OAuth readiness probe", () => {
       scope: SCOPE,
       scopeMatch: true,
       refreshRotated: true,
+      mcpContractMatch: true,
       mcpBeforeRevocationResult: "success",
       revocationResult: "success",
       mcpAfterRevocationResult: "unauthorized",
@@ -336,6 +472,7 @@ describe("MCP OAuth readiness probe", () => {
     const request = async (url: string, init?: RequestInit) => {
       if (url.endsWith("/.well-known/oauth-protected-resource")) return jsonResponse(200, PROTECTED_RESOURCE);
       if (url.endsWith("/.well-known/oauth-authorization-server")) return jsonResponse(200, AUTHORIZATION_SERVER);
+      if (url.endsWith("/.well-known/jwks.json")) return jsonResponse(200, { keys: [] });
       if (url.endsWith("/oauth/register")) return jsonResponse(201, { client_id: "public-client" });
       if (url.endsWith("/oauth/token")) {
         const refresh = new URLSearchParams(String(init?.body)).get("grant_type") === "refresh_token";
@@ -347,7 +484,7 @@ describe("MCP OAuth readiness probe", () => {
       if (url.endsWith("/oauth/revoke")) return jsonResponse(200);
       if (url.endsWith("/api/mcp")) {
         mcpCalls += 1;
-        return jsonResponse(200);
+        return jsonResponse(200, serviceStatusResponse(mcpCalls));
       }
       throw new Error("Unexpected request");
     };
@@ -474,6 +611,122 @@ describe("OAuth facade key generator", () => {
       expect(exitCode).toBe(0);
       expect(stdout).toEqual([]);
       expect(stderr).toEqual([]);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("attempts both closes and removes both files when one close fails", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "tabloom-oauth-keys-"));
+    const signingPath = join(directory, "signing.json");
+    const encryptionPath = join(directory, "encryption.json");
+    let closeCalls = 0;
+    try {
+      await expect(generateOAuthKeys({
+        signingPath,
+        encryptionPath,
+        repositoryRoot: resolve("."),
+        closeHandle: async (handle: { close(): Promise<void> }) => {
+          const call = ++closeCalls;
+          await handle.close();
+          if (call === 1) throw new Error("injected close failure");
+        },
+      })).rejects.toThrow();
+      expect(closeCalls).toBe(2);
+      await expect(stat(signingPath)).rejects.toThrow();
+      await expect(stat(encryptionPath)).rejects.toThrow();
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("live MCP facade acceptance fixture schema", () => {
+  function validFixture(directory: string) {
+    return {
+      version: 1,
+      resource: "https://tabloom-mcp.vercel.app",
+      supabaseUrl: "https://example.supabase.co",
+      supabaseAnonKey: "public-anon-key",
+      subjectMismatchBearer: "mismatch-bearer-credential",
+      users: [
+        {
+          label: "user-a",
+          userId: "11111111-1111-4111-8111-111111111111",
+          storageStatePath: join(directory, "user-a-storage.json"),
+          supabaseAccessToken: "user-a-access-token",
+          ownedSpaceId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        },
+        {
+          label: "user-b",
+          userId: "22222222-2222-4222-8222-222222222222",
+          storageStatePath: join(directory, "user-b-storage.json"),
+          supabaseAccessToken: "user-b-access-token",
+          ownedSpaceId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+        },
+      ],
+    };
+  }
+
+  it("accepts only the exact two-user credential schema", () => {
+    const directory = join(tmpdir(), "tabloom-live-fixture");
+    const parsed = parseLiveAcceptanceFixture(validFixture(directory), {
+      repositoryRoot: resolve("."),
+    });
+    expect(parsed.users.map((user) => user.label)).toEqual(["user-a", "user-b"]);
+
+    expect(() => parseLiveAcceptanceFixture({
+      ...validFixture(directory),
+      fixtureModule: "/tmp/untrusted-code.mjs",
+    }, { repositoryRoot: resolve(".") })).toThrow();
+    expect(() => parseLiveAcceptanceFixture({
+      ...validFixture(directory),
+      subjectMismatchRejected: true,
+    }, { repositoryRoot: resolve(".") })).toThrow();
+    const duplicate = validFixture(directory);
+    duplicate.users[1]!.userId = duplicate.users[0]!.userId;
+    expect(() => parseLiveAcceptanceFixture(duplicate, {
+      repositoryRoot: resolve("."),
+    })).toThrow();
+  });
+
+  it("loads only private regular JSON fixture and storage-state files outside the repository", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "tabloom-live-fixture-"));
+    const fixturePath = join(directory, "fixture.json");
+    const fixture = validFixture(directory);
+    try {
+      for (const user of fixture.users) {
+        await writeFile(
+          user.storageStatePath,
+          JSON.stringify({ cookies: [], origins: [] }),
+          { mode: 0o600 },
+        );
+      }
+      await writeFile(fixturePath, JSON.stringify(fixture), { mode: 0o644 });
+      await expect(loadLiveAcceptanceFixture(fixturePath, {
+        repositoryRoot: resolve("."),
+      })).rejects.toThrow();
+      await chmod(fixturePath, 0o600);
+      await expect(loadLiveAcceptanceFixture(fixturePath, {
+        repositoryRoot: resolve("."),
+      })).resolves.toMatchObject({ version: 1, resource: fixture.resource });
+      await writeFile(fixture.users[0]!.storageStatePath, JSON.stringify({
+        cookies: [{
+          name: "session",
+          value: "private",
+          domain: ".example.com",
+          path: "/",
+          expires: -1,
+          httpOnly: true,
+          secure: true,
+          sameSite: "Lax",
+          executable: "not part of the audited data schema",
+        }],
+        origins: [],
+      }), { mode: 0o600 });
+      await expect(loadLiveAcceptanceFixture(fixturePath, {
+        repositoryRoot: resolve("."),
+      })).rejects.toThrow();
     } finally {
       await rm(directory, { recursive: true, force: true });
     }

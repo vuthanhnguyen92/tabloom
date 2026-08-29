@@ -11,6 +11,7 @@ const REPORT_PATH = resolve("outputs/mcp-oauth-readiness.json");
 const CALLBACK_PATH = "/callback";
 const REQUIRED_SCOPE = "tabloom:workspace";
 const DEFAULT_TIMEOUT_MS = 10 * 60 * 1000;
+const MAX_PROBE_RESPONSE_BYTES = 256 * 1024;
 
 function strings(value) {
   return Array.isArray(value)
@@ -155,27 +156,78 @@ function requiredHttpsOrigin(value, name) {
   return url.origin;
 }
 
-async function request(url, init) {
+async function readResponseText(response) {
+  const declared = response.headers.get("content-length");
+  if (declared && /^\d+$/.test(declared) &&
+      BigInt(declared) > BigInt(MAX_PROBE_RESPONSE_BYTES)) {
+    throw new Error("OAuth probe response exceeded the size limit");
+  }
+  if (!response.body) return "";
+  const reader = response.body.getReader();
+  const chunks = [];
+  let size = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.byteLength;
+    if (size > MAX_PROBE_RESPONSE_BYTES) {
+      await reader.cancel();
+      throw new Error("OAuth probe response exceeded the size limit");
+    }
+    chunks.push(value);
+  }
+  const bytes = new Uint8Array(size);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  try {
+    return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  } catch {
+    throw new Error("OAuth probe response was not valid UTF-8");
+  }
+}
+
+/**
+ * @param {string} url
+ * @param {RequestInit} [init]
+ * @returns {Promise<{status: number, body: unknown, mediaType?: string}>}
+ */
+export async function probeRequest(url, init) {
   const response = await fetch(url, {
     ...init,
+    redirect: "manual",
     headers: {
       accept: "application/json",
       ...init?.headers,
     },
   });
+  if (response.status >= 300 && response.status < 400) {
+    throw new Error("OAuth probe redirects are not allowed");
+  }
   const mediaType = response.headers.get("content-type")
     ?.split(";", 1)[0]
     .trim()
     .toLowerCase();
-  let body = {};
+  const text = await readResponseText(response);
+  let body = text;
   if (mediaType === "application/json" || mediaType?.endsWith("+json")) {
     try {
-      body = await response.json();
+      body = text ? JSON.parse(text) : {};
     } catch {
       body = {};
     }
   }
-  return { status: response.status, body };
+  return { status: response.status, body, mediaType };
+}
+
+async function noRedirectRequest(requestFn, url, init) {
+  const response = await requestFn(url, { ...init, redirect: "manual" });
+  if (response?.status >= 300 && response.status < 400) {
+    throw new Error("OAuth probe redirects are not allowed");
+  }
+  return response;
 }
 
 function successfulJson(response, label) {
@@ -297,6 +349,7 @@ function emptyReport(discovery = {}) {
     scope: "",
     scopeMatch: false,
     refreshRotated: false,
+    mcpContractMatch: false,
     mcpBeforeRevocationResult: "server_error",
     revocationResult: "server_error",
     mcpAfterRevocationResult: "server_error",
@@ -331,6 +384,7 @@ function allowlistedReport(report) {
     scope: typeof report?.scope === "string" ? report.scope : "",
     scopeMatch: report?.scopeMatch === true,
     refreshRotated: report?.refreshRotated === true,
+    mcpContractMatch: report?.mcpContractMatch === true,
     mcpBeforeRevocationResult: httpResultClass(
       report?.mcpBeforeRevocationResult,
     ),
@@ -348,6 +402,7 @@ function reportFromResult({
   firstVerified,
   rotatedVerified,
   refreshRotated,
+  mcpContractMatch,
   mcpBeforeRevocationResult,
   revocationResult,
   mcpAfterRevocationResult,
@@ -380,6 +435,7 @@ function reportFromResult({
     audienceMatch &&
     scopeMatch &&
     refreshRotated &&
+    mcpContractMatch &&
     mcpBeforeRevocationResult === "success" &&
     revocationResult === "success" &&
     revocationEnforced;
@@ -396,6 +452,7 @@ function reportFromResult({
     scope,
     scopeMatch,
     refreshRotated,
+    mcpContractMatch,
     mcpBeforeRevocationResult,
     revocationResult,
     mcpAfterRevocationResult,
@@ -414,12 +471,12 @@ export async function writeReport(report, reportPath = REPORT_PATH) {
   await chmod(reportPath, 0o600);
 }
 
-async function verifyAccessToken(accessToken, { issuer, resource, jwksUri }) {
-  const { createRemoteJWKSet, jwtVerify } = await import("jose");
+async function verifyAccessToken(accessToken, { issuer, resource, jwks }) {
+  const { createLocalJWKSet, jwtVerify } = await import("jose");
   try {
     return await jwtVerify(
       accessToken,
-      createRemoteJWKSet(new URL(jwksUri)),
+      createLocalJWKSet(jwks),
       {
         algorithms: ["ES256"],
         issuer,
@@ -430,6 +487,53 @@ async function verifyAccessToken(accessToken, { issuer, resource, jwksUri }) {
   } catch {
     throw new Error("OAuth access-token verification failed");
   }
+}
+
+function isRecord(value) {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function parseSseMessages(text) {
+  const messages = [];
+  for (const event of text.split(/\r?\n\r?\n/)) {
+    const data = event
+      .split(/\r?\n/)
+      .filter((line) => line.startsWith("data:"))
+      .map((line) => line.slice(5).trimStart())
+      .join("\n");
+    if (!data) continue;
+    try {
+      messages.push(JSON.parse(data));
+    } catch {
+      return [];
+    }
+  }
+  return messages;
+}
+
+function exactServiceStatusMessage(message, requestId) {
+  if (!isRecord(message) || message.jsonrpc !== "2.0" ||
+      message.id !== requestId || Object.hasOwn(message, "error") ||
+      !isRecord(message.result) || !isRecord(message.result.structuredContent)) {
+    return false;
+  }
+  const content = message.result.structuredContent;
+  return Object.keys(content).length === 2 &&
+    content.service === "tabloom-mcp" && content.status === "ok";
+}
+
+export function evaluateMcpServiceStatus(response, requestId) {
+  if (classifyHttpStatus(response?.status) !== "success") return false;
+  const mediaType = response?.mediaType;
+  const messages = mediaType === "text/event-stream"
+    ? typeof response.body === "string"
+      ? parseSseMessages(response.body)
+      : []
+    : isRecord(response?.body)
+      ? [response.body]
+      : [];
+  return messages.length === 1 &&
+    exactServiceStatusMessage(messages[0], requestId);
 }
 
 function tokenPair(body, label) {
@@ -485,7 +589,7 @@ async function waitForCallback(callback, timeoutMs) {
 export async function runProbe({
   env = process.env,
   reportPath = REPORT_PATH,
-  request: requestFn = request,
+  request: requestFn = probeRequest,
   createPkce: createPkceFn = createPkce,
   createCallbackListener: createCallbackListenerFn = createCallbackListener,
   handoffAuthorization: handoffAuthorizationFn = handoffAuthorization,
@@ -498,10 +602,12 @@ export async function runProbe({
     "TABLOOM_MCP_RESOURCE_URL",
   );
   let latestReport = emptyReport({ resource: expectedResource });
+  const safeRequest = (url, init) =>
+    noRedirectRequest(requestFn, url, init);
 
   try {
     const protectedResource = successfulJson(
-      await requestFn(
+      await safeRequest(
         `${expectedResource}/.well-known/oauth-protected-resource`,
       ),
       "Protected-resource discovery",
@@ -515,7 +621,7 @@ export async function runProbe({
       "Discovered OAuth issuer",
     );
     const metadata = successfulJson(
-      await requestFn(
+      await safeRequest(
         `${discoveredIssuer}/.well-known/oauth-authorization-server`,
       ),
       "Authorization-server discovery",
@@ -530,12 +636,16 @@ export async function runProbe({
     if (!discovery.discoverySupported) {
       throw new Error("OAuth discovery failed the readiness gate");
     }
+    const jwks = successfulJson(
+      await safeRequest(metadata.jwks_uri),
+      "OAuth JWKS discovery",
+    );
 
     const { state, verifier, challenge } = createPkceFn();
     const listener = await createCallbackListenerFn(state);
     try {
       const registration = successfulJson(
-        await requestFn(metadata.registration_endpoint, {
+        await safeRequest(metadata.registration_endpoint, {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify(
@@ -563,7 +673,7 @@ export async function runProbe({
       const code = await waitForCallback(listener.callback, timeoutMs);
 
       const firstBody = successfulJson(
-        await requestFn(metadata.token_endpoint, {
+        await safeRequest(metadata.token_endpoint, {
           method: "POST",
           headers: { "content-type": "application/x-www-form-urlencoded" },
           body: new URLSearchParams({
@@ -581,11 +691,11 @@ export async function runProbe({
       const firstVerified = await verifyAccessTokenFn(first.accessToken, {
         issuer: discovery.issuer,
         resource: discovery.resource,
-        jwksUri: metadata.jwks_uri,
+        jwks,
       });
 
       const rotatedBody = successfulJson(
-        await requestFn(metadata.token_endpoint, {
+        await safeRequest(metadata.token_endpoint, {
           method: "POST",
           headers: { "content-type": "application/x-www-form-urlencoded" },
           body: new URLSearchParams({
@@ -602,20 +712,21 @@ export async function runProbe({
       const rotatedVerified = await verifyAccessTokenFn(rotated.accessToken, {
         issuer: discovery.issuer,
         resource: discovery.resource,
-        jwksUri: metadata.jwks_uri,
+        jwks,
       });
       const refreshRotated =
         rotated.accessToken !== first.accessToken &&
         rotated.refreshToken !== first.refreshToken;
 
-      const beforeRevocation = await requestFn(
+      const beforeRevocation = await safeRequest(
         `${expectedResource}/api/mcp`,
         mcpRequest(rotated.accessToken, 1),
       );
       const mcpBeforeRevocationResult = classifyHttpStatus(
         beforeRevocation.status,
       );
-      const revocation = await requestFn(metadata.revocation_endpoint, {
+      const mcpContractMatch = evaluateMcpServiceStatus(beforeRevocation, 1);
+      const revocation = await safeRequest(metadata.revocation_endpoint, {
         method: "POST",
         headers: { "content-type": "application/x-www-form-urlencoded" },
         body: new URLSearchParams({
@@ -624,7 +735,7 @@ export async function runProbe({
         }),
       });
       const revocationResult = classifyHttpStatus(revocation.status);
-      const afterRevocation = await requestFn(
+      const afterRevocation = await safeRequest(
         `${expectedResource}/api/mcp`,
         mcpRequest(rotated.accessToken, 2),
       );
@@ -637,6 +748,7 @@ export async function runProbe({
         firstVerified,
         rotatedVerified,
         refreshRotated,
+        mcpContractMatch,
         mcpBeforeRevocationResult,
         revocationResult,
         mcpAfterRevocationResult,
