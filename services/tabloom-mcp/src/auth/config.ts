@@ -1,9 +1,23 @@
+import {
+  createEncryptionKeyRing,
+  createSigningKeyRing,
+  type EncryptionKeyRing,
+  type SigningKeyRing,
+} from "./key-rings";
+
 export type McpAuthConfig = {
   supabaseUrl: URL;
   issuer: string;
   jwksUrl: URL;
   anonKey: string;
   resourceUrl: URL;
+};
+
+export type FacadeAuthConfig = McpAuthConfig & {
+  oauthEnabled: boolean;
+  issuerUrl: URL;
+  signingKeys: SigningKeyRing;
+  encryptionKeys: EncryptionKeyRing;
 };
 
 const TEMPLATE_VALUE =
@@ -64,4 +78,54 @@ export function loadMcpAuthConfig(env: NodeJS.ProcessEnv): McpAuthConfig {
     anonKey: requiredValue(env.SUPABASE_ANON_KEY, "SUPABASE_ANON_KEY"),
     resourceUrl,
   };
+}
+
+const MAX_KEY_RING_JSON_BYTES = 64 * 1024;
+
+function requiredBoolean(value: string | undefined, name: string): boolean {
+  if (value === "true") return true;
+  if (value === "false") return false;
+  throw new Error(`${name} must be exactly true or false`);
+}
+
+function parseKeyRing(value: string | undefined, name: string): unknown[] {
+  if (!value?.trim()) return [];
+  if (Buffer.byteLength(value, "utf8") > MAX_KEY_RING_JSON_BYTES) {
+    throw new Error(`${name} exceeds the maximum allowed size`);
+  }
+  try {
+    const parsed: unknown = JSON.parse(value);
+    if (!Array.isArray(parsed)) throw new Error();
+    return parsed;
+  } catch {
+    throw new Error(`${name} must be a JSON array`);
+  }
+}
+
+export function loadFacadeAuthConfig(env: NodeJS.ProcessEnv): FacadeAuthConfig {
+  const base = loadMcpAuthConfig(env);
+  const oauthEnabled = requiredBoolean(
+    env.TABLOOM_OAUTH_ENABLED,
+    "TABLOOM_OAUTH_ENABLED",
+  );
+  const issuerUrl = requiredHttpsOrigin(
+    env.TABLOOM_OAUTH_ISSUER_URL,
+    "TABLOOM_OAUTH_ISSUER_URL",
+  );
+  if (issuerUrl.origin !== base.resourceUrl.origin) {
+    throw new Error("TABLOOM_OAUTH_ISSUER_URL must equal TABLOOM_MCP_RESOURCE_URL");
+  }
+
+  const signingKeys = createSigningKeyRing(
+    parseKeyRing(env.TABLOOM_OAUTH_SIGNING_KEYS, "TABLOOM_OAUTH_SIGNING_KEYS") as Parameters<typeof createSigningKeyRing>[0],
+  );
+  const encryptionKeys = createEncryptionKeyRing(
+    parseKeyRing(env.TABLOOM_OAUTH_ENCRYPTION_KEYS, "TABLOOM_OAUTH_ENCRYPTION_KEYS") as Parameters<typeof createEncryptionKeyRing>[0],
+  );
+
+  if (oauthEnabled && (!signingKeys.active || !encryptionKeys.active)) {
+    throw new Error("Enabled OAuth facade requires exactly one active signing and encryption key");
+  }
+
+  return { ...base, oauthEnabled, issuerUrl, signingKeys, encryptionKeys };
 }
