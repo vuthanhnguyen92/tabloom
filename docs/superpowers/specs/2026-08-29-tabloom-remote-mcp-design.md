@@ -170,10 +170,10 @@ Logs include the correlation ID, tool name, duration, result category, and hashe
 
 The Vercel project is created under the authenticated `vuthanhnguyen92` account. Initial deployment uses the generated `*.vercel.app` production URL as the canonical MCP resource. A custom `mcp.tabloom.app` domain may replace it later only after DNS is available; changing the canonical URL requires updating audience configuration and re-running OAuth compatibility tests.
 
-Public environment variables:
+Service environment variables:
 
-- `NEXT_PUBLIC_SUPABASE_URL`
-- `NEXT_PUBLIC_SUPABASE_ANON_KEY`
+- `SUPABASE_URL`
+- `SUPABASE_ANON_KEY`
 - `TABLOOM_MCP_RESOURCE_URL`
 
 No secret service-role key is deployed. Vercel preview deployments use a separate non-production resource URL and must not share production OAuth grants.
