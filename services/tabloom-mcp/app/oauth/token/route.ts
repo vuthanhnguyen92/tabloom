@@ -19,7 +19,6 @@ const REQUIRED_FORM_KEYS = new Set([
   "resource",
   "code_verifier",
 ]);
-const MALFORMED_PERCENT_ENCODING = /%(?![0-9a-f]{2})/i;
 
 class TokenRequestError extends Error {
   constructor(readonly status: 400 | 413, readonly error: "invalid_request" | "invalid_client") {
@@ -97,23 +96,40 @@ async function readBoundedBody(request: Request): Promise<string> {
   }
 }
 
+function decodeFormComponent(value: string): string {
+  try {
+    return decodeURIComponent(value.replace(/\+/g, " "));
+  } catch {
+    throw new TokenRequestError(400, "invalid_request");
+  }
+}
+
+function parseFormEntries(text: string): Array<[string, string]> {
+  return text.split("&").map((entry) => {
+    const separator = entry.indexOf("=");
+    const key = separator === -1 ? entry : entry.slice(0, separator);
+    const value = separator === -1 ? "" : entry.slice(separator + 1);
+    return [decodeFormComponent(key), decodeFormComponent(value)];
+  });
+}
+
 async function readAuthorizationCodeRequest(request: Request): Promise<AuthorizationCodeTokenRequest> {
   if (request.headers.has("Authorization")) {
     throw new TokenRequestError(400, "invalid_client");
   }
   const text = await readBoundedBody(request);
-  if (!text || MALFORMED_PERCENT_ENCODING.test(text)) {
+  if (!text) {
     throw new TokenRequestError(400, "invalid_request");
   }
 
-  const params = new URLSearchParams(text);
-  if (params.has("client_secret") || params.has("client_assertion") ||
-      params.has("client_assertion_type")) {
+  const entries = parseFormEntries(text);
+  if (entries.some(([key]) => key === "client_secret" ||
+      key === "client_assertion" || key === "client_assertion_type")) {
     throw new TokenRequestError(400, "invalid_client");
   }
 
   const values: Record<string, string> = Object.create(null) as Record<string, string>;
-  for (const [key, value] of params) {
+  for (const [key, value] of entries) {
     if (Object.hasOwn(values, key)) throw new TokenRequestError(400, "invalid_request");
     values[key] = value;
   }

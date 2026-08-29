@@ -141,6 +141,31 @@ async function tokenRequest(
   }));
 }
 
+async function rawTokenRequest(body: string, requestOverrides: RequestInit = {}): Promise<Response> {
+  const headers = new Headers(requestOverrides.headers);
+  if (!headers.has("Content-Type")) {
+    headers.set("Content-Type", "application/x-www-form-urlencoded");
+  }
+  const route = await import("../../services/tabloom-mcp/app/oauth/token/route");
+  return route.POST(new Request(`${ORIGIN}/oauth/token`, {
+    method: "POST",
+    body,
+    ...requestOverrides,
+    headers,
+  }));
+}
+
+function authorizationCodeForm(code: string): URLSearchParams {
+  return new URLSearchParams({
+    grant_type: "authorization_code",
+    code,
+    client_id: CLIENT_ID,
+    redirect_uri: REDIRECT_URI,
+    resource: ORIGIN,
+    code_verifier: CODE_VERIFIER,
+  });
+}
+
 function expectNoStore(response: Response): void {
   expect(response.headers.get("Cache-Control")).toBe("no-store");
   expect(response.headers.get("Pragma")).toBe("no-cache");
@@ -243,6 +268,17 @@ describe("POST /oauth/token authorization_code", () => {
       issuedAt: NOW,
       expiresAt: NOW + 30 * 24 * 60 * 60,
     });
+    expect(Object.keys(refresh).sort()).toEqual([
+      "clientId",
+      "expiresAt",
+      "grantId",
+      "issuedAt",
+      "jti",
+      "resource",
+      "scope",
+      "supabaseRefreshToken",
+      "userId",
+    ]);
     expect(refresh.jti).toMatch(/^[A-Za-z0-9_-]{43}$/);
     expect(JSON.stringify(refresh)).not.toContain(ACCESS_TOKEN);
     expect(consumed).toEqual(new Set([consentSession.authorizationCodeJti]));
@@ -250,6 +286,31 @@ describe("POST /oauth/token authorization_code", () => {
     expect(createClient).toHaveBeenCalledWith(SUPABASE_URL + "/", "test-anon-key", {
       auth: { autoRefreshToken: false, detectSessionInUrl: false, persistSession: false },
     });
+  });
+
+  it("caps a long-lived upstream session to a 600-second access token", async () => {
+    const longLivedSession: ConsentSession = {
+      ...consentSession,
+      supabaseAccessTokenExpiresAt: NOW + 3600,
+      authorizationCodeJti: "l".repeat(43),
+    };
+    const response = await tokenRequest({ code: await authorizationCode(longLivedSession) });
+    const body = await response.json() as Record<string, unknown>;
+    const config = loadFacadeAuthConfig(process.env);
+    const access = await jwtVerify(
+      body.access_token as string,
+      signingPublicKey(config.signingKeys, "signing-key"),
+      {
+        algorithms: ["ES256"],
+        issuer: ORIGIN,
+        audience: ORIGIN,
+        currentDate: new Date(NOW * 1000),
+      },
+    );
+
+    expect(response.status).toBe(200);
+    expect(body.expires_in).toBe(600);
+    expect(access.payload.exp).toBe(NOW + 600);
   });
 
   it("accepts only bounded form POSTs", async () => {
@@ -268,6 +329,56 @@ describe("POST /oauth/token authorization_code", () => {
     const getResponse = route.GET();
     await expectError(getResponse, "invalid_request", 405);
     expect(getResponse.headers.get("Allow")).toBe("POST");
+  });
+
+  it.each(["%FF", "%C3%28"])(
+    "rejects invalid percent-decoded UTF-8 %s as invalid_request",
+    async (invalidUtf8) => {
+      const form = authorizationCodeForm(await authorizationCode()).toString();
+      const body = form.replace(
+        `code_verifier=${encodeURIComponent(CODE_VERIFIER)}`,
+        `code_verifier=${invalidUtf8}`,
+      );
+
+      await expectError(await rawTokenRequest(body), "invalid_request");
+      expect(createOAuthPersistence).not.toHaveBeenCalled();
+      expect(getUser).not.toHaveBeenCalled();
+    },
+  );
+
+  it("rejects declared and streamed bodies above 32 KiB but accepts the exact boundary", async () => {
+    const declaredOversized = authorizationCodeForm(await authorizationCode()).toString();
+    await expectError(await rawTokenRequest(declaredOversized, {
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+        "Content-Length": String(32 * 1024 + 1),
+      },
+    }), "invalid_request", 413);
+
+    const prefix = "grant_type=authorization_code&code=";
+    const suffix = `&client_id=${CLIENT_ID}&redirect_uri=${encodeURIComponent(REDIRECT_URI)}` +
+      `&resource=${encodeURIComponent(ORIGIN)}&code_verifier=${CODE_VERIFIER}`;
+    const boundaryBody = `${prefix}${"x".repeat(32 * 1024 - prefix.length - suffix.length)}${suffix}`;
+    expect(Buffer.byteLength(boundaryBody, "utf8")).toBe(32 * 1024);
+    await expectError(await rawTokenRequest(boundaryBody), "invalid_grant");
+
+    await expectError(await rawTokenRequest(`${boundaryBody}x`), "invalid_request", 413);
+  });
+
+  it("rejects duplicate, missing, and empty required form values", async () => {
+    const form = authorizationCodeForm(await authorizationCode());
+    await expectError(
+      await rawTokenRequest(`${form.toString()}&client_id=${encodeURIComponent(CLIENT_ID)}`),
+      "invalid_request",
+    );
+
+    const missing = new URLSearchParams(form);
+    missing.delete("redirect_uri");
+    await expectError(await rawTokenRequest(missing.toString()), "invalid_request");
+
+    const empty = new URLSearchParams(form);
+    empty.set("resource", "");
+    await expectError(await rawTokenRequest(empty.toString()), "invalid_request");
   });
 
   it("rejects client authentication because every client is public", async () => {
