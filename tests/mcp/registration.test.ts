@@ -218,6 +218,35 @@ describe("public dynamic client registration", () => {
     expect(body).not.toContain("unknown");
   });
 
+  it.each([
+    ["an unpaired surrogate in the client name", {
+      ...registration,
+      client_name: "bad\uD800name",
+    }],
+    ["NUL in a redirect URI", {
+      ...registration,
+      redirect_uris: ["https://client.example/callback\u0000"],
+    }],
+    ["an unpaired surrogate in a redirect URI", {
+      ...registration,
+      redirect_uris: ["https://client.example/callback\uD800"],
+    }],
+  ])("rejects %s before persistence", async (_label, invalidRegistration) => {
+    await useFacadeEnvironment(true);
+    const handler = await route();
+
+    const response = await handler.POST(new Request(`${ORIGIN}/oauth/register`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(invalidRegistration),
+    }));
+
+    expect(response.status).toBe(400);
+    expectNoStore(response);
+    await expect(response.json()).resolves.toEqual({ error: "invalid_client_metadata" });
+    expect(createOAuthPersistence).not.toHaveBeenCalled();
+  });
+
   it("maps defensive database metadata rejection to invalid_client_metadata", async () => {
     await useFacadeEnvironment(true);
     vi.mocked(createOAuthPersistence).mockReturnValue(

@@ -89,7 +89,9 @@ describe("public OAuth client metadata", () => {
     ["trailing whitespace", "Example "],
     ["more than 100 Unicode characters", `${"😀".repeat(100)}x`],
     ["control character", "bad\u0000name"],
-  ])("rejects a %s client name", (_label, clientName) => {
+    ["unpaired high surrogate", "bad\uD800name"],
+    ["unpaired low surrogate", "bad\uDC00name"],
+  ])("rejects a client name that is %s", (_label, clientName) => {
     expect(() => validateDcrClientMetadata({
       ...validRegistration,
       client_name: clientName,
@@ -102,11 +104,13 @@ describe("public OAuth client metadata", () => {
       ...validRegistration,
       redirect_uris: [
         exactRedirect,
+        "https://client.example/😀",
         "http://127.0.0.1:49152/callback",
         "http://[::1]:49152/callback",
       ],
     }).redirectUris).toEqual([
       exactRedirect,
+      "https://client.example/😀",
       "http://127.0.0.1:49152/callback",
       "http://[::1]:49152/callback",
     ]);
@@ -161,6 +165,17 @@ describe("public OAuth client metadata", () => {
     "http://0177.0.0.1/callback",
     "http://[0:0:0:0:0:0:0:1]/callback",
   ])("rejects non-literal loopback spelling %s", (redirectUri) => {
+    expect(() => validateDcrClientMetadata({
+      ...validRegistration,
+      redirect_uris: [redirectUri],
+    })).toThrow();
+  });
+
+  it.each([
+    ["NUL", "https://client.example/callback\u0000"],
+    ["unpaired high surrogate", "https://client.example/callback\uD800"],
+    ["unpaired low surrogate", "https://client.example/callback\uDC00"],
+  ])("rejects a redirect URI containing %s", (_label, redirectUri) => {
     expect(() => validateDcrClientMetadata({
       ...validRegistration,
       redirect_uris: [redirectUri],
