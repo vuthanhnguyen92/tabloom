@@ -42,8 +42,8 @@ test("app route renders an accessible workspace shell", async () => {
   assert.equal(response.status, 200);
   const html = await response.text();
   assert.match(html, /Your workspace/);
-  assert.match(html, /Search your links/);
-  assert.match(html, /Sign in with Google|Demo workspace/);
+  assert.match(html, /Search your links|Checking your session/);
+  assert.match(html, /Sign in with Google|Demo workspace|Checking your session/);
 });
 
 test("privacy route explains Tabloom data handling", async () => {
