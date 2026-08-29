@@ -40,6 +40,32 @@ npm test
 
 Row-level security ensures every user can read and change only rows whose `user_id` matches their authenticated Supabase user.
 
+## Remote MCP authorization
+
+The remote MCP service uses a dedicated authorization facade at
+`https://tabloom-mcp.vercel.app`; direct Supabase OAuth access tokens are not
+accepted by `/api/mcp`. The facade issues ES256 tokens bound to the exact MCP
+resource and the single `tabloom:workspace` scope, while its encrypted inner
+Supabase credential preserves request-local RLS enforcement.
+
+Supabase Google login for the web app and browser extensions remains unchanged.
+The additional upstream callback for the facade is exactly:
+
+```text
+https://tabloom-mcp.vercel.app/oauth/callback/supabase
+```
+
+Keep the existing web and exact extension callbacks when adding it. Private
+signing/encryption rings belong only in Vercel secret storage, and the first
+deployment must keep `TABLOOM_OAUTH_ENABLED=false`. Linking or pushing
+Supabase, editing redirect URLs, setting Vercel variables, deploying, enabling
+OAuth, inspecting production logs, and performing cutover all require explicit
+operator approval.
+
+See [Tabloom authorization facade operator guide](docs/mcp-setup.md) for local
+key generation, stdin/dashboard secret entry, rotation and rollback order, the
+redacted interactive probe, and the disabled-first two-user release gate.
+
 The current local checkout is connected through ignored `.env.local` values to Supabase project `tctjlsvfufzxhauhywsm`. Its migrations, RLS policies, production site URL, and web redirect URLs have been configured. Google remains disabled until a Google OAuth client ID and client secret are entered in **Authentication → Sign In / Providers → Google**.
 
 On the first signed-in extension sync, Tabloom compares the persistent local workspace with the user's cloud workspace. An empty side is imported automatically. If both sides contain data, Tabloom previews the merge and requires confirmation; matching card IDs are merged first, URL matching is used only as a legacy fallback within the same collection, and cloud ordering wins before local-only items are appended. Cancelling or failing the merge leaves the local workspace untouched and retryable.

@@ -9,83 +9,87 @@ import { spawn } from "node:child_process";
 
 const REPORT_PATH = resolve("outputs/mcp-oauth-readiness.json");
 const CALLBACK_PATH = "/callback";
+const REQUIRED_SCOPE = "tabloom:workspace";
 const DEFAULT_TIMEOUT_MS = 10 * 60 * 1000;
 
+function strings(value) {
+  return Array.isArray(value)
+    ? value.filter((entry) => typeof entry === "string")
+    : typeof value === "string"
+      ? [value]
+      : [];
+}
+
 export function evaluateAudience(audience, expectedResource) {
-  const values = Array.isArray(audience) ? audience : [audience];
-  return values.some((value) => value === expectedResource)
+  const values = strings(audience);
+  return values.length === 1 && values[0] === expectedResource
     ? { pass: true }
-    : { pass: false, reason: "resource_audience_missing" };
+    : { pass: false, reason: "resource_audience_mismatch" };
 }
 
-export function evaluateDiscovery(discovery, expectedIssuer) {
-  const issuer =
-    discovery && typeof discovery.issuer === "string" ? discovery.issuer : "";
-  const endpointsPresent = [
-    discovery?.authorization_endpoint,
-    discovery?.token_endpoint,
-    discovery?.registration_endpoint,
-  ].every((value) => typeof value === "string" && value.length > 0);
-  const supportsS256 =
-    Array.isArray(discovery?.code_challenge_methods_supported) &&
-    discovery.code_challenge_methods_supported.includes("S256");
-
-  return {
-    discoverySupported: endpointsPresent && supportsS256,
-    issuer,
-    issuerMatch: issuer === expectedIssuer,
-  };
+function exactStringArray(value, required) {
+  const values = strings(value);
+  return values.length === required.length &&
+    required.every((entry) => values.includes(entry));
 }
 
-/**
- * @param {{
- *   protectedHeader?: { alg?: unknown; [key: string]: unknown };
- *   payload?: { iss?: unknown; aud?: unknown; sub?: unknown; client_id?: unknown; [key: string]: unknown };
- *   tokenResponse?: Record<string, unknown>;
- *   expectedIssuer: string;
- *   expectedResource: string;
- *   discovery: { discoverySupported: boolean; issuer: string; issuerMatch: boolean };
- * }} result
- */
-export function redactTokenResult({
-  protectedHeader,
-  payload,
-  expectedIssuer,
+export function evaluateDiscovery(
+  protectedResource,
+  authorizationServer,
   expectedResource,
-  discovery,
-}) {
-  const algorithm =
-    typeof protectedHeader?.alg === "string" ? protectedHeader.alg : "";
-  const issuer = typeof payload?.iss === "string" ? payload.iss : discovery.issuer;
-  const audience = (Array.isArray(payload?.aud) ? payload.aud : [payload?.aud]).filter(
-    (value) => typeof value === "string",
+) {
+  const resource = typeof protectedResource?.resource === "string"
+    ? protectedResource.resource
+    : "";
+  const authorizationServers = strings(
+    protectedResource?.authorization_servers,
   );
-  const audienceResult = evaluateAudience(audience, expectedResource);
-  const issuerMatch = discovery.issuerMatch && issuer === expectedIssuer;
-  const subjectPresent =
-    typeof payload?.sub === "string" && payload.sub.trim().length > 0;
-  const clientPresent =
-    typeof payload?.client_id === "string" && payload.client_id.trim().length > 0;
-  const audienceMatch = audienceResult.pass;
-  const pass =
-    discovery.discoverySupported &&
+  const issuer = authorizationServers.length === 1
+    ? authorizationServers[0]
+    : "";
+  const resourceMatch = resource === expectedResource;
+  const issuerMatch =
+    issuer.length > 0 && authorizationServer?.issuer === issuer;
+  const endpointsMatch = issuer.length > 0 &&
+    authorizationServer?.authorization_endpoint === `${issuer}/oauth/authorize` &&
+    authorizationServer?.token_endpoint === `${issuer}/oauth/token` &&
+    authorizationServer?.registration_endpoint === `${issuer}/oauth/register` &&
+    authorizationServer?.revocation_endpoint === `${issuer}/oauth/revoke` &&
+    authorizationServer?.jwks_uri === `${issuer}/.well-known/jwks.json`;
+  const discoverySupported =
+    resourceMatch &&
     issuerMatch &&
-    algorithm === "ES256" &&
-    audienceMatch &&
-    subjectPresent &&
-    clientPresent;
+    endpointsMatch &&
+    exactStringArray(
+      authorizationServer?.code_challenge_methods_supported,
+      ["S256"],
+    ) &&
+    exactStringArray(
+      authorizationServer?.grant_types_supported,
+      ["authorization_code", "refresh_token"],
+    ) &&
+    exactStringArray(authorizationServer?.scopes_supported, [REQUIRED_SCOPE]) &&
+    exactStringArray(
+      authorizationServer?.token_endpoint_auth_methods_supported,
+      ["none"],
+    );
 
   return {
-    discoverySupported: discovery.discoverySupported,
+    discoverySupported,
+    resource,
+    resourceMatch,
     issuer,
     issuerMatch,
-    algorithm,
-    audience,
-    audienceMatch,
-    subjectPresent,
-    clientPresent,
-    pass,
   };
+}
+
+export function classifyHttpStatus(status) {
+  if (status >= 200 && status < 300) return "success";
+  if (status === 401) return "unauthorized";
+  if (status === 403) return "forbidden";
+  if (status === 429) return "rate_limited";
+  if (status >= 400 && status < 500) return "client_error";
+  return "server_error";
 }
 
 function base64Url(bytes) {
@@ -106,7 +110,7 @@ export function buildDynamicClientRegistration(callbackUrl) {
   return {
     client_name: "Tabloom MCP OAuth readiness probe",
     redirect_uris: [callbackUrl],
-    grant_types: ["authorization_code"],
+    grant_types: ["authorization_code", "refresh_token"],
     response_types: ["code"],
     token_endpoint_auth_method: "none",
   };
@@ -119,6 +123,7 @@ export function buildAuthorizationUrl({
   state,
   challenge,
   resource,
+  scope = REQUIRED_SCOPE,
 }) {
   const authorizationUrl = new URL(authorizationEndpoint);
   authorizationUrl.search = new URLSearchParams({
@@ -129,16 +134,13 @@ export function buildAuthorizationUrl({
     code_challenge: challenge,
     code_challenge_method: "S256",
     resource,
-    scope: "email",
+    scope,
   }).toString();
   return authorizationUrl.href;
 }
 
 function requiredHttpsOrigin(value, name) {
-  if (!value?.trim()) {
-    throw new Error(`${name} is required`);
-  }
-
+  if (!value?.trim()) throw new Error(`${name} is required`);
   const url = new URL(value);
   if (
     url.protocol !== "https:" ||
@@ -153,7 +155,7 @@ function requiredHttpsOrigin(value, name) {
   return url.origin;
 }
 
-async function fetchJson(url, init, label) {
+async function request(url, init) {
   const response = await fetch(url, {
     ...init,
     headers: {
@@ -161,27 +163,31 @@ async function fetchJson(url, init, label) {
       ...init?.headers,
     },
   });
-  if (!response.ok) {
-    throw new Error(`${label} failed with HTTP ${response.status}`);
-  }
-  return response.json();
-}
-
-async function fetchDiscovery(supabaseOrigin) {
-  const urls = [
-    `${supabaseOrigin}/.well-known/oauth-authorization-server/auth/v1`,
-    `${supabaseOrigin}/auth/v1/.well-known/oauth-authorization-server`,
-  ];
-  let lastError;
-
-  for (const url of urls) {
+  const mediaType = response.headers.get("content-type")
+    ?.split(";", 1)[0]
+    .trim()
+    .toLowerCase();
+  let body = {};
+  if (mediaType === "application/json" || mediaType?.endsWith("+json")) {
     try {
-      return await fetchJson(url, undefined, "OAuth discovery");
-    } catch (error) {
-      lastError = error;
+      body = await response.json();
+    } catch {
+      body = {};
     }
   }
-  throw lastError ?? new Error("OAuth discovery failed");
+  return { status: response.status, body };
+}
+
+function successfulJson(response, label) {
+  if (
+    classifyHttpStatus(response?.status) !== "success" ||
+    !response.body ||
+    typeof response.body !== "object" ||
+    Array.isArray(response.body)
+  ) {
+    throw new Error(`${label} failed`);
+  }
+  return response.body;
 }
 
 export function parseOAuthCallback(requestTarget, expectedState) {
@@ -189,22 +195,13 @@ export function parseOAuthCallback(requestTarget, expectedState) {
   try {
     requestUrl = new URL(requestTarget, "http://127.0.0.1");
   } catch {
-    return {
-      status: 400,
-      body: "Invalid OAuth callback.",
-      terminal: false,
-    };
+    return { status: 400, body: "Invalid OAuth callback.", terminal: false };
   }
-
   if (requestUrl.pathname !== CALLBACK_PATH) {
     return { status: 404, body: "Not found", terminal: false };
   }
   if (requestUrl.searchParams.get("state") !== expectedState) {
-    return {
-      status: 400,
-      body: "Invalid OAuth callback.",
-      terminal: false,
-    };
+    return { status: 400, body: "Invalid OAuth callback.", terminal: false };
   }
   if (requestUrl.searchParams.has("error")) {
     return {
@@ -214,7 +211,6 @@ export function parseOAuthCallback(requestTarget, expectedState) {
       error: "OAuth authorization was not approved",
     };
   }
-
   const code = requestUrl.searchParams.get("code");
   if (!code) {
     return {
@@ -238,37 +234,27 @@ export async function createCallbackListener(expectedState) {
   const callback = new Promise((resolveCallback, rejectCallback) => {
     settle = { resolve: resolveCallback, reject: rejectCallback };
   });
-
-  const server = createServer((request, response) => {
-    const result = parseOAuthCallback(request.url ?? "/", expectedState);
-    response.writeHead(result.status, {
+  const server = createServer((incoming, outgoing) => {
+    const result = parseOAuthCallback(incoming.url ?? "/", expectedState);
+    outgoing.writeHead(result.status, {
       "content-type": "text/plain; charset=utf-8",
       "cache-control": "no-store",
     });
-    response.end(result.body);
-
-    if (!result.terminal || settled) {
-      return;
-    }
+    outgoing.end(result.body);
+    if (!result.terminal || settled) return;
     settled = true;
-    if ("code" in result) {
-      settle.resolve(result.code);
-    } else {
-      settle.reject(new Error(result.error));
-    }
+    if ("code" in result) settle.resolve(result.code);
+    else settle.reject(new Error(result.error));
   });
-
   await new Promise((resolveListen, rejectListen) => {
     server.once("error", rejectListen);
     server.listen(0, "127.0.0.1", resolveListen);
   });
-
   const address = server.address();
   if (!address || typeof address === "string") {
     server.close();
     throw new Error("Unable to start the local OAuth callback");
   }
-
   return {
     callback,
     callbackUrl: `http://127.0.0.1:${address.port}${CALLBACK_PATH}`,
@@ -276,108 +262,290 @@ export async function createCallbackListener(expectedState) {
   };
 }
 
-function openAuthorizationUrl(url) {
-  if (process.platform === "darwin") {
-    const child = spawn("open", [url], { detached: true, stdio: "ignore" });
-    child.unref();
-  }
+async function handoffAuthorization(url) {
+  const command = process.platform === "darwin"
+    ? ["open", [url]]
+    : process.platform === "linux"
+      ? ["xdg-open", [url]]
+      : undefined;
+  if (!command) throw new Error("Automatic browser handoff is unavailable");
+  await new Promise((resolveHandoff, rejectHandoff) => {
+    const child = spawn(command[0], command[1], {
+      detached: true,
+      stdio: "ignore",
+    });
+    child.once("spawn", () => {
+      child.unref();
+      resolveHandoff();
+    });
+    child.once("error", () => {
+      rejectHandoff(new Error("Automatic browser handoff failed"));
+    });
+  });
 }
 
-function emptyReport(discovery, issuer) {
+function emptyReport(discovery = {}) {
   return {
-    discoverySupported: discovery.discoverySupported,
-    issuer,
-    issuerMatch: discovery.issuerMatch,
+    discoverySupported: discovery.discoverySupported === true,
+    resource: typeof discovery.resource === "string" ? discovery.resource : "",
+    resourceMatch: discovery.resourceMatch === true,
+    issuer: typeof discovery.issuer === "string" ? discovery.issuer : "",
+    issuerMatch: discovery.issuerMatch === true,
     algorithm: "",
     audience: [],
     audienceMatch: false,
-    subjectPresent: false,
-    clientPresent: false,
+    scope: "",
+    scopeMatch: false,
+    refreshRotated: false,
+    mcpBeforeRevocationResult: "server_error",
+    revocationResult: "server_error",
+    mcpAfterRevocationResult: "server_error",
+    revocationEnforced: false,
     pass: false,
+  };
+}
+
+const HTTP_RESULT_CLASSES = new Set([
+  "success",
+  "client_error",
+  "unauthorized",
+  "forbidden",
+  "rate_limited",
+  "server_error",
+]);
+
+function httpResultClass(value) {
+  return HTTP_RESULT_CLASSES.has(value) ? value : "server_error";
+}
+
+function allowlistedReport(report) {
+  return {
+    discoverySupported: report?.discoverySupported === true,
+    resource: typeof report?.resource === "string" ? report.resource : "",
+    resourceMatch: report?.resourceMatch === true,
+    issuer: typeof report?.issuer === "string" ? report.issuer : "",
+    issuerMatch: report?.issuerMatch === true,
+    algorithm: typeof report?.algorithm === "string" ? report.algorithm : "",
+    audience: strings(report?.audience),
+    audienceMatch: report?.audienceMatch === true,
+    scope: typeof report?.scope === "string" ? report.scope : "",
+    scopeMatch: report?.scopeMatch === true,
+    refreshRotated: report?.refreshRotated === true,
+    mcpBeforeRevocationResult: httpResultClass(
+      report?.mcpBeforeRevocationResult,
+    ),
+    revocationResult: httpResultClass(report?.revocationResult),
+    mcpAfterRevocationResult: httpResultClass(
+      report?.mcpAfterRevocationResult,
+    ),
+    revocationEnforced: report?.revocationEnforced === true,
+    pass: report?.pass === true,
+  };
+}
+
+function reportFromResult({
+  discovery,
+  firstVerified,
+  rotatedVerified,
+  refreshRotated,
+  mcpBeforeRevocationResult,
+  revocationResult,
+  mcpAfterRevocationResult,
+}) {
+  const firstAudience = strings(firstVerified?.payload?.aud);
+  const audience = strings(rotatedVerified?.payload?.aud);
+  const algorithm = typeof rotatedVerified?.protectedHeader?.alg === "string"
+    ? rotatedVerified.protectedHeader.alg
+    : "";
+  const scope = typeof rotatedVerified?.payload?.scope === "string"
+    ? rotatedVerified.payload.scope
+    : "";
+  const audienceMatch =
+    evaluateAudience(firstAudience, discovery.resource).pass &&
+    evaluateAudience(audience, discovery.resource).pass;
+  const issuerMatch =
+    discovery.issuerMatch &&
+    firstVerified?.payload?.iss === discovery.issuer &&
+    rotatedVerified?.payload?.iss === discovery.issuer;
+  const scopeMatch =
+    firstVerified?.payload?.scope === REQUIRED_SCOPE && scope === REQUIRED_SCOPE;
+  const algorithmMatch =
+    firstVerified?.protectedHeader?.alg === "ES256" && algorithm === "ES256";
+  const revocationEnforced = mcpAfterRevocationResult === "unauthorized";
+  const pass =
+    discovery.discoverySupported &&
+    discovery.resourceMatch &&
+    issuerMatch &&
+    algorithmMatch &&
+    audienceMatch &&
+    scopeMatch &&
+    refreshRotated &&
+    mcpBeforeRevocationResult === "success" &&
+    revocationResult === "success" &&
+    revocationEnforced;
+
+  return {
+    discoverySupported: discovery.discoverySupported,
+    resource: discovery.resource,
+    resourceMatch: discovery.resourceMatch,
+    issuer: discovery.issuer,
+    issuerMatch,
+    algorithm,
+    audience,
+    audienceMatch,
+    scope,
+    scopeMatch,
+    refreshRotated,
+    mcpBeforeRevocationResult,
+    revocationResult,
+    mcpAfterRevocationResult,
+    revocationEnforced,
+    pass,
   };
 }
 
 export async function writeReport(report, reportPath = REPORT_PATH) {
   await mkdir(dirname(reportPath), { recursive: true });
-  await writeFile(reportPath, `${JSON.stringify(report, null, 2)}\n`, {
+  const safeReport = allowlistedReport(report);
+  await writeFile(reportPath, `${JSON.stringify(safeReport, null, 2)}\n`, {
     encoding: "utf8",
     mode: 0o600,
   });
   await chmod(reportPath, 0o600);
 }
 
-async function verifyAccessToken(accessToken, { metadata, expectedIssuer }) {
+async function verifyAccessToken(accessToken, { issuer, resource, jwksUri }) {
   const { createRemoteJWKSet, jwtVerify } = await import("jose");
-  const jwksUrl =
-    typeof metadata.jwks_uri === "string"
-      ? metadata.jwks_uri
-      : `${expectedIssuer}/.well-known/jwks.json`;
   try {
     return await jwtVerify(
       accessToken,
-      createRemoteJWKSet(new URL(jwksUrl)),
-      { algorithms: ["ES256"], issuer: expectedIssuer },
+      createRemoteJWKSet(new URL(jwksUri)),
+      {
+        algorithms: ["ES256"],
+        issuer,
+        audience: resource,
+        requiredClaims: ["scope", "sub", "client_id"],
+      },
     );
   } catch {
     throw new Error("OAuth access-token verification failed");
   }
 }
 
+function tokenPair(body, label) {
+  if (
+    typeof body.access_token !== "string" ||
+    !body.access_token ||
+    typeof body.refresh_token !== "string" ||
+    !body.refresh_token
+  ) {
+    throw new Error(`${label} returned an invalid token pair`);
+  }
+  return {
+    accessToken: body.access_token,
+    refreshToken: body.refresh_token,
+  };
+}
+
+function mcpRequest(accessToken, id) {
+  return {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${accessToken}`,
+      accept: "application/json, text/event-stream",
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      jsonrpc: "2.0",
+      id,
+      method: "tools/call",
+      params: { name: "get_service_status", arguments: {} },
+    }),
+  };
+}
+
+async function waitForCallback(callback, timeoutMs) {
+  let timer;
+  try {
+    return await Promise.race([
+      callback,
+      new Promise((_, rejectTimeout) => {
+        timer = setTimeout(
+          () => rejectTimeout(new Error("OAuth approval timed out")),
+          timeoutMs,
+        );
+        timer.unref();
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 export async function runProbe({
   env = process.env,
   reportPath = REPORT_PATH,
-  fetchDiscovery: fetchDiscoveryFn = fetchDiscovery,
-  requestJson = fetchJson,
+  request: requestFn = request,
   createPkce: createPkceFn = createPkce,
   createCallbackListener: createCallbackListenerFn = createCallbackListener,
-  openAuthorizationUrl: openAuthorizationUrlFn = openAuthorizationUrl,
+  handoffAuthorization: handoffAuthorizationFn = handoffAuthorization,
   verifyAccessToken: verifyAccessTokenFn = verifyAccessToken,
   writeReport: writeReportFn = writeReport,
   log = console.log,
 } = {}) {
-  const supabaseOrigin = requiredHttpsOrigin(
-    env.SUPABASE_URL,
-    "SUPABASE_URL",
-  );
   const expectedResource = requiredHttpsOrigin(
     env.TABLOOM_MCP_RESOURCE_URL,
     "TABLOOM_MCP_RESOURCE_URL",
   );
-  const expectedIssuer = `${supabaseOrigin}/auth/v1`;
-  let discoveryResult = {
-    discoverySupported: false,
-    issuer: expectedIssuer,
-    issuerMatch: false,
-  };
-  let latestReport = emptyReport(discoveryResult, expectedIssuer);
+  let latestReport = emptyReport({ resource: expectedResource });
 
   try {
-    const metadata = await fetchDiscoveryFn(supabaseOrigin);
-    discoveryResult = evaluateDiscovery(metadata, expectedIssuer);
-    latestReport = emptyReport(discoveryResult, discoveryResult.issuer);
+    const protectedResource = successfulJson(
+      await requestFn(
+        `${expectedResource}/.well-known/oauth-protected-resource`,
+      ),
+      "Protected-resource discovery",
+    );
+    const discoveredIssuers = strings(protectedResource.authorization_servers);
+    if (discoveredIssuers.length !== 1) {
+      throw new Error("Protected-resource discovery failed");
+    }
+    const discoveredIssuer = requiredHttpsOrigin(
+      discoveredIssuers[0],
+      "Discovered OAuth issuer",
+    );
+    const metadata = successfulJson(
+      await requestFn(
+        `${discoveredIssuer}/.well-known/oauth-authorization-server`,
+      ),
+      "Authorization-server discovery",
+    );
+    const discovery = evaluateDiscovery(
+      protectedResource,
+      metadata,
+      expectedResource,
+    );
+    latestReport = emptyReport(discovery);
     await writeReportFn(latestReport, reportPath);
-    if (!discoveryResult.discoverySupported || !discoveryResult.issuerMatch) {
-      throw new Error("OAuth discovery does not meet the readiness gate");
+    if (!discovery.discoverySupported) {
+      throw new Error("OAuth discovery failed the readiness gate");
     }
 
     const { state, verifier, challenge } = createPkceFn();
     const listener = await createCallbackListenerFn(state);
-
     try {
-      log(`Local OAuth callback: ${listener.callbackUrl}`);
-      const registration = await requestJson(
-        metadata.registration_endpoint,
-        {
+      const registration = successfulJson(
+        await requestFn(metadata.registration_endpoint, {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify(
             buildDynamicClientRegistration(listener.callbackUrl),
           ),
-        },
+        }),
         "Dynamic client registration",
       );
       if (typeof registration.client_id !== "string" || !registration.client_id) {
-        throw new Error("Dynamic client registration returned no client ID");
+        throw new Error("Dynamic client registration failed");
       }
 
       const authorizationUrl = buildAuthorizationUrl({
@@ -388,23 +556,14 @@ export async function runProbe({
         challenge,
         resource: expectedResource,
       });
-      log(`Approve the OAuth request in your browser:\n${authorizationUrl}`);
-      openAuthorizationUrlFn(authorizationUrl);
+      log("Complete the authorization request in the opened browser window.");
+      await handoffAuthorizationFn(authorizationUrl);
+      const timeoutMs = Number(env.TABLOOM_MCP_OAUTH_TIMEOUT_MS) ||
+        DEFAULT_TIMEOUT_MS;
+      const code = await waitForCallback(listener.callback, timeoutMs);
 
-      const timeoutMs = Number(env.TABLOOM_MCP_OAUTH_TIMEOUT_MS) || DEFAULT_TIMEOUT_MS;
-      const code = await Promise.race([
-        listener.callback,
-        new Promise((_, rejectTimeout) => {
-          setTimeout(
-            () => rejectTimeout(new Error("OAuth approval timed out")),
-            timeoutMs,
-          ).unref();
-        }),
-      ]);
-
-      const tokenResponse = await requestJson(
-        metadata.token_endpoint,
-        {
+      const firstBody = successfulJson(
+        await requestFn(metadata.token_endpoint, {
           method: "POST",
           headers: { "content-type": "application/x-www-form-urlencoded" },
           body: new URLSearchParams({
@@ -412,31 +571,80 @@ export async function runProbe({
             code,
             client_id: registration.client_id,
             redirect_uri: listener.callbackUrl,
+            resource: expectedResource,
             code_verifier: verifier,
           }),
-        },
-        "OAuth token exchange",
+        }),
+        "Authorization-code exchange",
       );
-      if (typeof tokenResponse.access_token !== "string") {
-        throw new Error("OAuth token exchange returned no access token");
-      }
-
-      const verified = await verifyAccessTokenFn(tokenResponse.access_token, {
-        metadata,
-        expectedIssuer,
+      const first = tokenPair(firstBody, "Authorization-code exchange");
+      const firstVerified = await verifyAccessTokenFn(first.accessToken, {
+        issuer: discovery.issuer,
+        resource: discovery.resource,
+        jwksUri: metadata.jwks_uri,
       });
 
-      const report = redactTokenResult({
-        ...verified,
-        expectedIssuer,
-        expectedResource,
-        discovery: discoveryResult,
+      const rotatedBody = successfulJson(
+        await requestFn(metadata.token_endpoint, {
+          method: "POST",
+          headers: { "content-type": "application/x-www-form-urlencoded" },
+          body: new URLSearchParams({
+            grant_type: "refresh_token",
+            refresh_token: first.refreshToken,
+            client_id: registration.client_id,
+            resource: expectedResource,
+            scope: REQUIRED_SCOPE,
+          }),
+        }),
+        "Refresh-token exchange",
+      );
+      const rotated = tokenPair(rotatedBody, "Refresh-token exchange");
+      const rotatedVerified = await verifyAccessTokenFn(rotated.accessToken, {
+        issuer: discovery.issuer,
+        resource: discovery.resource,
+        jwksUri: metadata.jwks_uri,
       });
-      latestReport = report;
+      const refreshRotated =
+        rotated.accessToken !== first.accessToken &&
+        rotated.refreshToken !== first.refreshToken;
+
+      const beforeRevocation = await requestFn(
+        `${expectedResource}/api/mcp`,
+        mcpRequest(rotated.accessToken, 1),
+      );
+      const mcpBeforeRevocationResult = classifyHttpStatus(
+        beforeRevocation.status,
+      );
+      const revocation = await requestFn(metadata.revocation_endpoint, {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({
+          token: rotated.accessToken,
+          token_type_hint: "access_token",
+        }),
+      });
+      const revocationResult = classifyHttpStatus(revocation.status);
+      const afterRevocation = await requestFn(
+        `${expectedResource}/api/mcp`,
+        mcpRequest(rotated.accessToken, 2),
+      );
+      const mcpAfterRevocationResult = classifyHttpStatus(
+        afterRevocation.status,
+      );
+
+      latestReport = reportFromResult({
+        discovery,
+        firstVerified,
+        rotatedVerified,
+        refreshRotated,
+        mcpBeforeRevocationResult,
+        revocationResult,
+        mcpAfterRevocationResult,
+      });
       await writeReportFn(latestReport, reportPath);
       log(`Redacted readiness report written to ${reportPath}`);
-      if (!report.pass) {
-        throw new Error("OAuth token failed the exact resource-audience gate");
+      if (!latestReport.pass) {
+        throw new Error("OAuth flow failed the readiness gate");
       }
     } finally {
       await listener.close();
