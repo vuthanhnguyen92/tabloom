@@ -1,4 +1,4 @@
-import { generateKeyPair, exportJWK, jwtDecrypt } from "jose";
+import { CompactEncrypt, generateKeyPair, exportJWK, importJWK, jwtDecrypt, SignJWT } from "jose";
 import { describe, expect, it } from "vitest";
 import { issueAccessToken, verifyAccessToken } from "../../services/tabloom-mcp/src/auth/access-token";
 import { sealArtifact, openArtifact, hashOpaqueIdentifier } from "../../services/tabloom-mcp/src/auth/artifacts";
@@ -43,7 +43,32 @@ describe("purpose-separated encrypted artifacts", () => {
     await expect(openArtifact("consent_session", sealed, createEncryptionKeyRing([encryption("other", true)]), NOW)).rejects.toThrow();
     await expect(openArtifact("consent_session", sealed, keys, NOW + 61)).rejects.toThrow();
     await expect(openArtifact("consent_session", "invalid.compact.jwe", keys, NOW)).rejects.toThrow();
+    await expect(openArtifact("consent_session", "x".repeat(32 * 1024 + 1), keys, NOW)).rejects.toThrow();
     await expect(sealArtifact("consent_session", { value: "x".repeat(16 * 1024 + 1) }, 60, keys, NOW)).rejects.toThrow();
+  });
+
+  it("rejects an artifact before its not-before time and oversized decrypted plaintext", async () => {
+    const keys = createEncryptionKeyRing([encryption("current", true)]);
+    const encrypted = await new CompactEncrypt(
+      Uint8Array.from(Buffer.from(JSON.stringify({ payload: { value: "ok" }, iat: NOW, nbf: NOW + 1, exp: NOW + 60 }), "utf8")),
+    )
+      .setProtectedHeader({ alg: "dir", enc: "A256GCM", kid: "current", typ: "tabloom+consent_session" })
+      .encrypt(keys.active!.derived("consent_session"));
+    const oversized = await new CompactEncrypt(Uint8Array.from(Buffer.alloc(16 * 1024 + 1)))
+      .setProtectedHeader({ alg: "dir", enc: "A256GCM", kid: "current", typ: "tabloom+consent_session" })
+      .encrypt(keys.active!.derived("consent_session"));
+
+    await expect(openArtifact("consent_session", encrypted, keys, NOW)).rejects.toThrow();
+    await expect(openArtifact("consent_session", oversized, keys, NOW)).rejects.toThrow();
+  });
+
+  it("enforces authorization-code and refresh-token lifetime ceilings", async () => {
+    const keys = createEncryptionKeyRing([encryption("current", true)]);
+
+    await expect(sealArtifact("authorization_code", { jti: "code" }, 120, keys, NOW)).resolves.toEqual(expect.any(String));
+    await expect(sealArtifact("authorization_code", { jti: "code" }, 121, keys, NOW)).rejects.toThrow();
+    await expect(sealArtifact("refresh_token", { jti: "refresh" }, 30 * 24 * 60 * 60, keys, NOW)).resolves.toEqual(expect.any(String));
+    await expect(sealArtifact("refresh_token", { jti: "refresh" }, 30 * 24 * 60 * 60 + 1, keys, NOW)).rejects.toThrow();
   });
 
   it("keeps inactive keys valid during rotation and rejects them after removal", async () => {
@@ -95,5 +120,30 @@ describe("resource-bound Tabloom access tokens", () => {
 
   it("rejects oversized bearer tokens before JWT parsing", async () => {
     await expect(verifyAccessToken("x".repeat(32 * 1024 + 1), await config(), NOW)).rejects.toThrow();
+  });
+
+  it("rejects a token whose audience includes the resource but is not exactly the resource", async () => {
+    const signingKey = await signing("current", true);
+    const facade = {
+      ...(await config()),
+      signingKeys: await createSigningKeyRing([signingKey]),
+    };
+    const token = await new SignJWT({
+      sub: USER_ID,
+      client_id: "https://client.example/metadata.json",
+      scope: "tabloom:workspace",
+      grant_id: "grant-family",
+      supabase_token: "opaque-inner-token",
+    })
+      .setProtectedHeader({ alg: "ES256", kid: "current", typ: "at+jwt" })
+      .setIssuer(ISSUER)
+      .setAudience([ISSUER, "https://other.example"])
+      .setIssuedAt(NOW)
+      .setNotBefore(NOW)
+      .setExpirationTime(NOW + 60)
+      .setJti("jti")
+      .sign(await importJWK(signingKey.privateJwk, "ES256"));
+
+    await expect(verifyAccessToken(token, facade, NOW)).rejects.toThrow();
   });
 });

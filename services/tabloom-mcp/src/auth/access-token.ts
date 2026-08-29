@@ -2,8 +2,8 @@ import { randomBytes } from "node:crypto";
 import { EncryptJWT, SignJWT, jwtVerify } from "jose";
 import type { FacadeAuthConfig } from "./config";
 import {
-  importSigningPrivateKey,
-  importSigningPublicKey,
+  signingPrivateKey,
+  signingPublicKey,
 } from "./key-rings";
 
 export type TabloomAccessClaims = {
@@ -65,7 +65,7 @@ export async function issueAccessToken(
     .setNotBefore(now)
     .setExpirationTime(exp)
     .setJti(randomJti())
-    .sign(await importSigningPrivateKey(signingKey));
+    .sign(signingPrivateKey(config.signingKeys, signingKey.kid));
 }
 
 export async function verifyAccessToken(
@@ -84,7 +84,7 @@ export async function verifyAccessToken(
       }
       const key = config.signingKeys.keys.get(header.kid);
       if (!key) throw new Error("Unknown access token signing key");
-      return importSigningPublicKey(key);
+      return signingPublicKey(config.signingKeys, key.kid);
     },
     {
       algorithms: ["ES256"],
@@ -95,6 +95,7 @@ export async function verifyAccessToken(
   );
   const { payload } = result;
   if (
+    payload.aud !== config.resourceUrl.origin ||
     typeof payload.sub !== "string" ||
     typeof payload.client_id !== "string" ||
     payload.scope !== "tabloom:workspace" ||

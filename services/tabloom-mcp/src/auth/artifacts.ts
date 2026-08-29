@@ -10,6 +10,14 @@ export type OAuthArtifactPurpose =
   | "refresh_token";
 
 const MAX_ARTIFACT_PAYLOAD_BYTES = 16 * 1024;
+const MAX_COMPACT_ARTIFACT_BYTES = 32 * 1024;
+const MAX_ARTIFACT_LIFETIMES: Record<OAuthArtifactPurpose, number> = {
+  upstream_state: 10 * 60,
+  consent_session: 10 * 60,
+  authorization_code: 2 * 60,
+  inner_access_token: 10 * 60,
+  refresh_token: 30 * 24 * 60 * 60,
+};
 
 type ArtifactEnvelope = {
   payload: unknown;
@@ -33,7 +41,12 @@ export async function sealArtifact(
   keys: EncryptionKeyRing,
   now = Math.floor(Date.now() / 1000),
 ): Promise<string> {
-  if (!keys.active || !Number.isSafeInteger(lifetimeSeconds) || lifetimeSeconds <= 0) {
+  if (
+    !keys.active ||
+    !Number.isSafeInteger(lifetimeSeconds) ||
+    lifetimeSeconds <= 0 ||
+    lifetimeSeconds > MAX_ARTIFACT_LIFETIMES[purpose]
+  ) {
     throw invalidArtifact();
   }
   const envelope: ArtifactEnvelope = { payload, iat: now, nbf: now, exp: now + lifetimeSeconds };
@@ -57,6 +70,9 @@ export async function openArtifact<T>(
   now = Math.floor(Date.now() / 1000),
 ): Promise<T> {
   try {
+    if (Buffer.byteLength(compactJwe, "utf8") > MAX_COMPACT_ARTIFACT_BYTES) {
+      throw invalidArtifact();
+    }
     const headerSegment = compactJwe.split(".")[0];
     if (!headerSegment) throw invalidArtifact();
     const header = JSON.parse(Buffer.from(headerSegment, "base64url").toString("utf8")) as Record<string, unknown>;
@@ -69,6 +85,7 @@ export async function openArtifact<T>(
     const key = keys.keys.get(header.kid);
     if (!key) throw invalidArtifact();
     const { plaintext } = await compactDecrypt(compactJwe, key.derived(purpose));
+    if (plaintext.byteLength > MAX_ARTIFACT_PAYLOAD_BYTES) throw invalidArtifact();
     const envelope = JSON.parse(Buffer.from(plaintext).toString("utf8")) as ArtifactEnvelope;
     if (
       !validTimestamp(envelope.iat) ||

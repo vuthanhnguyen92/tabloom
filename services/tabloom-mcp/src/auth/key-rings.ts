@@ -1,7 +1,7 @@
-import { hkdfSync } from "node:crypto";
-import { importJWK, type JWK } from "jose";
+import { createPrivateKey, createPublicKey, hkdfSync, type KeyObject } from "node:crypto";
+import type { JWK } from "jose";
 
-export type SigningKeyDefinition = {
+export type SigningKeyInput = {
   kid: string;
   active: boolean;
   privateJwk: JWK;
@@ -13,9 +13,16 @@ export type EncryptionKeyDefinition = {
   rootKey: string;
 };
 
+export type SigningKey = {
+  kid: string;
+  active: boolean;
+  alg: "ES256";
+};
+
 export type SigningKeyRing = {
-  active?: SigningKeyDefinition;
-  keys: ReadonlyMap<string, SigningKeyDefinition>;
+  active?: SigningKey;
+  keys: ReadonlyMap<string, SigningKey>;
+  toJSON(): { active?: SigningKey; keys: SigningKey[] };
 };
 
 export type EncryptionKey = {
@@ -28,6 +35,13 @@ export type EncryptionKeyRing = {
   active?: EncryptionKey;
   keys: ReadonlyMap<string, EncryptionKey>;
 };
+
+type SigningKeyMaterial = {
+  privateKey: KeyObject;
+  publicKey: KeyObject;
+};
+
+const signingMaterials = new WeakMap<SigningKeyRing, ReadonlyMap<string, SigningKeyMaterial>>();
 
 function requireKid(value: unknown): string {
   if (typeof value !== "string" || !value.trim() || value !== value.trim()) {
@@ -54,11 +68,42 @@ function decodeBase64Url(value: unknown): Uint8Array {
   return decoded;
 }
 
+function isP256JwkParameter(value: unknown): value is string {
+  if (typeof value !== "string" || !/^[A-Za-z0-9_-]+$/.test(value)) {
+    return false;
+  }
+  const decoded = Buffer.from(value, "base64url");
+  return decoded.length === 32 && decoded.toString("base64url") === value;
+}
+
+function importPrivateSigningKey(value: JWK, kid: string): SigningKeyMaterial {
+  if (
+    value.kty !== "EC" ||
+    value.crv !== "P-256" ||
+    (value.alg !== undefined && value.alg !== "ES256") ||
+    !isP256JwkParameter(value.x) ||
+    !isP256JwkParameter(value.y) ||
+    !isP256JwkParameter(value.d)
+  ) {
+    throw new Error("OAuth signing key must be an ES256 private JWK");
+  }
+  try {
+    const privateKey = createPrivateKey({
+      key: { kty: value.kty, crv: value.crv, x: value.x, y: value.y, d: value.d },
+      format: "jwk",
+    });
+    return { privateKey, publicKey: createPublicKey(privateKey) };
+  } catch {
+    throw new Error(`OAuth signing key ${kid} is invalid`);
+  }
+}
+
 export function createSigningKeyRing(
-  values: readonly SigningKeyDefinition[],
+  values: readonly SigningKeyInput[],
 ): SigningKeyRing {
-  const keys = new Map<string, SigningKeyDefinition>();
-  let active: SigningKeyDefinition | undefined;
+  const keys = new Map<string, SigningKey>();
+  const materials = new Map<string, SigningKeyMaterial>();
+  let active: SigningKey | undefined;
 
   for (const value of values) {
     const kid = requireKid(value?.kid);
@@ -66,27 +111,41 @@ export function createSigningKeyRing(
     if (!value.privateJwk || typeof value.privateJwk !== "object") {
       throw new Error("OAuth signing key must contain a private JWK");
     }
-    if (value.privateJwk.kty !== "EC" || value.privateJwk.crv !== "P-256") {
-      throw new Error("OAuth signing key must be an ES256 EC P-256 key");
-    }
-    if (value.privateJwk.alg && value.privateJwk.alg !== "ES256") {
-      throw new Error("OAuth signing key algorithm must be ES256");
-    }
-    if (typeof value.privateJwk.d !== "string") {
-      throw new Error("OAuth signing key must contain private key material");
-    }
     if (keys.has(kid)) {
       throw new Error("OAuth signing key ids must be unique");
     }
-    const key = { kid, active: isActive, privateJwk: { ...value.privateJwk, alg: "ES256", kid } };
+    const key: SigningKey = { kid, active: isActive, alg: "ES256" };
     keys.set(kid, key);
+    materials.set(kid, importPrivateSigningKey(value.privateJwk, kid));
     if (isActive) {
       if (active) throw new Error("OAuth signing keys must have exactly one active key");
       active = key;
     }
   }
 
-  return { active, keys };
+  const ring: SigningKeyRing = {
+    active,
+    keys,
+    toJSON() {
+      return { active, keys: [...keys.values()] };
+    },
+  };
+  signingMaterials.set(ring, materials);
+  return ring;
+}
+
+function signingMaterial(ring: SigningKeyRing, kid: string): SigningKeyMaterial {
+  const material = signingMaterials.get(ring)?.get(kid);
+  if (!material) throw new Error("Unknown OAuth signing key");
+  return material;
+}
+
+export function signingPrivateKey(ring: SigningKeyRing, kid: string): KeyObject {
+  return signingMaterial(ring, kid).privateKey;
+}
+
+export function signingPublicKey(ring: SigningKeyRing, kid: string): KeyObject {
+  return signingMaterial(ring, kid).publicKey;
 }
 
 export function createEncryptionKeyRing(
@@ -123,13 +182,4 @@ export function createEncryptionKeyRing(
   }
 
   return { active, keys };
-}
-
-export async function importSigningPrivateKey(key: SigningKeyDefinition) {
-  return importJWK(key.privateJwk, "ES256");
-}
-
-export async function importSigningPublicKey(key: SigningKeyDefinition) {
-  const { kty, crv, x, y, kid, alg } = key.privateJwk;
-  return importJWK({ kty, crv, x, y, kid, alg }, "ES256");
 }

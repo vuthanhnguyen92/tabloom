@@ -58,6 +58,9 @@ describe("authorization facade configuration", () => {
     expect(config.encryptionKeys.active?.kid).toBe("current");
     expect([...config.signingKeys.keys.keys()]).toEqual(["old", "current"]);
     expect([...config.encryptionKeys.keys.keys()]).toEqual(["old", "current"]);
+    const serialized = JSON.stringify(config.signingKeys);
+    expect(serialized).toContain('"kid":"current"');
+    expect(serialized).not.toContain('"d"');
   });
 
   it.each([
@@ -80,6 +83,15 @@ describe("authorization facade configuration", () => {
     }, JSON.stringify([encryptionKey()])],
     ["invalid encryption base64url", async () => JSON.stringify([await signingKey()]), JSON.stringify([{ ...encryptionKey(), rootKey: "not base64!" }])],
     ["short encryption root", async () => JSON.stringify([await signingKey()]), JSON.stringify([{ ...encryptionKey(), rootKey: Buffer.alloc(31).toString("base64url") }])],
+    ["missing signing coordinate", async () => {
+      const key = await signingKey();
+      const { x: _x, ...privateJwk } = key.privateJwk;
+      return JSON.stringify([{ ...key, privateJwk }]);
+    }, JSON.stringify([encryptionKey()])],
+    ["invalid signing private material", async () => {
+      const key = await signingKey();
+      return JSON.stringify([{ ...key, privateJwk: { ...key.privateJwk, d: "not-base64url!" } }]);
+    }, JSON.stringify([encryptionKey()])],
   ])("rejects %s without disclosing key material", async (_name, signing, encryption) => {
     const signingJson = await signing();
     const encryptionJson = await encryption;
