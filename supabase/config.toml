@@ -14,7 +14,14 @@ major_version = 15
 [auth]
 enabled = true
 site_url = "http://localhost:4173"
-additional_redirect_urls = ["http://localhost:4173/app", "https://tabloom-workspace.nickvu92.chatgpt.site/app"]
+additional_redirect_urls = [
+  "http://localhost:4173/app",
+  "https://tabloom-workspace.nickvu92.chatgpt.site/app",
+  "https://kgpdfbdokefljnjaagkbhlonhghimkad.chromiumapp.org/auth-callback",
+  "https://iogjohbehmaifodconaflnmhpjbaiccl.chromiumapp.org/auth-callback",
+  "https://353496b35dad97fdd8765544873463ba4a591a46.extensions.allizom.org/auth-callback",
+  "tabloom://auth-callback",
+]
 jwt_expiry = 3600
 enable_signup = true
 
