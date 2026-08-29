@@ -1,15 +1,14 @@
-import {
-  metadataCorsOptionsRequestHandler,
-  protectedResourceHandler,
-} from "mcp-handler";
-import { loadMcpAuthConfig } from "../../../src/auth/config";
+import { loadFacadeAuthConfig } from "../../../src/auth/config";
+import { corsOptions, publicMetadataHeaders } from "../../../src/oauth/responses";
 
-export function GET(request: Request): Response {
-  const config = loadMcpAuthConfig(process.env);
-  return protectedResourceHandler({
-    authServerUrls: [config.issuer],
-    resourceUrl: config.resourceUrl.origin,
-  })(request);
+export function GET(): Response {
+  const config = loadFacadeAuthConfig(process.env);
+  return Response.json({
+    resource: config.resourceUrl.origin,
+    authorization_servers: [config.issuerUrl.origin],
+  }, { headers: publicMetadataHeaders() });
 }
 
-export const OPTIONS = metadataCorsOptionsRequestHandler();
+export function OPTIONS(): Response {
+  return corsOptions("GET, OPTIONS");
+}

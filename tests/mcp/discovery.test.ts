@@ -1,99 +1,109 @@
-import { SignJWT, generateKeyPair } from "jose";
+import { exportJWK, generateKeyPair } from "jose";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-const RESOURCE = "https://mcp.tabloom.app";
-const ISSUER = "https://example.supabase.co/auth/v1";
+const ORIGIN = "https://mcp.tabloom.app";
 
-function useValidEnvironment() {
+async function signingKey(kid: string, active: boolean) {
+  const { privateKey } = await generateKeyPair("ES256", { extractable: true });
+  return {
+    kid,
+    active,
+    privateJwk: { ...await exportJWK(privateKey), alg: "ES256" },
+  };
+}
+
+async function useFacadeEnvironment() {
   vi.stubEnv("SUPABASE_URL", "https://example.supabase.co");
   vi.stubEnv("SUPABASE_ANON_KEY", "test-anon-key");
-  vi.stubEnv("TABLOOM_MCP_RESOURCE_URL", RESOURCE);
+  vi.stubEnv("TABLOOM_MCP_RESOURCE_URL", ORIGIN);
+  vi.stubEnv("TABLOOM_OAUTH_ISSUER_URL", ORIGIN);
+  vi.stubEnv("TABLOOM_OAUTH_ENABLED", "false");
+  vi.stubEnv("TABLOOM_OAUTH_ENCRYPTION_KEYS", "[]");
+  vi.stubEnv("TABLOOM_OAUTH_SIGNING_KEYS", JSON.stringify([
+    await signingKey("current-signing-key", true),
+    await signingKey("retained-signing-key", false),
+  ]));
 }
 
 afterEach(() => {
   vi.unstubAllEnvs();
-  vi.unstubAllGlobals();
   vi.resetModules();
 });
 
-describe("MCP OAuth discovery", () => {
-  it("publishes the exact canonical resource and Supabase authorization server", async () => {
-    useValidEnvironment();
+describe("OAuth facade discovery", () => {
+  it("publishes exact authorization-server metadata while disabled", async () => {
+    await useFacadeEnvironment();
+    const route = await import(
+      "../../services/tabloom-mcp/app/.well-known/oauth-authorization-server/route"
+    );
+
+    const response = route.GET();
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("Access-Control-Allow-Origin")).toBe("*");
+    expect(response.headers.get("Cache-Control")).toContain("public");
+    await expect(response.json()).resolves.toEqual({
+      issuer: ORIGIN,
+      authorization_endpoint: `${ORIGIN}/oauth/authorize`,
+      token_endpoint: `${ORIGIN}/oauth/token`,
+      registration_endpoint: `${ORIGIN}/oauth/register`,
+      revocation_endpoint: `${ORIGIN}/oauth/revoke`,
+      jwks_uri: `${ORIGIN}/.well-known/jwks.json`,
+      response_types_supported: ["code"],
+      grant_types_supported: ["authorization_code", "refresh_token"],
+      code_challenge_methods_supported: ["S256"],
+      token_endpoint_auth_methods_supported: ["none"],
+      scopes_supported: ["tabloom:workspace"],
+    });
+
+    const optionsResponse = route.OPTIONS();
+    expect(optionsResponse.status).toBe(204);
+    expect(optionsResponse.headers.get("Access-Control-Allow-Methods")).toBe("GET, OPTIONS");
+  });
+
+  it("points protected-resource metadata only at the facade issuer", async () => {
+    await useFacadeEnvironment();
     const route = await import(
       "../../services/tabloom-mcp/app/.well-known/oauth-protected-resource/route"
     );
 
-    const response = route.GET(
-      new Request(`${RESOURCE}/.well-known/oauth-protected-resource`),
-    );
+    const response = route.GET();
 
     expect(response.status).toBe(200);
     expect(response.headers.get("Access-Control-Allow-Origin")).toBe("*");
     await expect(response.json()).resolves.toEqual({
-      resource: RESOURCE,
-      authorization_servers: [ISSUER],
+      resource: ORIGIN,
+      authorization_servers: [ORIGIN],
     });
-
-    const optionsResponse = route.OPTIONS();
-    expect(optionsResponse.status).toBe(200);
-    expect(optionsResponse.headers.get("Access-Control-Allow-Methods")).toBe(
-      "GET, OPTIONS",
-    );
+    expect(route.OPTIONS().headers.get("Access-Control-Allow-Methods")).toBe("GET, OPTIONS");
   });
 
-  it("uses the same canonical resource in authentication challenges", async () => {
-    useValidEnvironment();
+  it("publishes every signing key as a public ES256 JWKS key", async () => {
+    await useFacadeEnvironment();
     const route = await import(
-      "../../services/tabloom-mcp/app/api/mcp/route"
+      "../../services/tabloom-mcp/app/.well-known/jwks.json/route"
     );
 
-    const response = await route.GET(
-      new Request(`${RESOURCE}/api/mcp`, { method: "GET" }),
-    );
+    const response = await route.GET();
 
-    expect(response.status).toBe(401);
-    expect(response.headers.get("WWW-Authenticate")).toContain(
-      `resource_metadata="${RESOURCE}/.well-known/oauth-protected-resource"`,
-    );
-    expect(route.POST).toBeTypeOf("function");
-    expect("DELETE" in route).toBe(false);
-  });
-
-  it("reuses one remote JWKS resolver across authenticated requests", async () => {
-    useValidEnvironment();
-    const fetchJwks = vi.fn(async (input: RequestInfo | URL) => {
-      void input;
-      return Response.json({ keys: [] }, { status: 200 });
-    });
-    vi.stubGlobal("fetch", fetchJwks);
-    const { privateKey } = await generateKeyPair("ES256");
-    const now = Math.floor(Date.now() / 1000);
-    const token = await new SignJWT({
-      iss: ISSUER,
-      aud: RESOURCE,
-      sub: "2f1c5393-46b8-4d79-a12b-b4624b1bc54c",
-      client_id: "tabloom-test-client",
-      exp: now + 3600,
-    })
-      .setProtectedHeader({ alg: "ES256", kid: "unknown-key" })
-      .sign(privateKey);
-    const route = await import(
-      "../../services/tabloom-mcp/app/api/mcp/route"
-    );
-    const request = (method: "GET" | "POST") =>
-      new Request(`${RESOURCE}/api/mcp`, {
-        method,
-        headers: { Authorization: `Bearer ${token}` },
+    expect(response.status).toBe(200);
+    expect(response.headers.get("Access-Control-Allow-Origin")).toBe("*");
+    expect(response.headers.get("Cache-Control")).toContain("public");
+    const { keys } = await response.json() as { keys: Array<Record<string, unknown>> };
+    expect(keys.map((key) => key.kid).sort()).toEqual([
+      "current-signing-key",
+      "retained-signing-key",
+    ]);
+    for (const key of keys) {
+      expect(key).toMatchObject({
+        kty: "EC",
+        crv: "P-256",
+        alg: "ES256",
+        use: "sig",
       });
-
-    const first = await route.GET(request("GET"));
-    const second = await route.POST(request("POST"));
-
-    expect(first.status).toBe(401);
-    expect(second.status).toBe(401);
-    expect(fetchJwks).toHaveBeenCalledTimes(1);
-    expect(fetchJwks.mock.calls[0]?.[0]).toBe(
-      "https://example.supabase.co/auth/v1/.well-known/jwks.json",
-    );
+      expect(Object.keys(key).sort()).toEqual(["alg", "crv", "kid", "kty", "use", "x", "y"]);
+      expect(key.d).toBeUndefined();
+    }
+    expect(route.OPTIONS().headers.get("Access-Control-Allow-Methods")).toBe("GET, OPTIONS");
   });
 });
