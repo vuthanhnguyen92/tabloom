@@ -76,28 +76,65 @@ describe("BrowserAdapter", () => {
     expect(() => adapter.identity.getRedirectURL("auth-callback")).toThrow("safari does not provide the identity API");
   });
 
-  it("completes Safari OAuth through a temporary browser tab", async () => {
+  it("completes Safari OAuth through the native bridge", async () => {
     const base = createNamespace();
-    let onUpdated: ((tabId: number, changeInfo: { url?: string }) => void) | undefined;
+    const sendNativeMessage = vi.fn(async () => ({
+      type: "tabloom.oauth.result" as const,
+      callbackUrl: "tabloom://auth-callback?code=safari-code",
+    }));
     const namespace = {
       ...base,
       identity: undefined,
-      runtime: { getURL: (path = "") => `safari-web-extension://tabloom/${path}` },
-      tabs: {
-        ...base.tabs,
-        onUpdated: { addListener: (listener: typeof onUpdated) => { onUpdated = listener; }, removeListener: vi.fn() },
-        onRemoved: { addListener: (listener: (tabId: number) => void) => { void listener; }, removeListener: vi.fn() },
-      },
+      runtime: { getURL: (path = "") => `safari-web-extension://tabloom/${path}`, sendNativeMessage },
     };
-    namespace.tabs.create.mockImplementationOnce(async () => {
-      setTimeout(() => onUpdated?.(10, { url: "safari-web-extension://tabloom/auth-callback.html?code=safari-code" }), 0);
-      return { id: 10 };
-    });
     const adapter = createSafariAdapter(namespace);
 
-    expect(adapter.identity.getRedirectURL("auth-callback.html")).toBe("safari-web-extension://tabloom/auth-callback.html");
+    expect(adapter.identity.getRedirectURL()).toBe("tabloom://auth-callback");
     await expect(adapter.identity.launchWebAuthFlow({ url: "https://accounts.example", interactive: true }))
-      .resolves.toContain("code=safari-code");
-    expect(namespace.tabs.remove).toHaveBeenCalledWith(10);
+      .resolves.toBe("tabloom://auth-callback?code=safari-code");
+    expect(sendNativeMessage).toHaveBeenCalledWith("app.tabloom.mac", {
+      type: "tabloom.oauth.start",
+      authorizationUrl: "https://accounts.example",
+      callbackScheme: "tabloom",
+    });
+  });
+
+  it("normalizes Safari native cancellation", async () => {
+    const base = createNamespace();
+    const namespace = {
+      ...base,
+      identity: undefined,
+      runtime: {
+        getURL: (path = "") => `safari-web-extension://tabloom/${path}`,
+        sendNativeMessage: vi.fn(async () => ({ type: "tabloom.oauth.cancelled" as const })),
+      },
+    };
+    const adapter = createSafariAdapter(namespace);
+
+    await expect(adapter.identity.launchWebAuthFlow({ url: "https://accounts.example", interactive: true }))
+      .resolves.toBeUndefined();
+  });
+
+  it("times out a Safari native flow that never responds", async () => {
+    vi.useFakeTimers();
+    try {
+      const base = createNamespace();
+      const namespace = {
+        ...base,
+        identity: undefined,
+        runtime: {
+          getURL: (path = "") => `safari-web-extension://tabloom/${path}`,
+          sendNativeMessage: vi.fn(() => new Promise<never>(() => undefined)),
+        },
+      };
+      const adapter = createSafariAdapter(namespace, { timeoutMs: 20 });
+      const result = expect(adapter.identity.launchWebAuthFlow({ url: "https://accounts.example", interactive: true }))
+        .rejects.toThrow("Safari sign-in timed out");
+
+      await vi.advanceTimersByTimeAsync(21);
+      await result;
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

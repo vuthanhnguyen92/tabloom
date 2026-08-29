@@ -5,6 +5,17 @@ import type { StorageArea } from "../storage";
 export type BrowserTarget = "chromium" | "firefox" | "safari";
 export type OpenCollectionResult = { opened: number; grouped: boolean };
 
+export type SafariNativeAuthRequest = {
+  type: "tabloom.oauth.start";
+  authorizationUrl: string;
+  callbackScheme: "tabloom";
+};
+
+export type SafariNativeAuthResponse =
+  | { type: "tabloom.oauth.result"; callbackUrl: string }
+  | { type: "tabloom.oauth.cancelled" }
+  | { type: "tabloom.oauth.error"; code: string; message: string };
+
 export type WebExtensionNamespace = {
   tabs: {
     query(queryInfo: { currentWindow: boolean }): Promise<BrowserTab[]>;
@@ -29,7 +40,13 @@ export type WebExtensionNamespace = {
     getRedirectURL(path?: string): string;
     launchWebAuthFlow(details: { url: string; interactive: boolean }): Promise<string | undefined>;
   };
-  runtime?: { getURL(path?: string): string };
+  runtime?: {
+    getURL(path?: string): string;
+    sendNativeMessage?(
+      applicationId: string,
+      message: SafariNativeAuthRequest,
+    ): Promise<SafariNativeAuthResponse>;
+  };
 };
 
 export interface BrowserAdapter {
