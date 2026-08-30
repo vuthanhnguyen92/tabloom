@@ -14,6 +14,8 @@ export { CimdFetchError, CimdUnavailableError } from "./cimd-errors";
 const CIMD_TIMEOUT_MS = 3_000;
 const CIMD_MAX_BYTES = 32 * 1024;
 const CIMD_CACHE_TTL_MS = 5 * 60 * 1_000;
+export const CIMD_CACHE_MAX_ENTRIES = 128;
+export const CIMD_CACHE_MAX_BYTES = 512 * 1024;
 
 export type ResolvedAddress = { address: string; family: 4 | 6 };
 export type CimdDnsResolver = (hostname: string) => Promise<readonly ResolvedAddress[]>;
@@ -31,6 +33,7 @@ export type CimdHttpResponse = {
   statusCode: number;
   headers: Record<string, string | string[] | undefined>;
   body: AsyncIterable<Uint8Array | string>;
+  destroy(): void;
 };
 
 export type CimdTransport = (
@@ -42,6 +45,10 @@ export type CimdFetcherDependencies = {
   resolve?: CimdDnsResolver;
   transport?: CimdTransport;
   now?: () => number;
+  cachePolicy?: Readonly<{
+    maxEntries: number;
+    maxBytes: number;
+  }>;
 };
 
 function ipv4Number(address: string): number | null {
@@ -133,6 +140,7 @@ const defaultTransport: CimdTransport = (url, options) => new Promise((resolve, 
       statusCode: response.statusCode ?? 0,
       headers: response.headers,
       body: response,
+      destroy: () => response.destroy(),
     });
   });
   request.once("error", reject);
@@ -151,7 +159,10 @@ function isJsonMediaType(value: string | null): boolean {
   return mediaType === "application/json" || /^application\/[a-z0-9!#$&^_.+-]+\+json$/.test(mediaType);
 }
 
-async function readJson(response: CimdHttpResponse, signal: AbortSignal): Promise<unknown> {
+async function readJson(
+  response: CimdHttpResponse,
+  signal: AbortSignal,
+): Promise<{ document: unknown; byteLength: number }> {
   if (response.statusCode >= 300 && response.statusCode < 400) throw new CimdFetchError();
   if (response.statusCode < 200 || response.statusCode >= 300 || !isJsonMediaType(contentType(response.headers))) {
     throw new CimdFetchError();
@@ -172,7 +183,7 @@ async function readJson(response: CimdHttpResponse, signal: AbortSignal): Promis
   }
   try {
     const json = new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks));
-    return JSON.parse(json) as unknown;
+    return { document: JSON.parse(json) as unknown, byteLength };
   } catch {
     throw new CimdFetchError();
   }
@@ -182,13 +193,61 @@ export function createCimdFetcher(dependencies: CimdFetcherDependencies = {}) {
   const resolveDns = dependencies.resolve ?? defaultResolve;
   const transport = dependencies.transport ?? defaultTransport;
   const now = dependencies.now ?? Date.now;
-  const cache = new Map<string, { expiresAt: number; client: ValidatedClient }>();
+  const cachePolicy = dependencies.cachePolicy ?? {
+    maxEntries: CIMD_CACHE_MAX_ENTRIES,
+    maxBytes: CIMD_CACHE_MAX_BYTES,
+  };
+  if (!Number.isSafeInteger(cachePolicy.maxEntries) || cachePolicy.maxEntries < 1 ||
+      !Number.isSafeInteger(cachePolicy.maxBytes) || cachePolicy.maxBytes < 1) {
+    throw new TypeError("Invalid CIMD cache policy");
+  }
+  type CacheEntry = { expiresAt: number; byteLength: number; client: ValidatedClient };
+  const cache = new Map<string, CacheEntry>();
+  let cacheBytes = 0;
+
+  const deleteCached = (clientId: string) => {
+    const entry = cache.get(clientId);
+    if (!entry) return;
+    cache.delete(clientId);
+    cacheBytes -= entry.byteLength;
+  };
+  const sweepExpired = (currentTime: number) => {
+    for (const [cachedClientId, entry] of cache) {
+      if (entry.expiresAt <= currentTime) deleteCached(cachedClientId);
+    }
+  };
+  const cacheClient = (
+    clientId: string,
+    client: ValidatedClient,
+    byteLength: number,
+    currentTime: number,
+  ) => {
+    sweepExpired(currentTime);
+    deleteCached(clientId);
+    if (byteLength > cachePolicy.maxBytes) return;
+    cache.set(clientId, {
+      client,
+      byteLength,
+      expiresAt: currentTime + CIMD_CACHE_TTL_MS,
+    });
+    cacheBytes += byteLength;
+    while (cache.size > cachePolicy.maxEntries || cacheBytes > cachePolicy.maxBytes) {
+      const leastRecentlyUsed = cache.keys().next().value as string | undefined;
+      if (leastRecentlyUsed === undefined) break;
+      deleteCached(leastRecentlyUsed);
+    }
+  };
 
   return async function fetchClient(clientId: string): Promise<ValidatedClient> {
     if (!isValidCimdClientId(clientId)) throw new CimdFetchError();
+    const requestTime = now();
+    sweepExpired(requestTime);
     const cached = cache.get(clientId);
-    if (cached && cached.expiresAt > now()) return cached.client;
-    cache.delete(clientId);
+    if (cached) {
+      cache.delete(clientId);
+      cache.set(clientId, cached);
+      return cached.client;
+    }
 
     const abortController = new AbortController();
     let timeout: ReturnType<typeof setTimeout> | undefined;
@@ -239,18 +298,40 @@ export function createCimdFetcher(dependencies: CimdFetcherDependencies = {}) {
       } catch {
         throw new CimdUnavailableError();
       }
-      if (abortController.signal.aborted) throw new CimdFetchError("CIMD fetch timeout");
-      const document = await readJson(response, abortController.signal);
+      let destroyed = false;
+      const destroyResponse = () => {
+        if (destroyed) return;
+        destroyed = true;
+        try {
+          response.destroy();
+        } catch {
+          // Cleanup must not expose transport-specific details.
+        }
+      };
+      abortController.signal.addEventListener("abort", destroyResponse, { once: true });
+      let accepted = false;
       try {
-        return validateCimdClientMetadata(document, clientId);
-      } catch {
-        throw new CimdFetchError();
+        if (abortController.signal.aborted) {
+          throw new CimdFetchError("CIMD fetch timeout");
+        }
+        const { document, byteLength } = await readJson(response, abortController.signal);
+        let client: ValidatedClient;
+        try {
+          client = validateCimdClientMetadata(document, clientId);
+        } catch {
+          throw new CimdFetchError();
+        }
+        accepted = true;
+        return { client, byteLength };
+      } finally {
+        abortController.signal.removeEventListener("abort", destroyResponse);
+        if (!accepted) destroyResponse();
       }
     })();
 
     try {
-      const client = await Promise.race([fetchPromise, timeoutPromise]);
-      cache.set(clientId, { client, expiresAt: now() + CIMD_CACHE_TTL_MS });
+      const { client, byteLength } = await Promise.race([fetchPromise, timeoutPromise]);
+      cacheClient(clientId, client, byteLength, now());
       return client;
     } finally {
       if (timeout !== undefined) clearTimeout(timeout);

@@ -458,6 +458,34 @@ describe("Tabloom facade bearer verification", () => {
     ]);
   });
 
+  it("reaches inner-user lookup for a B-issued token whose only subject change is A", async () => {
+    const { events, providerUser, verifier } = harness();
+    const userAToken = await validToken();
+    const userBToken = await issueAccessToken({
+      sub: OTHER_USER_ID,
+      clientId: CLIENT_ID,
+      grantId: GRANT_ID,
+      supabaseToken: "inner-user-b",
+      innerExpiresAt: NOW + 540,
+    }, config(), NOW - 60);
+    const userBPayload = decodeJwt(userBToken);
+    expect(userBPayload.iat).not.toBe(decodeJwt(userAToken).iat);
+    const mismatchToken = await handSignedToken({
+      ...userBPayload,
+      sub: USER_ID,
+      jti: "z".repeat(43),
+    });
+    providerUser.value = OTHER_USER_ID;
+
+    await expect(
+      verifier(new Request(`${ORIGIN}/api/mcp`), mismatchToken),
+    ).resolves.toBeUndefined();
+    expect(events).toEqual([
+      `revocation:${GRANT_ID}`,
+      "provider:inner-user-b",
+    ]);
+  });
+
   it("collapses persistence failure to undefined without logging credentials or provider details", async () => {
     const token = await validToken();
     const providerDetail = "provider-secret-detail";

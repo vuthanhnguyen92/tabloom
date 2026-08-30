@@ -52,6 +52,7 @@ afterEach(() => {
 afterAll(() => vi.unstubAllEnvs());
 
 function useFacadeEnvironment(): void {
+  vi.stubEnv("VERCEL", "1");
   vi.stubEnv("SUPABASE_URL", "https://example.supabase.co");
   vi.stubEnv("SUPABASE_ANON_KEY", "test-anon-key");
   vi.stubEnv("TABLOOM_MCP_RESOURCE_URL", ORIGIN);
@@ -74,7 +75,7 @@ function persistence(): OAuthPersistence {
         clientName: input.clientName,
         redirectUris: input.redirectUris,
         createdAt: "2026-08-29T01:02:03.000Z",
-        expiresAt: "2026-08-30T01:02:03.000Z",
+        expiresAt: "2027-08-30T01:02:03.000Z",
       };
     },
     async getClient(clientId) {
@@ -83,7 +84,7 @@ function persistence(): OAuthPersistence {
         clientName: "Rate Limit Client",
         redirectUris: ["https://client.example/callback"],
         createdAt: "2026-08-29T01:02:03.000Z",
-        expiresAt: "2026-08-30T01:02:03.000Z",
+        expiresAt: "2027-08-30T01:02:03.000Z",
       };
     },
     async consume() { return false; },
@@ -128,6 +129,7 @@ describe("OAuth fixed-window abuse damping", () => {
         request,
         storage,
         nowMs: 12_345,
+        trustedProxy: true,
       })).resolves.toEqual({ allowed: true, retryAfterSeconds: 0 });
     }
     await expect(checkOAuthRateLimit({
@@ -135,6 +137,7 @@ describe("OAuth fixed-window abuse damping", () => {
       request,
       storage,
       nowMs: 12_345,
+      trustedProxy: true,
     })).resolves.toEqual({ allowed: false, retryAfterSeconds: 48 });
 
     await expect(checkOAuthRateLimit({
@@ -142,20 +145,24 @@ describe("OAuth fixed-window abuse damping", () => {
       request,
       storage,
       nowMs: 60_000,
+      trustedProxy: true,
     })).resolves.toEqual({ allowed: true, retryAfterSeconds: 0 });
   });
 
-  it("uses only a valid first forwarded address and never scans attacker-controlled later values", () => {
+  it("uses only a valid first forwarded address from a trusted proxy", () => {
     expect(trustedVercelClientIp(new Headers({
       "x-forwarded-for": "2001:db8::8, 10.0.0.1",
-    }))).toBe("2001:db8::8");
+    }), true)).toBe("2001:db8::8");
     expect(trustedVercelClientIp(new Headers({
       "x-forwarded-for": "attacker.invalid, 203.0.113.9",
-    }))).toBeNull();
+    }), true)).toBeNull();
     expect(trustedVercelClientIp(new Headers({
       "x-forwarded-for": "203.0.113.9:443, 198.51.100.2",
-    }))).toBeNull();
-    expect(trustedVercelClientIp(new Headers())).toBeNull();
+    }), true)).toBeNull();
+    expect(trustedVercelClientIp(new Headers(), true)).toBeNull();
+    expect(trustedVercelClientIp(new Headers({
+      "x-forwarded-for": "203.0.113.9",
+    }), false)).toBeNull();
   });
 
   it("groups invalid first forwarded values into one fail-safe bucket", async () => {
@@ -168,6 +175,7 @@ describe("OAuth fixed-window abuse damping", () => {
         }),
         storage,
         nowMs: 100,
+        trustedProxy: true,
       });
       expect(result.allowed).toBe(true);
     }
@@ -178,10 +186,11 @@ describe("OAuth fixed-window abuse damping", () => {
       }),
       storage,
       nowMs: 100,
+      trustedProxy: true,
     })).resolves.toEqual({ allowed: false, retryAfterSeconds: 60 });
   });
 
-  it("uses route-specific limits and hashes token client identifiers before storage", async () => {
+  it("requires hashed IP and client buckets for normal token traffic", async () => {
     const calls: string[] = [];
     const storage = {
       async increment(key: string) {
@@ -189,18 +198,117 @@ describe("OAuth fixed-window abuse damping", () => {
         return calls.length;
       },
     };
-    const request = new Request(`${ORIGIN}/oauth/token`);
-    await checkOAuthRateLimit({
+    const request = new Request(`${ORIGIN}/oauth/token`, {
+      headers: { "x-forwarded-for": "203.0.113.40" },
+    });
+    await expect(checkOAuthRateLimit({
       route: "token",
       request,
       clientId: "sensitive-client-id",
       storage,
       nowMs: 1,
-    });
+      trustedProxy: true,
+    })).resolves.toEqual({ allowed: true, retryAfterSeconds: 0 });
 
-    expect(calls).toHaveLength(1);
-    expect(calls[0]).toContain(createHash("sha256").update("sensitive-client-id").digest("hex"));
-    expect(calls[0]).not.toContain("sensitive-client-id");
+    expect(calls).toHaveLength(2);
+    expect(calls.some((key) => key.includes(
+      createHash("sha256").update("sensitive-client-id").digest("hex"),
+    ))).toBe(true);
+    expect(calls.some((key) => key.includes(
+      createHash("sha256").update("203.0.113.40").digest("hex"),
+    ))).toBe(true);
+    expect(calls.join("|")).not.toContain("sensitive-client-id");
+    expect(calls.join("|")).not.toContain("203.0.113.40");
+  });
+
+  it("limits rotating token client IDs from one trusted IP", async () => {
+    const storage = new InMemoryOAuthRateLimitStorage();
+    const request = new Request(`${ORIGIN}/oauth/token`, {
+      headers: { "x-forwarded-for": "203.0.113.41" },
+    });
+    for (let index = 0; index < 30; index += 1) {
+      await expect(checkOAuthRateLimit({
+        route: "token",
+        request,
+        clientId: `rotating-client-${index}`,
+        storage,
+        nowMs: 1,
+        trustedProxy: true,
+      })).resolves.toEqual({ allowed: true, retryAfterSeconds: 0 });
+    }
+
+    await expect(checkOAuthRateLimit({
+      route: "token",
+      request,
+      clientId: "rotating-client-over-limit",
+      storage,
+      nowMs: 1,
+      trustedProxy: true,
+    })).resolves.toEqual({ allowed: false, retryAfterSeconds: 60 });
+  });
+
+  it("limits one public token client across distinct trusted IPs", async () => {
+    const storage = new InMemoryOAuthRateLimitStorage();
+    for (let index = 1; index <= 30; index += 1) {
+      await expect(checkOAuthRateLimit({
+        route: "token",
+        request: new Request(`${ORIGIN}/oauth/token`, {
+          headers: { "x-forwarded-for": `203.0.113.${index}` },
+        }),
+        clientId: "one-public-client",
+        storage,
+        nowMs: 1,
+        trustedProxy: true,
+      })).resolves.toEqual({ allowed: true, retryAfterSeconds: 0 });
+    }
+
+    await expect(checkOAuthRateLimit({
+      route: "token",
+      request: new Request(`${ORIGIN}/oauth/token`, {
+        headers: { "x-forwarded-for": "203.0.113.31" },
+      }),
+      clientId: "one-public-client",
+      storage,
+      nowMs: 1,
+      trustedProxy: true,
+    })).resolves.toEqual({ allowed: false, retryAfterSeconds: 60 });
+  });
+
+  it("ignores spoofed forwarding headers when the proxy is untrusted", async () => {
+    const storage = new InMemoryOAuthRateLimitStorage();
+    for (let index = 0; index < 30; index += 1) {
+      await expect(checkOAuthRateLimit({
+        route: "token",
+        request: new Request(`${ORIGIN}/oauth/token`, {
+          headers: { "x-forwarded-for": `198.51.100.${index + 1}` },
+        }),
+        clientId: `spoofed-client-${index}`,
+        storage,
+        nowMs: 1,
+        trustedProxy: false,
+      })).resolves.toEqual({ allowed: true, retryAfterSeconds: 0 });
+    }
+
+    await expect(checkOAuthRateLimit({
+      route: "token",
+      request: new Request(`${ORIGIN}/oauth/token`, {
+        headers: { "x-forwarded-for": "192.0.2.200" },
+      }),
+      clientId: "spoofed-client-over-limit",
+      storage,
+      nowMs: 1,
+      trustedProxy: false,
+    })).resolves.toEqual({ allowed: false, retryAfterSeconds: 60 });
+  });
+
+  it("bounds in-memory identity storage without evicting active buckets", async () => {
+    const storage = new InMemoryOAuthRateLimitStorage(2);
+
+    await expect(storage.increment("a", 0, 60_000)).resolves.toBe(1);
+    await expect(storage.increment("b", 0, 60_000)).resolves.toBe(1);
+    await expect(storage.increment("c", 0, 60_000)).resolves.toBe(Number.MAX_SAFE_INTEGER);
+    await expect(storage.increment("a", 0, 60_000)).resolves.toBe(2);
+    await expect(storage.increment("c", 60_000, 120_000)).resolves.toBe(1);
   });
 
   it("fails open when replaceable limiter storage is unavailable", async () => {
@@ -217,6 +325,7 @@ describe("OAuth fixed-window abuse damping", () => {
         },
       },
       nowMs: 1,
+      trustedProxy: true,
     })).resolves.toEqual({ allowed: true, retryAfterSeconds: 0 });
   });
 });
@@ -326,7 +435,10 @@ describe("OAuth route security integration", () => {
     const route = await import("../../services/tabloom-mcp/app/oauth/token/route");
     const request = () => new Request(`${ORIGIN}/oauth/token`, {
       method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+        "x-forwarded-for": "203.0.113.50",
+      },
       body: new URLSearchParams({
         grant_type: "authorization_code",
         code: "invalid-code",

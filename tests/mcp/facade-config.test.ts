@@ -4,6 +4,7 @@ import { loadFacadeAuthConfig } from "../../services/tabloom-mcp/src/auth/config
 
 const RESOURCE = "https://mcp.tabloom.app";
 const DATABASE_SECRET = Buffer.alloc(32, 9).toString("base64url");
+const NONCANONICAL_DATABASE_SECRET = "QkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJ";
 
 async function signingKey(kid = "signing-a", active = true) {
   const { privateKey, publicKey } = await generateKeyPair("ES256", { extractable: true });
@@ -113,6 +114,13 @@ describe("authorization facade configuration", () => {
     expect(() => loadFacadeAuthConfig(configured("not base64url!"))).toThrow();
     expect(() => loadFacadeAuthConfig(configured(
       Buffer.alloc(31, 9).toString("base64url"),
+    ))).toThrow();
+    expect(NONCANONICAL_DATABASE_SECRET).toHaveLength(43);
+    expect(Buffer.from(NONCANONICAL_DATABASE_SECRET, "base64url")).toHaveLength(32);
+    expect(Buffer.from(NONCANONICAL_DATABASE_SECRET, "base64url").toString("base64url"))
+      .not.toBe(NONCANONICAL_DATABASE_SECRET);
+    expect(() => loadFacadeAuthConfig(configured(
+      NONCANONICAL_DATABASE_SECRET,
     ))).toThrow();
     expect(() => loadFacadeAuthConfig(configured(DATABASE_SECRET))).not.toThrow();
   });

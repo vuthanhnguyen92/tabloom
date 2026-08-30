@@ -93,6 +93,13 @@ export class OAuthInvalidClientMetadataError extends Error {
   }
 }
 
+export class OAuthInvalidGrantPersistenceError extends Error {
+  constructor() {
+    super("OAuth token consumption is invalid");
+    this.name = "OAuthInvalidGrantPersistenceError";
+  }
+}
+
 export class OAuthRegistrationCapacityError extends Error {
   readonly retryAfterSeconds = 60;
 
@@ -116,11 +123,23 @@ function isRetryableDatabaseError(error: OAuthRpcResult["error"]): boolean {
   );
 }
 
-function failedOperation(error: OAuthRpcResult["error"]): Error {
-  if (error?.code === "22023") {
+type OAuthRpcName =
+  | "register_oauth_client"
+  | "get_oauth_client"
+  | "consume_oauth_token"
+  | "revoke_oauth_grant"
+  | "is_oauth_grant_revoked";
+
+function failedOperation(name: OAuthRpcName, error: OAuthRpcResult["error"]): Error {
+  if (error?.code === "22023" && name === "register_oauth_client") {
     return new OAuthInvalidClientMetadataError();
   }
-  if (error?.code === "P0001" && error.message === "OAuth registration quota exceeded") {
+  if (error?.code === "22023" && name === "consume_oauth_token" &&
+      error.message === "invalid OAuth token consumption") {
+    return new OAuthInvalidGrantPersistenceError();
+  }
+  if (name === "register_oauth_client" && error?.code === "P0001" &&
+      error.message === "OAuth registration quota exceeded") {
     return new OAuthRegistrationCapacityError();
   }
   if (isRetryableDatabaseError(error)) {
@@ -190,13 +209,14 @@ export class SupabaseOAuthPersistence implements OAuthPersistence {
     );
   }
 
-  private async rpc(name: string, args: Record<string, unknown>): Promise<unknown> {
+  private async rpc(name: OAuthRpcName, args: Record<string, unknown>): Promise<unknown> {
     try {
       const result = await this.client.rpc(name, args);
-      if (result.error) throw failedOperation(result.error);
+      if (result.error) throw failedOperation(name, result.error);
       return result.data;
     } catch (error) {
       if (error instanceof OAuthInvalidClientMetadataError ||
+          error instanceof OAuthInvalidGrantPersistenceError ||
           error instanceof OAuthRegistrationCapacityError ||
           error instanceof OAuthPersistenceUnavailableError ||
           error instanceof OAuthPersistenceOperationError) {

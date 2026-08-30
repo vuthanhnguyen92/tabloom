@@ -9,10 +9,18 @@ export interface OAuthRateLimitStorage {
 
 type Entry = { count: number; expiresAtMs: number };
 
+export const OAUTH_RATE_LIMIT_MAX_ENTRIES = 10_000;
+
 /** Best-effort, per-process abuse damping. Durable replay and revocation remain authoritative. */
 export class InMemoryOAuthRateLimitStorage implements OAuthRateLimitStorage {
   private readonly entries = new Map<string, Entry>();
   private lastSweepWindowStartMs = -1;
+
+  constructor(private readonly maxEntries = OAUTH_RATE_LIMIT_MAX_ENTRIES) {
+    if (!Number.isSafeInteger(maxEntries) || maxEntries < 1) {
+      throw new TypeError("Invalid OAuth rate-limit storage bound");
+    }
+  }
 
   async increment(key: string, windowStartMs: number, expiresAtMs: number): Promise<number> {
     if (windowStartMs !== this.lastSweepWindowStartMs) {
@@ -23,6 +31,8 @@ export class InMemoryOAuthRateLimitStorage implements OAuthRateLimitStorage {
     }
     const existing = this.entries.get(key);
     if (!existing || existing.expiresAtMs <= windowStartMs) {
+      if (existing) this.entries.delete(key);
+      if (this.entries.size >= this.maxEntries) return Number.MAX_SAFE_INTEGER;
       this.entries.set(key, { count: 1, expiresAtMs });
       return 1;
     }
@@ -40,7 +50,11 @@ const LIMITS: Record<OAuthRateLimitedRoute, number> = {
 };
 const defaultStorage = new InMemoryOAuthRateLimitStorage();
 
-export function trustedVercelClientIp(headers: Headers): string | null {
+export function trustedVercelClientIp(
+  headers: Headers,
+  trustedProxy = process.env.VERCEL === "1",
+): string | null {
+  if (!trustedProxy) return null;
   const forwarded = headers.get("x-forwarded-for");
   if (!forwarded) return null;
   const first = forwarded.split(",", 1)[0]?.trim() ?? "";
@@ -57,17 +71,31 @@ export async function checkOAuthRateLimit(input: {
   clientId?: string;
   storage?: OAuthRateLimitStorage;
   nowMs?: number;
+  trustedProxy?: boolean;
 }): Promise<{ allowed: boolean; retryAfterSeconds: number }> {
   const nowMs = input.nowMs ?? Date.now();
   const windowStartMs = Math.floor(nowMs / WINDOW_MS) * WINDOW_MS;
   const expiresAtMs = windowStartMs + WINDOW_MS;
-  const identity = input.route === "token"
-    ? `client:${hash(input.clientId ?? "unknown")}`
-    : `ip:${hash(trustedVercelClientIp(input.request.headers) ?? "unknown")}`;
-  const key = `${input.route}:${windowStartMs}:${identity}`;
-  let count: number;
+  const trustedIp = trustedVercelClientIp(
+    input.request.headers,
+    input.trustedProxy ?? (process.env.VERCEL === "1"),
+  );
+  const identities = input.route === "token"
+    ? [
+        `ip:${hash(trustedIp ?? "unknown")}`,
+        `client:${hash(input.clientId ?? "unknown")}`,
+      ]
+    : [`ip:${hash(trustedIp ?? "unknown")}`];
+  let count = 0;
   try {
-    count = await (input.storage ?? defaultStorage).increment(key, windowStartMs, expiresAtMs);
+    const storage = input.storage ?? defaultStorage;
+    for (const identity of identities) {
+      const key = `${input.route}:${windowStartMs}:${identity}`;
+      count = Math.max(
+        count,
+        await storage.increment(key, windowStartMs, expiresAtMs),
+      );
+    }
   } catch {
     return { allowed: true, retryAfterSeconds: 0 };
   }

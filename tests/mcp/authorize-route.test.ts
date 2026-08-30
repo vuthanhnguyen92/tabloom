@@ -97,7 +97,7 @@ function persistence(): OAuthPersistence {
         clientName: "DCR Client",
         redirectUris: [REDIRECT_URI],
         createdAt: "2026-08-29T01:02:03.000Z",
-        expiresAt: "2026-08-30T01:02:03.000Z",
+        expiresAt: "2027-08-30T01:02:03.000Z",
       };
     },
     async consume() { return false; },
@@ -304,6 +304,7 @@ describe("GET /oauth/authorize", () => {
         statusCode: 200,
         headers: { "content-type": "application/json" },
         body: (async function* () { yield Buffer.from(JSON.stringify(document)); })(),
+        destroy: () => undefined,
       }),
     });
     vi.mocked(resolveClient).mockImplementation(
@@ -456,7 +457,7 @@ describe("GET /oauth/authorize", () => {
         `https://two.example/${"b".repeat(1_380)}`,
       ],
       createdAt: "2026-08-29T01:02:03.000Z",
-      expiresAt: "2026-08-30T01:02:03.000Z",
+      expiresAt: "2027-08-30T01:02:03.000Z",
     });
     vi.mocked(createOAuthPersistence).mockReturnValue(store);
     const auth = upstream();

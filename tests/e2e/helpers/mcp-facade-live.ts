@@ -173,14 +173,12 @@ export async function verifySubjectMismatchBearer(
       userA.payload.supabase_token === userB.payload.supabase_token ||
       mismatch.payload.supabase_token !== userB.payload.supabase_token ||
       mismatch.payload.supabase_token === userA.payload.supabase_token ||
-      mismatch.payload.client_id !== userA.payload.client_id ||
-      mismatch.payload.grant_id !== userA.payload.grant_id ||
-      mismatch.payload.iat !== userA.payload.iat ||
-      mismatch.payload.nbf !== userA.payload.nbf ||
-      mismatch.payload.exp !== userA.payload.exp ||
+      ACCESS_TOKEN_CLAIMS.some((claim) =>
+        claim !== "sub" && claim !== "jti" &&
+        mismatch.payload[claim] !== userB.payload[claim]) ||
       mismatch.payload.jti === userA.payload.jti ||
       mismatch.payload.jti === userB.payload.jti ||
-      JSON.stringify(mismatch.protectedHeader) !== JSON.stringify(userA.protectedHeader)) {
+      JSON.stringify(mismatch.protectedHeader) !== JSON.stringify(userB.protectedHeader)) {
     throw new Error("Subject-mismatch bearer was not bound to fresh A/B tokens");
   }
 }
@@ -413,7 +411,7 @@ export async function loadAcceptanceMismatchSigner(
             userB.payload.sub !== input.expectedUserBId ||
             input.expectedUserAId === input.expectedUserBId ||
             userA.payload.supabase_token === userB.payload.supabase_token ||
-            userA.protectedHeader.kid !== kid) {
+            userB.protectedHeader.kid !== kid) {
           throw new Error("Fresh facade tokens did not match acceptance users");
         }
         const publishedMatches = input.jwks.keys.filter((key) =>
@@ -423,10 +421,10 @@ export async function loadAcceptanceMismatchSigner(
           throw new Error("Acceptance signing key did not exactly match live JWKS");
         }
         const mismatchBearer = await new SignJWT({
-          ...userA.payload,
+          ...userB.payload,
+          sub: input.expectedUserAId,
           jti: randomBytes(32).toString("base64url"),
-          supabase_token: userB.payload.supabase_token,
-        }).setProtectedHeader({ ...userA.protectedHeader }).sign(signingKey);
+        }).setProtectedHeader({ ...userB.protectedHeader }).sign(signingKey);
         await verifySubjectMismatchBearer({ ...input, mismatchBearer, now });
         return mismatchBearer;
       } finally {

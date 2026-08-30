@@ -224,6 +224,57 @@ describe("SupabaseOAuthPersistence", () => {
     await expect(operation).rejects.not.toThrow(databaseMessage);
   });
 
+  it("maps a consume expiry clock race to a typed non-sensitive invalid grant", async () => {
+    const databaseMessage = "invalid OAuth token consumption";
+    const client = new FakeRpcClient({
+      data: null,
+      error: { code: "22023", message: databaseMessage },
+    });
+    const store = persistence(client);
+
+    const operation = store.consume(
+      "authorization_code",
+      "fresh-code-jti",
+      new Date("2026-08-30T00:00:01.000Z"),
+    );
+    await expect(operation).rejects.toMatchObject({
+      name: "OAuthInvalidGrantPersistenceError",
+      message: "OAuth token consumption is invalid",
+    });
+    await expect(operation).rejects.not.toThrow(databaseMessage);
+  });
+
+  it("keeps unrelated SQLSTATE 22023 failures generic and non-sensitive", async () => {
+    const databaseMessage = "unrelated invalid parameter in private database function";
+    const operations = [
+      () => persistence(new FakeRpcClient({
+        data: null,
+        error: { code: "22023", message: databaseMessage },
+      })).getClient(storedClient.client_id),
+      () => persistence(new FakeRpcClient({
+        data: null,
+        error: { code: "22023", message: databaseMessage },
+      })).consume(
+        "authorization_code",
+        "fresh-code-jti",
+        new Date("2026-08-30T00:00:01.000Z"),
+      ),
+      () => persistence(new FakeRpcClient({
+        data: null,
+        error: { code: "22023", message: databaseMessage },
+      })).revokeGrant("raw-grant-family", new Date("2026-09-28T00:00:00.000Z")),
+    ];
+
+    for (const startOperation of operations) {
+      const operation = startOperation();
+      await expect(operation).rejects.toMatchObject({
+        name: "OAuthPersistenceOperationError",
+        message: "OAuth persistence operation failed",
+      });
+      await expect(operation).rejects.not.toThrow(databaseMessage);
+    }
+  });
+
   it("maps only the fixed registration quota failure to capacity", async () => {
     const client = new FakeRpcClient({
       data: null,

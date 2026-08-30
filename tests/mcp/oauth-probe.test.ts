@@ -13,7 +13,7 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { exportJWK, generateKeyPair, SignJWT } from "jose";
+import { decodeJwt, exportJWK, generateKeyPair, SignJWT } from "jose";
 import { describe, expect, it } from "vitest";
 import * as probeModule from "../../scripts/probe-mcp-oauth.mjs";
 import {
@@ -1282,7 +1282,7 @@ describe("live MCP facade acceptance fixture schema", () => {
     expect(calls[0]!.init?.redirect).toBe("manual");
   });
 
-  it("accepts only a valid signed A-subject token carrying B's fresh nested ciphertext", async () => {
+  it("accepts only B's complete fresh token payload with the subject changed to A", async () => {
     const now = 1_800_000_000;
     const { privateKey, publicKey } = await generateKeyPair("ES256", {
       extractable: true,
@@ -1324,12 +1324,16 @@ describe("live MCP facade acceptance fixture schema", () => {
     const grantB = "B".repeat(43);
     const innerA = "a.b.c.d.e";
     const innerB = "f.g.h.i.j";
+    const userAIssuedAt = now - 120;
+    const userBIssuedAt = now - 30;
     const userAAccessToken = await sign({
       sub: userAId,
       clientId: clientA,
       grantId: grantA,
       inner: innerA,
       jti: "C".repeat(43),
+      issuedAt: userAIssuedAt,
+      expiresAt: now + 180,
     });
     const userBAccessToken = await sign({
       sub: userBId,
@@ -1337,13 +1341,17 @@ describe("live MCP facade acceptance fixture schema", () => {
       grantId: grantB,
       inner: innerB,
       jti: "D".repeat(43),
+      issuedAt: userBIssuedAt,
+      expiresAt: now + 270,
     });
     const mismatchBearer = await sign({
       sub: userAId,
-      clientId: clientA,
-      grantId: grantA,
+      clientId: clientB,
+      grantId: grantB,
       inner: innerB,
       jti: "E".repeat(43),
+      issuedAt: userBIssuedAt,
+      expiresAt: now + 270,
     });
     const input = {
       mismatchBearer,
@@ -1416,6 +1424,15 @@ describe("live MCP facade acceptance fixture schema", () => {
         jwks: { keys: [publicJwk] },
         resource: RESOURCE,
         now,
+      });
+      expect(decodeJwt(generated)).toMatchObject({
+        sub: userAId,
+        client_id: clientB,
+        grant_id: grantB,
+        supabase_token: innerB,
+        iat: userBIssuedAt,
+        nbf: userBIssuedAt,
+        exp: now + 270,
       });
       await expect(verifySubjectMismatchBearer({
         ...input,

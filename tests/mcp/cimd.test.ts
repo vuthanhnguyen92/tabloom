@@ -17,13 +17,37 @@ const VALID_DOCUMENT = {
   token_endpoint_auth_method: "none",
 };
 
+function documentFor(clientId: string, clientName = "Example MCP Client") {
+  return {
+    ...VALID_DOCUMENT,
+    client_id: clientId,
+    client_name: clientName,
+  };
+}
+
 function response(overrides: Partial<CimdHttpResponse> = {}): CimdHttpResponse {
   return {
     statusCode: 200,
     headers: { "content-type": "application/json; charset=utf-8" },
     body: (async function* () { yield Buffer.from(JSON.stringify(VALID_DOCUMENT)); })(),
+    destroy: vi.fn(),
     ...overrides,
   };
+}
+
+function responseFor(clientId: string, clientName?: string): CimdHttpResponse {
+  return response({
+    body: (async function* () {
+      yield Buffer.from(JSON.stringify(documentFor(clientId, clientName)));
+    })(),
+  });
+}
+
+function callsFor(
+  transport: ReturnType<typeof vi.fn>,
+  clientId: string,
+): number {
+  return transport.mock.calls.filter(([url]) => (url as URL).href === clientId).length;
 }
 
 describe("CIMD hardened fetching", () => {
@@ -142,6 +166,36 @@ describe("CIMD hardened fetching", () => {
     await expect(fetchClient(CLIENT_ID)).rejects.toThrow();
   });
 
+  it.each([
+    ["redirect", { statusCode: 302, headers: { location: "https://other.example/client.json" } }],
+    ["non-success status", { statusCode: 503 }],
+    ["invalid content type", { headers: { "content-type": "text/html" } }],
+    ["oversized body", {
+      body: (async function* () {
+        yield Buffer.alloc(32 * 1024);
+        yield Buffer.from("x");
+      })(),
+    }],
+    ["malformed JSON", {
+      body: (async function* () { yield Buffer.from("{"); })(),
+    }],
+    ["invalid metadata", {
+      body: (async function* () { yield Buffer.from(JSON.stringify({
+        ...VALID_DOCUMENT,
+        client_id: "https://different.example/client.json",
+      })); })(),
+    }],
+  ])("destroys the response after rejected %s", async (_label, overrides) => {
+    const destroy = vi.fn();
+    const fetchClient = createCimdFetcher({
+      resolve: async () => [{ address: "93.184.216.34", family: 4 }],
+      transport: async () => response({ ...overrides, destroy }),
+    });
+
+    await expect(fetchClient(CLIENT_ID)).rejects.toThrow();
+    expect(destroy).toHaveBeenCalledOnce();
+  });
+
   it("times out the entire fetch after three seconds", async () => {
     vi.useFakeTimers();
     try {
@@ -153,6 +207,35 @@ describe("CIMD hardened fetching", () => {
       const rejection = expect(result).rejects.toThrow(/timeout/i);
       await vi.advanceTimersByTimeAsync(3_001);
       await rejection;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("destroys an established response when its body stalls past the deadline", async () => {
+    vi.useFakeTimers();
+    try {
+      let rejectRead!: (error: Error) => void;
+      const body: AsyncIterable<Uint8Array> = {
+        [Symbol.asyncIterator]() {
+          return {
+            next: () => new Promise<IteratorResult<Uint8Array>>((_resolve, reject) => {
+              rejectRead = reject;
+            }),
+          };
+        },
+      };
+      const destroy = vi.fn(() => rejectRead(new Error("response destroyed")));
+      const fetchClient = createCimdFetcher({
+        resolve: async () => [{ address: "93.184.216.34", family: 4 }],
+        transport: async () => response({ body, destroy }),
+      });
+
+      const result = fetchClient(CLIENT_ID);
+      const rejection = expect(result).rejects.toThrow(/timeout/i);
+      await vi.advanceTimersByTimeAsync(3_001);
+      await rejection;
+      expect(destroy).toHaveBeenCalledOnce();
     } finally {
       vi.useRealTimers();
     }
@@ -193,6 +276,7 @@ describe("CIMD hardened fetching", () => {
   });
 
   it("normalizes response-stream failures without exposing transport details", async () => {
+    const destroy = vi.fn();
     const fetchClient = createCimdFetcher({
       resolve: async () => [{ address: "93.184.216.34", family: 4 }],
       transport: async () => response({
@@ -200,6 +284,7 @@ describe("CIMD hardened fetching", () => {
           yield Buffer.from("{");
           throw new Error("provider socket reset at internal-host.example");
         })(),
+        destroy,
       }),
     });
     const result = fetchClient(CLIENT_ID);
@@ -209,6 +294,7 @@ describe("CIMD hardened fetching", () => {
       message: "CIMD client metadata could not be validated",
     });
     await expect(result).rejects.not.toThrow(/internal-host|socket reset/i);
+    expect(destroy).toHaveBeenCalledOnce();
   });
 
   it.each([
@@ -285,5 +371,112 @@ describe("CIMD hardened fetching", () => {
     await expect(retryingFetcher(CLIENT_ID)).rejects.toThrow();
     await expect(retryingFetcher(CLIENT_ID)).resolves.toMatchObject({ clientId: CLIENT_ID });
     expect(failingTransport).toHaveBeenCalledTimes(2);
+  });
+
+  it("globally sweeps expired entries before applying the entry cap", async () => {
+    let now = 0;
+    const clients = [
+      "https://client-a.example/oauth/client.json",
+      "https://client-b.example/oauth/client.json",
+      "https://client-c.example/oauth/client.json",
+    ];
+    const transport = vi.fn(async (url: URL) => responseFor(url.href));
+    const fetchClient = createCimdFetcher({
+      resolve: async () => [{ address: "93.184.216.34", family: 4 }],
+      transport,
+      now: () => now,
+      cachePolicy: { maxEntries: 2, maxBytes: 1024 * 1024 },
+    });
+
+    await fetchClient(clients[0]!);
+    now = 1;
+    await fetchClient(clients[1]!);
+    now = 2;
+    await fetchClient(clients[0]!);
+    now = 5 * 60 * 1_000;
+    await fetchClient(clients[2]!);
+    await fetchClient(clients[1]!);
+
+    expect(callsFor(transport, clients[1]!)).toBe(1);
+  });
+
+  it("evicts the least-recently-used entry at the entry cap", async () => {
+    const clients = [
+      "https://client-a.example/oauth/client.json",
+      "https://client-b.example/oauth/client.json",
+      "https://client-c.example/oauth/client.json",
+    ];
+    const transport = vi.fn(async (url: URL) => responseFor(url.href));
+    const fetchClient = createCimdFetcher({
+      resolve: async () => [{ address: "93.184.216.34", family: 4 }],
+      transport,
+      cachePolicy: { maxEntries: 2, maxBytes: 1024 * 1024 },
+    });
+
+    await fetchClient(clients[0]!);
+    await fetchClient(clients[1]!);
+    await fetchClient(clients[0]!);
+    await fetchClient(clients[2]!);
+    await fetchClient(clients[0]!);
+    await fetchClient(clients[1]!);
+
+    expect(callsFor(transport, clients[0]!)).toBe(1);
+    expect(callsFor(transport, clients[1]!)).toBe(2);
+    expect(callsFor(transport, clients[2]!)).toBe(1);
+  });
+
+  it("evicts least-recently-used entries until aggregate response bytes fit", async () => {
+    const clientA = "https://client-a.example/oauth/client.json";
+    const clientB = "https://client-b.example/oauth/client.json";
+    const clientC = "https://client-c.example/oauth/client.json";
+    const largeName = "C".repeat(100);
+    const documents = new Map([
+      [clientA, documentFor(clientA)],
+      [clientB, documentFor(clientB)],
+      [clientC, documentFor(clientC, largeName)],
+    ]);
+    const transport = vi.fn(async (url: URL) => response({
+      body: (async function* () {
+        yield Buffer.from(JSON.stringify(documents.get(url.href)));
+      })(),
+    }));
+    const maxBytes = Buffer.byteLength(JSON.stringify(documents.get(clientA))) +
+      Buffer.byteLength(JSON.stringify(documents.get(clientC)));
+    const fetchClient = createCimdFetcher({
+      resolve: async () => [{ address: "93.184.216.34", family: 4 }],
+      transport,
+      cachePolicy: { maxEntries: 10, maxBytes },
+    });
+
+    await fetchClient(clientA);
+    await fetchClient(clientB);
+    await fetchClient(clientA);
+    await fetchClient(clientC);
+    await fetchClient(clientA);
+    await fetchClient(clientB);
+
+    expect(callsFor(transport, clientA)).toBe(1);
+    expect(callsFor(transport, clientB)).toBe(2);
+    expect(callsFor(transport, clientC)).toBe(1);
+  });
+
+  it("does not retain one document larger than the aggregate byte cap", async () => {
+    const document = documentFor(CLIENT_ID);
+    const transport = vi.fn(async () => response({
+      body: (async function* () { yield Buffer.from(JSON.stringify(document)); })(),
+    }));
+    const fetchClient = createCimdFetcher({
+      resolve: async () => [{ address: "93.184.216.34", family: 4 }],
+      transport,
+      cachePolicy: {
+        maxEntries: 10,
+        maxBytes: Buffer.byteLength(JSON.stringify(document)) - 1,
+      },
+    });
+
+    await fetchClient(CLIENT_ID);
+    await fetchClient(CLIENT_ID);
+
+    expect(transport).toHaveBeenCalledTimes(2);
   });
 });

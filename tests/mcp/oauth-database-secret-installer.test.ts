@@ -47,6 +47,7 @@ import {
 } from "../../services/tabloom-mcp/scripts/install-oauth-database-secret.mjs";
 
 const SECRET = Buffer.alloc(32, 0x42).toString("base64url");
+const NONCANONICAL_SECRET = "QkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJ";
 const DATABASE_URL = "postgres://operator:private-password@db.example.test:5432/tabloom";
 const FINGERPRINT = createHash("sha256")
   .update(Buffer.from(SECRET, "base64url"))
@@ -144,8 +145,16 @@ returning encode(extensions.digest(secret, 'sha256'), 'hex') as fingerprint`,
       await writeFile(path, ` ${SECRET}`, { mode: 0o600 });
       return path;
     }],
-    ["non-canonical base64url", async (path: string) => {
+    ["padded base64url", async (path: string) => {
       await writeFile(path, `${SECRET}=`, { mode: 0o600 });
+      return path;
+    }],
+    ["same-length non-canonical base64url", async (path: string) => {
+      expect(NONCANONICAL_SECRET).toHaveLength(43);
+      expect(Buffer.from(NONCANONICAL_SECRET, "base64url")).toHaveLength(32);
+      expect(Buffer.from(NONCANONICAL_SECRET, "base64url").toString("base64url"))
+        .not.toBe(NONCANONICAL_SECRET);
+      await writeFile(path, NONCANONICAL_SECRET, { mode: 0o600 });
       return path;
     }],
     ["wrong decoded length", async (path: string) => {

@@ -12,6 +12,7 @@ import { sealAuthorizationCode } from "../../services/tabloom-mcp/src/oauth/cons
 import type { ConsentSession } from "../../services/tabloom-mcp/src/oauth/cookies";
 import {
   createOAuthPersistence,
+  OAuthInvalidGrantPersistenceError,
   OAuthPersistenceUnavailableError,
   type OAuthPersistence,
 } from "../../services/tabloom-mcp/src/oauth/persistence";
@@ -502,6 +503,27 @@ describe("POST /oauth/token authorization_code", () => {
     const replayed = await authorizationCode();
     expect((await tokenRequest({ code: replayed })).status).toBe(200);
     await expectError(await tokenRequest({ code: replayed }), "invalid_grant");
+  });
+
+  it("maps the database consume-expiry clock race to invalid_grant", async () => {
+    const databaseMessage = "expires_at crossed private database clock";
+    const base = persistence();
+    vi.mocked(createOAuthPersistence).mockReturnValue({
+      ...base,
+      async consume() {
+        throw Object.assign(new OAuthInvalidGrantPersistenceError(), {
+          cause: new Error(databaseMessage),
+        });
+      },
+    });
+
+    const response = await tokenRequest();
+    const body = await response.text();
+
+    expect(response.status).toBe(400);
+    expect(JSON.parse(body)).toEqual({ error: "invalid_grant" });
+    expect(body).not.toContain(databaseMessage);
+    expect(getUser).not.toHaveBeenCalled();
   });
 
   it("has exactly one winner when duplicate approval artifacts race", async () => {

@@ -7,7 +7,10 @@ import type { FacadeAuthConfig } from "../auth/config";
 import { issueAccessToken } from "../auth/access-token";
 import { verifyS256 } from "./authorization-request";
 import { openAuthorizationCode } from "./consent";
-import type { OAuthPersistence } from "./persistence";
+import {
+  OAuthInvalidGrantPersistenceError,
+  type OAuthPersistence,
+} from "./persistence";
 
 export const REFRESH_TOKEN_LIFETIME_SECONDS = 30 * 24 * 60 * 60;
 
@@ -84,6 +87,20 @@ function invalidScope(): TokenServiceError {
 
 function randomIdentifier(): string {
   return randomBytes(32).toString("base64url");
+}
+
+async function consumeGrant(
+  persistence: OAuthPersistence,
+  kind: "authorization_code" | "refresh_token",
+  jti: string,
+  expiresAt: number,
+): Promise<boolean> {
+  try {
+    return await persistence.consume(kind, jti, new Date(expiresAt * 1000));
+  } catch (error) {
+    if (error instanceof OAuthInvalidGrantPersistenceError) throw invalidGrant();
+    throw error;
+  }
 }
 
 async function revalidateSupabaseUser(
@@ -310,10 +327,11 @@ export async function exchangeAuthorizationCode(
   }
 
   if (await persistence.isGrantRevoked(code.grantId)) throw invalidGrant();
-  const consumed = await persistence.consume(
+  const consumed = await consumeGrant(
+    persistence,
     "authorization_code",
     code.jti,
-    new Date(code.expiresAt * 1000),
+    code.expiresAt,
   );
   if (!consumed) throw invalidGrant();
 
@@ -358,10 +376,11 @@ export async function exchangeRefreshToken(
   }
 
   if (await persistence.isGrantRevoked(refresh.grantId)) throw invalidGrant();
-  const consumed = await persistence.consume(
+  const consumed = await consumeGrant(
+    persistence,
     "refresh_token",
     refresh.jti,
-    new Date(refresh.expiresAt * 1000),
+    refresh.expiresAt,
   );
   if (!consumed) throw invalidGrant();
 
