@@ -28,6 +28,11 @@ select ok(
   'OAuth owner has no retained role memberships'
 );
 
+select ok(
+  not has_schema_privilege('oauth_facade_owner', 'public', 'create'),
+  'OAuth owner has no retained CREATE privilege on public'
+);
+
 insert into oauth_private.facade_secret (secret)
 values (decode(repeat('42', 32), 'hex'))
 on conflict (singleton) do update

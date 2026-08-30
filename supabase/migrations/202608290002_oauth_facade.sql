@@ -67,8 +67,12 @@ $$;
 grant usage on schema extensions to oauth_facade_owner;
 
 -- Supabase owns public through pg_database_owner and grants USAGE to PUBLIC.
--- Managed postgres cannot re-grant that ACL, so verify the required inherited
--- privilege rather than trying to mutate the platform-owned schema.
+-- Managed postgres must assume that owner role to grant the temporary CREATE
+-- privilege PostgreSQL requires while transferring public object ownership.
+set local role pg_database_owner;
+grant create on schema public to oauth_facade_owner;
+reset role;
+
 do $$
 begin
   if not has_schema_privilege('oauth_facade_owner', 'public', 'usage') then
@@ -581,6 +585,18 @@ grant execute on function public.get_oauth_client(uuid) to anon;
 grant execute on function public.consume_oauth_token(text, text, timestamptz, bigint, text, text) to anon;
 grant execute on function public.revoke_oauth_grant(text, timestamptz, bigint, text, text) to anon;
 grant execute on function public.is_oauth_grant_revoked(text) to anon;
+
+set local role pg_database_owner;
+revoke create on schema public from oauth_facade_owner;
+reset role;
+
+do $$
+begin
+  if has_schema_privilege('oauth_facade_owner', 'public', 'create') then
+    raise exception 'OAuth facade owner retained CREATE on schema public';
+  end if;
+end
+$$;
 
 do $$
 begin
