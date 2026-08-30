@@ -52,9 +52,9 @@ describe("BrowserWorkspaceCache", () => {
     await cache.saveSyncState("user-a", { status: "synced", revision: 2 });
 
     expect(state[LOCAL_WORKSPACE_KEY]).toMatchObject({ snapshot });
-    expect(state[cloudWorkspaceKey("user-a")]).toEqual({ snapshot, revision: 2 });
+    expect(state[cloudWorkspaceKey("user-a")]).toMatchObject({ version: 2, snapshot, revision: 2 });
     expect(state[cloudWorkspaceKey("user-b")]).toMatchObject({ revision: 5 });
-    expect(state[syncStateKey("user-a")]).toEqual({ status: "synced", revision: 2 });
+    expect(state[syncStateKey("user-a")]).toMatchObject({ version: 2, phase: "synced", revision: 2 });
   });
 
   it("migrates user-created content from the legacy key once", async () => {

@@ -1,13 +1,16 @@
 import type { BookmarkSource } from "../shared/bookmarks";
 import type { WorkspaceSnapshot } from "../shared/domain";
 import type { VersionedWorkspaceSnapshot } from "../shared/workspace-merge";
+import {
+  LocalFirstStorage,
+  accountSyncStateKey,
+  accountWorkspaceKey,
+} from "./local-first-storage";
 
 export const LOCAL_WORKSPACE_KEY = "tabloom-local-workspace-v2";
 export const LEGACY_WORKSPACE_KEY = "tabloom-workspace-snapshot";
-export const cloudWorkspaceKey = (userId: string) =>
-  `tabloom-cloud-workspace-v1:${userId}`;
-export const syncStateKey = (userId: string) =>
-  `tabloom-sync-state-v1:${userId}`;
+export const cloudWorkspaceKey = accountWorkspaceKey;
+export const syncStateKey = accountSyncStateKey;
 
 export type StorageArea = {
   get(key: string): Promise<Record<string, unknown>>;
@@ -58,28 +61,6 @@ function isEnvelope(value: unknown): value is WorkspaceCacheEnvelope {
   );
 }
 
-function isVersionedSnapshot(
-  value: unknown,
-): value is VersionedWorkspaceSnapshot {
-  if (!value || typeof value !== "object") return false;
-  const candidate = value as Partial<VersionedWorkspaceSnapshot>;
-  return (
-    Number.isSafeInteger(candidate.revision) &&
-    (candidate.revision ?? -1) >= 0 &&
-    isSnapshot(candidate.snapshot)
-  );
-}
-
-function isCachedSyncState(value: unknown): value is CachedSyncState {
-  if (!value || typeof value !== "object") return false;
-  const candidate = value as Partial<CachedSyncState>;
-  return (
-    ["local", "pending", "synced", "error"].includes(candidate.status ?? "") &&
-    Number.isSafeInteger(candidate.revision) &&
-    (candidate.revision ?? -1) >= 0
-  );
-}
-
 function isHistoricalDemo(snapshot: WorkspaceSnapshot): boolean {
   return (
     snapshot.spaces.length === 3 &&
@@ -109,26 +90,45 @@ export class BrowserWorkspaceCache implements WorkspaceCache {
   }
 
   async loadCloud(userId: string): Promise<VersionedWorkspaceSnapshot | null> {
-    const key = cloudWorkspaceKey(userId);
-    const value = (await this.area.get(key))[key];
-    return isVersionedSnapshot(value) ? value : null;
+    const storage = new LocalFirstStorage(this.area, userId);
+    const value = await storage.load() ?? await storage.migrateV1();
+    return value ? { snapshot: value.snapshot, revision: value.revision } : null;
   }
 
   async saveCloud(
     userId: string,
     value: VersionedWorkspaceSnapshot,
   ): Promise<void> {
-    await this.area.set({ [cloudWorkspaceKey(userId)]: value });
+    await new LocalFirstStorage(this.area, userId).saveCanonical(value.snapshot, value.revision);
   }
 
   async loadSyncState(userId: string): Promise<CachedSyncState | null> {
-    const key = syncStateKey(userId);
-    const value = (await this.area.get(key))[key];
-    return isCachedSyncState(value) ? value : null;
+    const value = await new LocalFirstStorage(this.area, userId).load();
+    if (!value) return null;
+    const status: CachedSyncState["status"] = value.sync.phase === "synced"
+      ? "synced"
+      : value.sync.phase === "offline" && value.sync.error
+        ? "error"
+        : "pending";
+    return {
+      status,
+      revision: value.revision,
+      ...(value.sync.lastSyncedAt ? { lastSyncedAt: value.sync.lastSyncedAt } : {}),
+      ...(value.sync.error ? { error: value.sync.error } : {}),
+    };
   }
 
   async saveSyncState(userId: string, state: CachedSyncState): Promise<void> {
-    await this.area.set({ [syncStateKey(userId)]: state });
+    const storage = new LocalFirstStorage(this.area, userId);
+    await storage.update(async (current) => [{
+      ...current,
+      revision: state.revision,
+      sync: {
+        phase: state.status === "synced" ? "synced" : state.status === "error" ? "offline" : "syncing",
+        ...(state.lastSyncedAt ? { lastSyncedAt: state.lastSyncedAt } : {}),
+        ...(state.error ? { error: state.error } : {}),
+      },
+    }, undefined]);
   }
 
   async migrateLegacyOnce(): Promise<void> {

@@ -58,6 +58,30 @@ export type WorkspaceRebaseResult = {
   rejected: Array<{ operationId: string; code: "deleted" | "deleted_parent" }>;
 };
 
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+export function isWorkspaceOperation(value: unknown): value is WorkspaceOperation {
+  if (!isRecord(value) || !UUID_PATTERN.test(String(value.operationId)) || !UUID_PATTERN.test(String(value.deviceId))) return false;
+  if (!Number.isSafeInteger(value.sequence) || Number(value.sequence) < 1) return false;
+  if (!Number.isSafeInteger(value.baseRevision) || Number(value.baseRevision) < 0) return false;
+  if (!["space", "collection", "link"].includes(String(value.entity)) || !UUID_PATTERN.test(String(value.entityId))) return false;
+  if (!["create", "update", "delete", "reorder"].includes(String(value.action)) || typeof value.createdAt !== "string" || !isRecord(value.payload)) return false;
+  if ("user_id" in value.payload || "access_token" in value.payload || "refresh_token" in value.payload) return false;
+  if (value.action === "delete") return Object.keys(value.payload).length === 0;
+  if (value.action === "reorder") {
+    return ["collection", "link"].includes(String(value.entity))
+      && UUID_PATTERN.test(String(value.payload.parentId))
+      && Array.isArray(value.payload.orderedIds)
+      && value.payload.orderedIds.every((id) => typeof id === "string" && UUID_PATTERN.test(id));
+  }
+  if (value.action === "create") return value.payload.id === value.entityId;
+  return true;
+}
+
 function clone<T>(value: T): T {
   return structuredClone(value);
 }
