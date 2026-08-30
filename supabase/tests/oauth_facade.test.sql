@@ -2,6 +2,32 @@ begin;
 
 select no_plan();
 
+select ok(
+  exists (
+    select 1
+    from pg_roles
+    where rolname = 'oauth_facade_owner'
+      and not rolsuper
+      and not rolcreatedb
+      and not rolcreaterole
+      and not rolcanlogin
+      and not rolinherit
+      and not rolreplication
+      and not rolbypassrls
+  ),
+  'OAuth owner has only safe role attributes'
+);
+
+select ok(
+  not exists (
+    select 1
+    from pg_auth_members membership
+    join pg_roles parent_role on parent_role.oid = membership.roleid
+    where parent_role.rolname = 'oauth_facade_owner'
+  ),
+  'OAuth owner has no retained role memberships'
+);
+
 insert into oauth_private.facade_secret (secret)
 values (decode(repeat('42', 32), 'hex'))
 on conflict (singleton) do update

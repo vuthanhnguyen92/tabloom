@@ -1,13 +1,12 @@
+begin;
+
 do $$
 begin
   create role oauth_facade_owner
     nologin
     noinherit
-    nosuperuser
     nocreatedb
-    nocreaterole
-    noreplication
-    nobypassrls;
+    nocreaterole;
 exception
   when duplicate_object then null;
 end
@@ -16,11 +15,51 @@ $$;
 alter role oauth_facade_owner
   nologin
   noinherit
-  nosuperuser
   nocreatedb
-  nocreaterole
-  noreplication
-  nobypassrls;
+  nocreaterole;
+
+do $$
+begin
+  if exists (
+    select 1
+    from pg_roles
+    where rolname = 'oauth_facade_owner'
+      and (
+        rolsuper
+        or rolcreatedb
+        or rolcreaterole
+        or rolcanlogin
+        or rolinherit
+        or rolreplication
+        or rolbypassrls
+      )
+  ) then
+    raise exception 'OAuth facade owner has unsafe role attributes';
+  end if;
+end
+$$;
+
+do $$
+begin
+  if exists (
+    select 1
+    from pg_auth_members membership
+    join pg_roles parent_role on parent_role.oid = membership.roleid
+    where parent_role.rolname = 'oauth_facade_owner'
+  ) then
+    raise exception 'OAuth facade owner has unsafe role memberships';
+  end if;
+end
+$$;
+
+-- Managed Supabase database owners can create roles but are not implicitly
+-- members of them. Membership is needed only while assigning object ownership
+-- and is revoked again before this transaction commits.
+do $$
+begin
+  execute format('grant oauth_facade_owner to %I', current_user);
+end
+$$;
 
 grant usage on schema public, extensions to oauth_facade_owner;
 
@@ -528,3 +567,11 @@ grant execute on function public.get_oauth_client(uuid) to anon;
 grant execute on function public.consume_oauth_token(text, text, timestamptz, bigint, text, text) to anon;
 grant execute on function public.revoke_oauth_grant(text, timestamptz, bigint, text, text) to anon;
 grant execute on function public.is_oauth_grant_revoked(text) to anon;
+
+do $$
+begin
+  execute format('revoke oauth_facade_owner from %I', current_user);
+end
+$$;
+
+commit;
