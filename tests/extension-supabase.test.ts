@@ -1,5 +1,4 @@
 import { describe, expect, it, vi } from "vitest";
-import { extensionSupabase } from "../extension/supabase";
 
 vi.mock("../extension/storage", () => ({
   browserAuthStorage: {
@@ -15,7 +14,13 @@ vi.mock("../extension/browser", () => ({
 }));
 
 describe("extension Supabase client", () => {
-  it("uses PKCE so browser identity callbacks contain an authorization code", () => {
+  it("uses PKCE so browser identity callbacks contain an authorization code", async () => {
+    vi.stubEnv("VITE_SUPABASE_URL", "https://example.supabase.co");
+    vi.stubEnv("VITE_SUPABASE_ANON_KEY", "public-anon-key");
+    vi.resetModules();
+
+    const { extensionSupabase } = await import("../extension/supabase");
+
     expect(extensionSupabase).not.toBeNull();
     expect((extensionSupabase!.auth as unknown as { flowType: string }).flowType).toBe("pkce");
   });
