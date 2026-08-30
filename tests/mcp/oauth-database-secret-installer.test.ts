@@ -98,10 +98,7 @@ describe("OAuth database secret installer", () => {
       expect(connection.queries).toEqual([
         "BEGIN",
         {
-          text: `insert into oauth_private.facade_secret (singleton, secret)
-values (true, $1::bytea)
-on conflict (singleton) do update set secret = excluded.secret
-returning encode(extensions.digest(secret, 'sha256'), 'hex') as fingerprint`,
+          text: "select oauth_private.install_facade_secret($1::bytea) as fingerprint",
           values: [Buffer.from(SECRET, "base64url")],
         },
         "COMMIT",

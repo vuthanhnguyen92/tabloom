@@ -8,10 +8,8 @@ import { Client } from "pg";
 
 const SCRIPT_DIRECTORY = dirname(fileURLToPath(import.meta.url));
 const DEFAULT_REPOSITORY_ROOT = resolve(SCRIPT_DIRECTORY, "../../..");
-const UPSERT_SECRET = `insert into oauth_private.facade_secret (singleton, secret)
-values (true, $1::bytea)
-on conflict (singleton) do update set secret = excluded.secret
-returning encode(extensions.digest(secret, 'sha256'), 'hex') as fingerprint`;
+const UPSERT_SECRET =
+  "select oauth_private.install_facade_secret($1::bytea) as fingerprint";
 
 function installationFailure() {
   return new Error("OAuth database secret installation failed");

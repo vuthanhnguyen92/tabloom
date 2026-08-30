@@ -39,10 +39,37 @@ select ok(
   'OAuth owner has no retained CREATE privilege on public'
 );
 
-insert into oauth_private.facade_secret (secret)
-values (decode(repeat('42', 32), 'hex'))
-on conflict (singleton) do update
-set secret = excluded.secret, updated_at = clock_timestamp();
+select is(
+  oauth_private.install_facade_secret(decode(repeat('43', 32), 'hex')),
+  encode(extensions.digest(decode(repeat('43', 32), 'hex'), 'sha256'), 'hex'),
+  'private installer upserts exactly 32 bytes and returns their fingerprint'
+);
+select is(
+  (select encode(extensions.digest(secret, 'sha256'), 'hex')
+   from oauth_private.facade_secret where singleton),
+  encode(extensions.digest(decode(repeat('43', 32), 'hex'), 'sha256'), 'hex'),
+  'private installer persists the inserted secret'
+);
+select throws_ok(
+  $$ select oauth_private.install_facade_secret(null::bytea) $$,
+  '22023', 'invalid OAuth facade secret', 'private installer rejects null'
+);
+select throws_ok(
+  $$ select oauth_private.install_facade_secret(decode(repeat('43', 31), 'hex')) $$,
+  '22023', 'invalid OAuth facade secret', 'private installer rejects the wrong byte length'
+);
+
+select is(
+  oauth_private.install_facade_secret(decode(repeat('42', 32), 'hex')),
+  encode(extensions.digest(decode(repeat('42', 32), 'hex'), 'sha256'), 'hex'),
+  'private installer updates the proof fixture through the narrow API'
+);
+select is(
+  (select encode(extensions.digest(secret, 'sha256'), 'hex')
+   from oauth_private.facade_secret where singleton),
+  encode(extensions.digest(decode(repeat('42', 32), 'hex'), 'sha256'), 'hex'),
+  'private installer persists the updated proof fixture'
+);
 
 create function pg_temp.frame_text(value text)
 returns text language sql immutable strict
@@ -196,6 +223,7 @@ select has_table('oauth_private', 'mutation_nonces', 'private replay table exist
 select has_function('public', 'register_oauth_client', array['jsonb', 'bigint', 'text', 'text'], 'proved registration RPC exists');
 select has_function('public', 'consume_oauth_token', array['text', 'text', 'timestamp with time zone', 'bigint', 'text', 'text'], 'proved consume RPC exists');
 select has_function('public', 'revoke_oauth_grant', array['text', 'timestamp with time zone', 'bigint', 'text', 'text'], 'proved revocation RPC exists');
+select has_function('oauth_private', 'install_facade_secret', array['bytea'], 'private database-secret installer exists');
 select is((select count(*) from pg_proc where pronamespace = 'public'::regnamespace and proname = 'register_oauth_client' and pronargs = 1), 0::bigint, 'unproved registration overload does not exist');
 select is((select count(*) from pg_proc where pronamespace = 'public'::regnamespace and proname = 'consume_oauth_token' and pronargs = 3), 0::bigint, 'unproved consume overload does not exist');
 select is((select count(*) from pg_proc where pronamespace = 'public'::regnamespace and proname = 'revoke_oauth_grant' and pronargs = 2), 0::bigint, 'unproved revoke overload does not exist');
@@ -206,6 +234,11 @@ select ok(not has_schema_privilege('authenticated', 'oauth_private', 'usage'), '
 select ok(not has_schema_privilege('service_role', 'oauth_private', 'usage'), 'service role cannot use the private schema');
 select ok(not has_table_privilege('anon', 'oauth_private.facade_secret', 'select'), 'anon cannot read the proof secret');
 select ok(not has_table_privilege('service_role', 'oauth_private.facade_secret', 'select'), 'service role cannot read the proof secret');
+select ok(has_schema_privilege(current_user, 'oauth_private', 'usage'), 'managed database administrator can resolve the private installer');
+select ok(has_function_privilege(current_user, 'oauth_private.install_facade_secret(bytea)', 'execute'), 'managed database administrator can execute the private installer');
+select ok(not has_function_privilege('anon', 'oauth_private.install_facade_secret(bytea)', 'execute'), 'anon cannot execute the private installer');
+select ok(not has_function_privilege('authenticated', 'oauth_private.install_facade_secret(bytea)', 'execute'), 'authenticated cannot execute the private installer');
+select ok(not has_function_privilege('service_role', 'oauth_private.install_facade_secret(bytea)', 'execute'), 'service role cannot execute the private installer');
 select ok(has_function_privilege('anon', 'public.register_oauth_client(jsonb,bigint,text,text)', 'execute'), 'anon can execute only proved registration');
 select ok(not has_function_privilege('service_role', 'public.register_oauth_client(jsonb,bigint,text,text)', 'execute'), 'service role has no registration execution grant');
 select ok((select relrowsecurity from pg_class where oid = 'public.oauth_clients'::regclass), 'client RLS is enabled');
@@ -214,6 +247,11 @@ select ok(not has_table_privilege('oauth_facade_owner', 'public.spaces', 'select
 select ok(not has_table_privilege('oauth_facade_owner', 'auth.users', 'select'), 'OAuth owner cannot read auth users');
 
 set local role anon;
+
+select throws_ok(
+  $$ select oauth_private.install_facade_secret(decode(repeat('43', 32), 'hex')) $$,
+  '42501', 'permission denied for schema oauth_private', 'anon cannot invoke the private installer'
+);
 
 select throws_ok(
   $$ select public.register_oauth_client(

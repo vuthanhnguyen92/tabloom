@@ -89,8 +89,12 @@ npm --workspace @tabloom/mcp run oauth:install-database-secret -- \
   --secret-file /Users/nickvu/.tabloom-secrets/database-proof-v1.txt
 ```
 
-The command prints only Postgres's lowercase SHA-256 fingerprint of the raw
-32 decoded bytes. Before enabling OAuth, compute the local decoded-byte
+The command calls the private `oauth_private.install_facade_secret(bytea)`
+function over the direct database connection. Only managed `postgres` may
+execute that function; browser-facing roles and `service_role` cannot resolve
+or execute it, and the administrator receives no direct table grant. The
+command prints only Postgres's lowercase SHA-256 fingerprint of the raw 32
+decoded bytes. Before enabling OAuth, compute the local decoded-byte
 fingerprint without printing the artifact, and require the two fingerprints to
 be identical:
 
