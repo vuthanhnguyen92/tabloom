@@ -87,7 +87,6 @@ function setup(input: {
   const cloud = input.cloud ?? workspace({ space: "Cloud", collection: "Saved" });
   const revision = input.revision ?? 3;
   const localRepository = new MemoryWorkspaceRepository("local-user", local);
-  const cloudRepository = new MemoryWorkspaceRepository("cloud-user", cloud);
   const result: WorkspaceMergeResult = {
     snapshot: cloud,
     revision: revision + 1,
@@ -130,27 +129,31 @@ function setup(input: {
     }),
     migrateLegacyOnce: vi.fn(async () => undefined),
   };
-  const activateCloud = vi.fn(async () => {
+  const activateCanonical = vi.fn(async () => {
     calls.push("activate-cloud");
   });
   const coordinator = new FirstSyncCoordinator({
     userId: "cloud-user",
     localRepository,
-    cloudRepository,
     syncRepository,
     cache,
-    activateCloud,
+    activateCanonical,
   });
-  return { coordinator, calls, cache, activateCloud, syncRepository, result };
+  return { coordinator, calls, cache, activateCanonical, syncRepository, result };
 }
 
 describe("FirstSyncCoordinator", () => {
   it("adopts populated cloud without confirmation for a default-only local workspace", async () => {
-    const { coordinator } = setup({ local: bootstrapWorkspace() });
+    const { coordinator, activateCanonical, syncRepository } = setup({ local: bootstrapWorkspace() });
 
     await expect(coordinator.inspect()).resolves.toMatchObject({
       kind: "adopt-cloud",
     });
+    expect(syncRepository.loadVersioned).toHaveBeenCalledOnce();
+    expect(activateCanonical).toHaveBeenCalledWith(
+      workspace({ space: "Cloud", collection: "Saved" }),
+      3,
+    );
   });
 
   it("automatically imports meaningful local data when cloud is completely empty", async () => {
@@ -172,7 +175,7 @@ describe("FirstSyncCoordinator", () => {
   });
 
   it("caches canonical cloud state before switching repository authority", async () => {
-    const { coordinator, calls } = setup({ cloud: emptyWorkspace(), revision: 0 });
+    const { coordinator, calls, activateCanonical, result } = setup({ cloud: emptyWorkspace(), revision: 0 });
     const decision = await coordinator.inspect();
     if (decision.kind === "adopt-cloud") throw new Error("unexpected decision");
 
@@ -185,10 +188,11 @@ describe("FirstSyncCoordinator", () => {
       "state-synced",
       "activate-cloud",
     ]);
+    expect(activateCanonical).toHaveBeenCalledWith(result.snapshot, result.revision);
   });
 
   it("keeps local authority and marks sync pending when canonical caching fails", async () => {
-    const { coordinator, activateCloud, cache } = setup({
+    const { coordinator, activateCanonical, cache } = setup({
       cloud: emptyWorkspace(),
       revision: 0,
       failCloudCache: true,
@@ -199,7 +203,7 @@ describe("FirstSyncCoordinator", () => {
     await expect(coordinator.confirm(decision.preview)).rejects.toThrow(
       "cache unavailable",
     );
-    expect(activateCloud).not.toHaveBeenCalled();
+    expect(activateCanonical).not.toHaveBeenCalled();
     expect(cache.saveSyncState).toHaveBeenLastCalledWith(
       "cloud-user",
       expect.objectContaining({ status: "error" }),
@@ -207,12 +211,12 @@ describe("FirstSyncCoordinator", () => {
   });
 
   it("cancels into a retryable pending state without switching authority", async () => {
-    const { coordinator, activateCloud, cache } = setup({});
+    const { coordinator, activateCanonical, cache } = setup({});
     await coordinator.inspect();
 
     await coordinator.cancel();
 
-    expect(activateCloud).not.toHaveBeenCalled();
+    expect(activateCanonical).not.toHaveBeenCalled();
     expect(cache.saveSyncState).toHaveBeenCalledWith("cloud-user", {
       status: "pending",
       revision: 3,

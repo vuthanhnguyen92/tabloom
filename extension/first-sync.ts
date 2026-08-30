@@ -55,12 +55,11 @@ export class FirstSyncCoordinator {
     private readonly dependencies: {
       userId: string;
       localRepository: WorkspaceRepository;
-      cloudRepository: WorkspaceRepository;
       syncRepository: WorkspaceSyncRepository;
       cache: WorkspaceCache;
-      activateCloud: (
-        repository: WorkspaceRepository,
+      activateCanonical: (
         snapshot: WorkspaceSnapshot,
+        revision: number,
       ) => Promise<void>;
     },
   ) {}
@@ -104,9 +103,9 @@ export class FirstSyncCoordinator {
         revision: result.revision,
         lastSyncedAt: new Date().toISOString(),
       });
-      await this.dependencies.activateCloud(
-        this.dependencies.cloudRepository,
+      await this.dependencies.activateCanonical(
         result.snapshot,
+        result.revision,
       );
       this.pendingRevision = result.revision;
       return result;
@@ -150,9 +149,9 @@ export class FirstSyncCoordinator {
       revision: cloud.revision,
       lastSyncedAt: new Date().toISOString(),
     });
-    await this.dependencies.activateCloud(
-      this.dependencies.cloudRepository,
+    await this.dependencies.activateCanonical(
       cloud.snapshot,
+      cloud.revision,
     );
   }
 }
