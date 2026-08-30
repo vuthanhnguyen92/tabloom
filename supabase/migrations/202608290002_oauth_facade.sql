@@ -64,7 +64,18 @@ begin
 end
 $$;
 
-grant usage on schema public, extensions to oauth_facade_owner;
+grant usage on schema extensions to oauth_facade_owner;
+
+-- Supabase owns public through pg_database_owner and grants USAGE to PUBLIC.
+-- Managed postgres cannot re-grant that ACL, so verify the required inherited
+-- privilege rather than trying to mutate the platform-owned schema.
+do $$
+begin
+  if not has_schema_privilege('oauth_facade_owner', 'public', 'usage') then
+    raise exception 'OAuth facade owner cannot use schema public';
+  end if;
+end
+$$;
 
 create schema oauth_private authorization oauth_facade_owner;
 revoke all on schema oauth_private from public, anon, authenticated, service_role;
