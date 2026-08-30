@@ -13,7 +13,7 @@ const REQUIRED_SCOPE = "tabloom:workspace";
 const DEFAULT_TIMEOUT_MS = 10 * 60 * 1000;
 const MAX_PROBE_RESPONSE_BYTES = 256 * 1024;
 
-function strings(value) {
+function jwtAudienceValues(value) {
   return Array.isArray(value)
     ? value.every((entry) => typeof entry === "string") ? value : []
     : typeof value === "string"
@@ -21,15 +21,21 @@ function strings(value) {
       : [];
 }
 
+function metadataStringArray(value) {
+  return Array.isArray(value) && value.every((entry) => typeof entry === "string")
+    ? value
+    : [];
+}
+
 export function evaluateAudience(audience, expectedResource) {
-  const values = strings(audience);
+  const values = jwtAudienceValues(audience);
   return values.length === 1 && values[0] === expectedResource
     ? { pass: true }
     : { pass: false, reason: "resource_audience_mismatch" };
 }
 
-function exactStringArray(value, required) {
-  const values = strings(value);
+function exactMetadataStringArray(value, required) {
+  const values = metadataStringArray(value);
   return values.length === required.length &&
     required.every((entry) => values.includes(entry));
 }
@@ -42,7 +48,7 @@ export function evaluateDiscovery(
   const resource = typeof protectedResource?.resource === "string"
     ? protectedResource.resource
     : "";
-  const authorizationServers = strings(
+  const authorizationServers = metadataStringArray(
     protectedResource?.authorization_servers,
   );
   const issuer = authorizationServers.length === 1
@@ -61,17 +67,17 @@ export function evaluateDiscovery(
     resourceMatch &&
     issuerMatch &&
     endpointsMatch &&
-    exactStringArray(
+    exactMetadataStringArray(
       authorizationServer?.code_challenge_methods_supported,
       ["S256"],
     ) &&
-    exactStringArray(
+    exactMetadataStringArray(
       authorizationServer?.grant_types_supported,
       ["authorization_code", "refresh_token"],
     ) &&
-    exactStringArray(authorizationServer?.response_types_supported, ["code"]) &&
-    exactStringArray(authorizationServer?.scopes_supported, [REQUIRED_SCOPE]) &&
-    exactStringArray(
+    exactMetadataStringArray(authorizationServer?.response_types_supported, ["code"]) &&
+    exactMetadataStringArray(authorizationServer?.scopes_supported, [REQUIRED_SCOPE]) &&
+    exactMetadataStringArray(
       authorizationServer?.token_endpoint_auth_methods_supported,
       ["none"],
     );
@@ -259,9 +265,9 @@ function validatePublicJwks(value) {
 function validateRegistrationResponse(body, expectedMetadata) {
   if (typeof body.client_id !== "string" || !body.client_id ||
       body.client_name !== expectedMetadata.client_name ||
-      !exactStringArray(body.redirect_uris, expectedMetadata.redirect_uris) ||
-      !exactStringArray(body.grant_types, expectedMetadata.grant_types) ||
-      !exactStringArray(body.response_types, expectedMetadata.response_types) ||
+      !exactMetadataStringArray(body.redirect_uris, expectedMetadata.redirect_uris) ||
+      !exactMetadataStringArray(body.grant_types, expectedMetadata.grant_types) ||
+      !exactMetadataStringArray(body.response_types, expectedMetadata.response_types) ||
       body.token_endpoint_auth_method !== "none" ||
       Object.hasOwn(body, "client_secret") ||
       Object.hasOwn(body, "registration_access_token")) {
@@ -428,7 +434,7 @@ function allowlistedReport(report) {
     issuer: typeof report?.issuer === "string" ? report.issuer : "",
     issuerMatch: report?.issuerMatch === true,
     algorithm: typeof report?.algorithm === "string" ? report.algorithm : "",
-    audience: strings(report?.audience),
+    audience: jwtAudienceValues(report?.audience),
     audienceMatch: report?.audienceMatch === true,
     scope: typeof report?.scope === "string" ? report.scope : "",
     scopeMatch: report?.scopeMatch === true,
@@ -460,8 +466,8 @@ function reportFromResult({
   revocationResult,
   mcpAfterRevocationResult,
 }) {
-  const firstAudience = strings(firstVerified?.payload?.aud);
-  const audience = strings(rotatedVerified?.payload?.aud);
+  const firstAudience = jwtAudienceValues(firstVerified?.payload?.aud);
+  const audience = jwtAudienceValues(rotatedVerified?.payload?.aud);
   const algorithm = typeof rotatedVerified?.protectedHeader?.alg === "string"
     ? rotatedVerified.protectedHeader.alg
     : "";
@@ -684,7 +690,9 @@ export async function beginProbeAcceptance({
       ),
       "Protected-resource discovery",
     );
-    const discoveredIssuers = strings(protectedResource.authorization_servers);
+    const discoveredIssuers = metadataStringArray(
+      protectedResource.authorization_servers,
+    );
     if (discoveredIssuers.length !== 1) {
       throw new Error("Protected-resource discovery failed");
     }

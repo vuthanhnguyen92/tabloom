@@ -24,6 +24,7 @@ import {
   createCallbackListener,
   createPrivateProbeResultChannel,
   derivePkceChallenge,
+  evaluateAudience,
   evaluateDiscovery,
   parseOAuthCallback,
   probeRequest,
@@ -175,6 +176,7 @@ function successfulProbeHarness(options: {
   privateJwks?: boolean;
   secretRegistration?: boolean;
   invalidTokenMetadata?: boolean;
+  registrationOverrides?: Record<string, unknown>;
 } = {}) {
   const reports: Array<Record<string, unknown>> = [];
   let reportCalls = 0;
@@ -197,7 +199,7 @@ function successfulProbeHarness(options: {
     if (url.endsWith("/oauth/register")) {
       return jsonResponse(201, options.secretRegistration
         ? { ...DCR_RESPONSE, client_secret: "must-not-be-accepted" }
-        : DCR_RESPONSE);
+        : { ...DCR_RESPONSE, ...options.registrationOverrides });
     }
     if (url.endsWith("/oauth/token")) {
       const refresh = new URLSearchParams(String(init?.body))
@@ -328,6 +330,102 @@ describe("MCP OAuth readiness probe", () => {
       { ...AUTHORIZATION_SERVER, response_types_supported: undefined },
       RESOURCE,
     ).discoverySupported).toBe(false);
+  });
+
+  it.each([
+    ["authorization_servers", PROTECTED_RESOURCE, ISSUER],
+    ["code_challenge_methods_supported", AUTHORIZATION_SERVER, "S256"],
+    ["grant_types_supported", AUTHORIZATION_SERVER, "authorization_code"],
+    ["response_types_supported", AUTHORIZATION_SERVER, "code"],
+    ["scopes_supported", AUTHORIZATION_SERVER, SCOPE],
+    ["token_endpoint_auth_methods_supported", AUTHORIZATION_SERVER, "none"],
+  ])("rejects scalar %s discovery metadata", (field, source, scalar) => {
+    const protectedResource = source === PROTECTED_RESOURCE
+      ? { ...PROTECTED_RESOURCE, [field]: scalar }
+      : PROTECTED_RESOURCE;
+    const authorizationServer = source === AUTHORIZATION_SERVER
+      ? { ...AUTHORIZATION_SERVER, [field]: scalar }
+      : AUTHORIZATION_SERVER;
+
+    expect(evaluateDiscovery(
+      protectedResource,
+      authorizationServer,
+      RESOURCE,
+    ).discoverySupported).toBe(false);
+  });
+
+  it("accepts JWT audiences only as one expected string or string array", () => {
+    expect(evaluateAudience(RESOURCE, RESOURCE)).toEqual({ pass: true });
+    expect(evaluateAudience([RESOURCE], RESOURCE)).toEqual({ pass: true });
+    expect(evaluateAudience([RESOURCE, "https://other.example.com"], RESOURCE))
+      .toEqual({ pass: false, reason: "resource_audience_mismatch" });
+  });
+
+  it.each([
+    ["authorization_servers", PROTECTED_RESOURCE, ISSUER],
+    ["code_challenge_methods_supported", AUTHORIZATION_SERVER, "S256"],
+    ["grant_types_supported", AUTHORIZATION_SERVER, "authorization_code"],
+    ["response_types_supported", AUTHORIZATION_SERVER, "code"],
+    ["scopes_supported", AUTHORIZATION_SERVER, SCOPE],
+    ["token_endpoint_auth_methods_supported", AUTHORIZATION_SERVER, "none"],
+  ])("stops before DCR or browser handoff for scalar %s discovery metadata", async (field, source, scalar) => {
+    const requests: string[] = [];
+    let listenerCalls = 0;
+    let handoffCalls = 0;
+    const protectedResource = source === PROTECTED_RESOURCE
+      ? { ...PROTECTED_RESOURCE, [field]: scalar }
+      : PROTECTED_RESOURCE;
+    const authorizationServer = source === AUTHORIZATION_SERVER
+      ? { ...AUTHORIZATION_SERVER, [field]: scalar }
+      : AUTHORIZATION_SERVER;
+
+    await expect(beginProbeAcceptance({
+      env: { NODE_ENV: "test", TABLOOM_MCP_RESOURCE_URL: RESOURCE },
+      request: async (url) => {
+        requests.push(url);
+        if (url.endsWith("/.well-known/oauth-protected-resource")) {
+          return jsonResponse(200, protectedResource);
+        }
+        if (url.endsWith("/.well-known/oauth-authorization-server")) {
+          return jsonResponse(200, authorizationServer);
+        }
+        throw new Error("unexpected request");
+      },
+      createCallbackListener: async () => {
+        listenerCalls += 1;
+        throw new Error("listener must not start");
+      },
+      handoffAuthorization: async () => { handoffCalls += 1; },
+      writeReport: async () => undefined,
+      log: () => undefined,
+    })).rejects.toThrow(
+      source === PROTECTED_RESOURCE
+        ? "Protected-resource discovery failed"
+        : "readiness gate",
+    );
+
+    expect(requests).toEqual(source === PROTECTED_RESOURCE
+      ? [`${RESOURCE}/.well-known/oauth-protected-resource`]
+      : [
+        `${RESOURCE}/.well-known/oauth-protected-resource`,
+        `${RESOURCE}/.well-known/oauth-authorization-server`,
+      ]);
+    expect(listenerCalls).toBe(0);
+    expect(handoffCalls).toBe(0);
+  });
+
+  it.each([
+    ["redirect_uris", CALLBACK_URL],
+    ["grant_types", "authorization_code"],
+    ["response_types", "code"],
+  ])("rejects scalar DCR %s metadata before browser handoff", async (field, scalar) => {
+    const harness = successfulProbeHarness({
+      registrationOverrides: { [field]: scalar },
+    });
+
+    await expect(beginProbeAcceptance(
+      harness.probeOptions as Parameters<typeof beginProbeAcceptance>[0],
+    )).rejects.toThrow("Dynamic client registration failed");
   });
 
   it("rejects a foreign discovered issuer before any off-origin request or browser handoff", async () => {
