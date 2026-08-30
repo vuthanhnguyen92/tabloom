@@ -86,4 +86,24 @@ describe("extension OAuth", () => {
     expect(session.user.id).toBe("user-1");
     expect(supabase.auth.exchangeCodeForSession).toHaveBeenCalledWith("valid-code");
   });
+
+  it("forces Google's account chooser when switching accounts", async () => {
+    const expected = "https://stable-id.chromiumapp.org/auth-callback";
+    const supabase = client();
+    const identity = {
+      getRedirectURL: () => expected,
+      launchWebAuthFlow: vi.fn(async () => `${expected}?code=valid-code`),
+    };
+
+    await runExtensionGoogleOAuth(supabase, identity, "chromium", { selectAccount: true });
+
+    expect(supabase.auth.signInWithOAuth).toHaveBeenCalledWith({
+      provider: "google",
+      options: {
+        queryParams: { prompt: "select_account" },
+        redirectTo: expected,
+        skipBrowserRedirect: true,
+      },
+    });
+  });
 });

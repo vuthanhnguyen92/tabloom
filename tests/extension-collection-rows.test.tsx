@@ -67,6 +67,62 @@ describe("CollectionRows", () => {
     expect(screen.getByRole("group", { name: "Plan collection" })).toHaveClass("bookmark-drop-target");
   });
 
+  it("asks for confirmation before deleting an editable collection", async () => {
+    const normal = createDemoSnapshot();
+    const bookmark = toBookmarkWorkspace("demo-user", mergeBookmarkEntries(
+      [{ id: "mac", device_name: "Work Mac", last_synced_at: null }],
+      [{ id: "entry", source_id: "mac", chrome_bookmark_id: "one", url: "https://example.com", normalized_url: "https://example.com/", title: "Browser example", folder_path: "Imported", syncing: false, position: 0 }],
+    ));
+    const repository = new MemoryWorkspaceRepository("demo-user", normal);
+    render(<CollectionRows
+      collections={[...normal.collections, bookmark.collections[0]]}
+      links={[...normal.links, ...bookmark.links]}
+      repository={repository}
+      onReload={vi.fn(async () => undefined)}
+    />);
+
+    expect(screen.queryByRole("button", { name: "Delete Imported" })).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Delete Plan" }));
+    const dialog = screen.getByRole("dialog", { name: "Delete Plan" });
+    expect(dialog).toHaveTextContent("3 saved links");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+
+    expect(screen.queryByRole("dialog", { name: "Delete Plan" })).not.toBeInTheDocument();
+    expect((await repository.load()).collections.some((item) => item.id === "collection-plan")).toBe(true);
+  });
+
+  it("deletes a confirmed collection and all of its saved links", async () => {
+    const snapshot = createDemoSnapshot();
+    const repository = new MemoryWorkspaceRepository("demo-user", snapshot);
+    const onReload = vi.fn(async () => undefined);
+    const onMessage = vi.fn();
+    render(<CollectionRows collections={snapshot.collections} links={snapshot.links} repository={repository} onReload={onReload} onMessage={onMessage} />);
+
+    await userEvent.click(screen.getByRole("button", { name: "Delete Plan" }));
+    await userEvent.click(screen.getByRole("button", { name: "Delete collection permanently" }));
+
+    await waitFor(() => expect(onReload).toHaveBeenCalledOnce());
+    const remaining = await repository.load();
+    expect(remaining.collections.some((item) => item.id === "collection-plan")).toBe(false);
+    expect(remaining.links.some((item) => item.collection_id === "collection-plan")).toBe(false);
+    expect(onMessage).toHaveBeenCalledWith("Plan deleted");
+  });
+
+  it("keeps the confirmation open when collection deletion fails", async () => {
+    const snapshot = createDemoSnapshot();
+    const repository = new MemoryWorkspaceRepository("demo-user", snapshot);
+    repository.deleteCollection = vi.fn(async () => { throw "offline"; });
+    const onError = vi.fn();
+    render(<CollectionRows collections={snapshot.collections} links={snapshot.links} repository={repository} onError={onError} onReload={vi.fn(async () => undefined)} />);
+
+    await userEvent.click(screen.getByRole("button", { name: "Delete Plan" }));
+    await userEvent.click(screen.getByRole("button", { name: "Delete collection permanently" }));
+
+    await waitFor(() => expect(onError).toHaveBeenCalledWith("Could not delete Plan."));
+    expect(screen.getByRole("dialog", { name: "Delete Plan" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Delete collection permanently" })).toBeEnabled();
+  });
+
   it("copies a dragged bookmark only into a normal collection", async () => {
     const normal = createDemoSnapshot();
     const bookmark = toBookmarkWorkspace("demo-user", mergeBookmarkEntries(

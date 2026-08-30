@@ -10,7 +10,7 @@ export const extensionSupabase = url && key && !url.includes("your-project")
   ? createClient(url, key, { auth: { storage: browserAuthStorage, persistSession: true, autoRefreshToken: true, detectSessionInUrl: false, flowType: "pkce" } })
   : null;
 
-export async function signInExtensionWithGoogle() {
+export async function signInExtensionWithGoogle(options: { selectAccount?: boolean } = {}) {
   if (!extensionSupabase) throw new Error("Supabase is not configured.");
-  return runExtensionGoogleOAuth(extensionSupabase, browserAdapter.identity, browserTarget);
+  return runExtensionGoogleOAuth(extensionSupabase, browserAdapter.identity, browserTarget, options);
 }

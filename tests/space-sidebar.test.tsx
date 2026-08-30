@@ -22,8 +22,36 @@ function setup(snapshot: WorkspaceSnapshot = createDemoSnapshot()) {
 }
 
 describe("SpaceSidebar", () => {
+  it("starts collapsed with colored monograms and can reveal full space controls", () => {
+    setup();
+    const sidebar = screen.getByRole("complementary");
+    const productSpace = screen.getByRole("button", { name: "Select Product launch" });
+
+    expect(sidebar).toHaveClass("collapsed");
+    expect(productSpace).toHaveTextContent("P");
+    expect(productSpace).not.toHaveTextContent("Product launch");
+    expect(screen.queryByRole("button", { name: "Edit Product launch" })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Expand sidebar" }));
+    expect(sidebar).not.toHaveClass("collapsed");
+    expect(productSpace).toHaveTextContent("Product launch");
+    expect(screen.getByRole("button", { name: "Edit Product launch" })).toBeInTheDocument();
+  });
+
+  it("expands before showing the create-space form", () => {
+    setup();
+    fireEvent.click(screen.getByRole("button", { name: "Add space" }));
+
+    expect(screen.getByRole("complementary")).not.toHaveClass("collapsed");
+    expect(screen.getByRole("button", { name: "Collapse sidebar" })).toBeInTheDocument();
+    expect(screen.getByRole("form", { name: "Create space" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Collapse sidebar" }));
+    expect(screen.queryByRole("form", { name: "Create space" })).not.toBeInTheDocument();
+  });
+
   it("creates and edits spaces directly in the sidebar", async () => {
     const { repository } = setup();
+    fireEvent.click(screen.getByRole("button", { name: "Expand sidebar" }));
 
     fireEvent.click(screen.getByRole("button", { name: "Add space" }));
     fireEvent.change(screen.getByRole("textbox", { name: "Space name" }), { target: { value: "Client work" } });
@@ -43,6 +71,7 @@ describe("SpaceSidebar", () => {
 
   it("confirms the collection and saved-link impact before deleting a space", async () => {
     const { repository, onSelect } = setup();
+    fireEvent.click(screen.getByRole("button", { name: "Expand sidebar" }));
 
     fireEvent.click(screen.getByRole("button", { name: "Edit Product launch" }));
     fireEvent.click(screen.getByRole("button", { name: "Delete space" }));
@@ -68,6 +97,7 @@ describe("SpaceSidebar", () => {
       links: base.links,
     };
     setup(snapshot);
+    fireEvent.click(screen.getByRole("button", { name: "Expand sidebar" }));
 
     expect(screen.queryByRole("button", { name: "Edit Browser bookmarks" })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Edit Product launch" }));

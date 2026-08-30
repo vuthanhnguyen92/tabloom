@@ -47,6 +47,12 @@ export type WorkspaceSnapshot = {
 
 export type CaptureResult = { saved: number; skipped: number; closed: number };
 export type Positioned = { id: string; position: number };
+export type WorkspaceSearchResult = {
+  link: SavedLink;
+  collection: Collection;
+  space: Space;
+  score: number;
+};
 
 export function isSaveableUrl(value?: string | null): boolean {
   if (!value) return false;
@@ -104,6 +110,39 @@ export function filterWorkspace(snapshot: WorkspaceSnapshot, rawQuery: string): 
   const collections = snapshot.collections.filter((item) => collectionIds.has(item.id));
   const spaceIds = new Set(collections.map((item) => item.space_id));
   return { spaces: snapshot.spaces.filter((item) => spaceIds.has(item.id)), collections, links };
+}
+
+function searchFieldScore(value: string | null | undefined, query: string, weights: [number, number, number]): number {
+  const normalized = value?.trim().toLocaleLowerCase();
+  if (!normalized) return 0;
+  if (normalized === query) return weights[0];
+  if (normalized.startsWith(query)) return weights[1];
+  return normalized.includes(query) ? weights[2] : 0;
+}
+
+export function searchWorkspace(snapshot: WorkspaceSnapshot, rawQuery: string): WorkspaceSearchResult[] {
+  const query = rawQuery.trim().toLocaleLowerCase();
+  if (!query) return [];
+  const collectionById = new Map(snapshot.collections.map((collection) => [collection.id, collection]));
+  const spaceById = new Map(snapshot.spaces.map((space) => [space.id, space]));
+
+  return snapshot.links.flatMap((link) => {
+    const collection = collectionById.get(link.collection_id);
+    const space = collection ? spaceById.get(collection.space_id) : undefined;
+    if (!collection || !space) return [];
+    const score = Math.max(
+      searchFieldScore(link.title, query, [120, 110, 100]),
+      searchFieldScore(collection.name, query, [90, 80, 70]),
+      searchFieldScore(space.name, query, [85, 75, 65]),
+      searchFieldScore(link.device_label, query, [60, 55, 50]),
+      searchFieldScore(link.description, query, [45, 40, 35]),
+      searchFieldScore(link.url, query, [30, 25, 20]),
+    );
+    return score ? [{ link, collection, space, score }] : [];
+  }).sort((left, right) => right.score - left.score
+    || left.space.position - right.space.position
+    || left.collection.position - right.collection.position
+    || left.link.position - right.link.position);
 }
 
 const now = "2026-08-19T00:00:00.000Z";

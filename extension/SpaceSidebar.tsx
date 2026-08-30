@@ -1,4 +1,4 @@
-import { Check, Pencil, Plus, Trash2, X } from "lucide-react";
+import { Check, ChevronLeft, ChevronRight, Pencil, Plus, Trash2, X } from "lucide-react";
 import { type FormEvent, type ReactNode, useState } from "react";
 import type { Space, WorkspaceSnapshot } from "../shared/domain";
 import type { WorkspaceRepository } from "../shared/repository";
@@ -20,16 +20,23 @@ export function SpaceSidebar({ activeSpaceId, brand, onError, onMessage, onReloa
   const [editor, setEditor] = useState<EditorState | null>(null);
   const [pendingDelete, setPendingDelete] = useState<Space | null>(null);
   const [busy, setBusy] = useState(false);
+  const [collapsed, setCollapsed] = useState(true);
   const savedSpaces = snapshot.spaces.filter((space) => space.origin === "saved" && !space.read_only);
   const canDeleteSavedSpace = savedSpaces.length > 1;
 
   function beginCreate() {
+    setCollapsed(false);
     setEditor({ mode: "create", name: "", color: "#f56f72" });
   }
 
   function beginEdit(space: Space) {
     if (space.read_only || space.origin !== "saved") return;
     setEditor({ mode: "edit", space, name: space.name, color: space.color });
+  }
+
+  function toggleCollapsed() {
+    if (!collapsed) setEditor(null);
+    setCollapsed((current) => !current);
   }
 
   async function saveSpace(event: FormEvent) {
@@ -92,15 +99,15 @@ export function SpaceSidebar({ activeSpaceId, brand, onError, onMessage, onReloa
     </form>;
   }
 
-  return <aside className="ext-sidebar">
-    {brand}
-    <div className="space-sidebar-heading"><span>MY SPACES</span><button aria-label="Add space" disabled={!repository || busy} onClick={beginCreate}><Plus size={15} /></button></div>
+  return <aside aria-label="Spaces" className={`ext-sidebar ${collapsed ? "collapsed" : "expanded"}`}>
+    <div className="sidebar-top">{brand}<button aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"} className="sidebar-toggle" onClick={toggleCollapsed}>{collapsed ? <ChevronRight size={17} /> : <ChevronLeft size={17} />}</button></div>
+    <div className="space-sidebar-heading">{!collapsed && <span>MY SPACES</span>}<button aria-label="Add space" disabled={!repository || busy} onClick={beginCreate}><Plus size={15} /></button></div>
     {editor?.mode === "create" && editorForm("Create space")}
     <div className="space-list">{snapshot.spaces.map((space) => editor?.mode === "edit" && editor.space.id === space.id
       ? <div className="space-editor-row" key={space.id}>{editorForm(`Edit ${space.name}`)}</div>
       : <div className={`space-row ${space.id === activeSpaceId ? "active" : ""}`} key={space.id}>
-        <button className="space-select" onClick={() => onSelect(space.id)}><i style={{ background: space.color }} /> <span>{space.name}</span></button>
-        {!space.read_only && space.origin === "saved" && <button aria-label={`Edit ${space.name}`} className="space-edit" onClick={() => beginEdit(space)}><Pencil size={13} /></button>}
+        <button aria-label={`Select ${space.name}`} className="space-select" title={space.name} onClick={() => onSelect(space.id)}><i style={{ background: space.color }}>{space.name.trim().charAt(0).toUpperCase() || "•"}</i>{!collapsed && <span>{space.name}</span>}</button>
+        {!collapsed && !space.read_only && space.origin === "saved" && <button aria-label={`Edit ${space.name}`} className="space-edit" onClick={() => beginEdit(space)}><Pencil size={13} /></button>}
       </div>)}</div>
     {pendingDelete && <div className="drop-confirm-backdrop"><section aria-label={`Delete ${pendingDelete.name}`} aria-modal="true" className="drop-confirm" role="dialog">
       <button aria-label="Cancel deleting space" className="dialog-close" disabled={busy} onClick={() => setPendingDelete(null)}><X size={18} /></button>

@@ -22,10 +22,19 @@ describe("extension motion system", () => {
     const rules = Array.from(style.sheet!.cssRules).filter((rule): rule is CSSStyleRule => "selectorText" in rule);
     const rulesFor = (selector: string) => rules.filter((rule) => rule.selectorText === selector);
 
-    expect(rulesFor(".ext-message").some((rule) => rule.style.getPropertyValue("animation-name") === "motion-toast-in")).toBe(true);
+    expect(rulesFor(".ext-toast").some((rule) => rule.style.getPropertyValue("animation-name") === "motion-toast-in")).toBe(true);
     expect(rulesFor(".current-tab-list > div").some((rule) => rule.style.getPropertyValue("transition").includes("180ms"))).toBe(true);
     expect(rulesFor(".drop-confirm-backdrop").some((rule) => rule.style.getPropertyValue("animation-name") === "motion-backdrop-in")).toBe(true);
     expect(rulesFor(".drop-confirm").some((rule) => rule.style.getPropertyValue("animation-name") === "motion-dialog-in")).toBe(true);
+  });
+
+  it("keeps the account menu opaque throughout its entrance animation", () => {
+    const style = mountExtensionStyles();
+    const rules = Array.from(style.sheet!.cssRules).filter((rule): rule is CSSStyleRule => "selectorText" in rule);
+    const menuRule = rules.find((rule) => rule.selectorText === ".account-menu");
+
+    expect(menuRule?.style.getPropertyValue("animation-name")).toBe("motion-menu-in");
+    expect(menuRule?.style.getPropertyValue("isolation")).toBe("isolate");
   });
 
   it("gives collection-form actions the same comfortable height as modal actions", () => {

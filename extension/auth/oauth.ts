@@ -22,14 +22,27 @@ export class ExtensionOAuthError extends Error {
 type OAuthIdentity = Pick<BrowserAdapter["identity"], "getRedirectURL" | "launchWebAuthFlow">;
 
 export type ExtensionOAuthSession = {
-  user: { id: string };
+  user: {
+    id: string;
+    email?: string;
+    user_metadata?: {
+      avatar_url?: string;
+      full_name?: string;
+      name?: string;
+      picture?: string;
+    };
+  };
 };
 
 export type ExtensionOAuthClient = {
   auth: {
     signInWithOAuth(input: {
       provider: "google";
-      options: { redirectTo: string; skipBrowserRedirect: true };
+      options: {
+        redirectTo: string;
+        skipBrowserRedirect: true;
+        queryParams?: { prompt: "select_account" };
+      };
     }): Promise<{ data: { url: string | null }; error: Error | null }>;
     exchangeCodeForSession(code: string): Promise<{
       data: { session: ExtensionOAuthSession | null };
@@ -102,11 +115,16 @@ export async function runExtensionGoogleOAuth(
   client: ExtensionOAuthClient,
   identity: OAuthIdentity,
   target: BrowserTarget,
+  options: { selectAccount?: boolean } = {},
 ) {
   const redirectTo = callbackForTarget(target, identity);
   const started = await client.auth.signInWithOAuth({
     provider: "google",
-    options: { redirectTo, skipBrowserRedirect: true },
+    options: {
+      redirectTo,
+      skipBrowserRedirect: true,
+      ...(options.selectAccount ? { queryParams: { prompt: "select_account" as const } } : {}),
+    },
   });
   if (started.error || !started.data.url) {
     throw new ExtensionOAuthError("provider_error", "Could not start Google sign-in.");

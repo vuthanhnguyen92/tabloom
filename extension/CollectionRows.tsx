@@ -1,3 +1,4 @@
+import { Trash2, X } from "lucide-react";
 import { Fragment, useState, type DragEvent } from "react";
 import type { Collection, SavedLink } from "../shared/domain";
 import { findDuplicateLink, hostnameFor } from "../shared/domain";
@@ -19,6 +20,7 @@ export type CollectionRowsProps = {
   onBrowserTabDrop?: (tab: CaptureTab, collectionId: string) => void;
   onBookmarkDrop?: (link: SavedLink, collectionId: string) => void | Promise<void>;
   onError?: (message: string) => void;
+  onMessage?: (message: string) => void;
   highlightedLinkId?: string;
 };
 
@@ -30,11 +32,13 @@ type DraggedItem =
 type LinkDropPreview = { collectionId: string; targetLinkId?: string } | null;
 type PendingDuplicateMove = { sourceId: string; collectionId: string; targetLinkId?: string; duplicate: SavedLink } | null;
 
-export function CollectionRows({ collections, links, allLinks = links, bookmarkDropCollections = [], browserTabDragSession = 0, repository, onReload, onOpenCollection = async (collection, collectionLinks) => { await openCollectionTabs(collection.name, collectionLinks.map((link) => link.url)); }, onBrowserTabDrop, onBookmarkDrop, onError, highlightedLinkId }: CollectionRowsProps) {
+export function CollectionRows({ collections, links, allLinks = links, bookmarkDropCollections = [], browserTabDragSession = 0, repository, onReload, onOpenCollection = async (collection, collectionLinks) => { await openCollectionTabs(collection.name, collectionLinks.map((link) => link.url)); }, onBrowserTabDrop, onBookmarkDrop, onError, onMessage, highlightedLinkId }: CollectionRowsProps) {
   const [dragged, setDragged] = useState<DraggedItem>(null);
   const [linkDropPreview, setLinkDropPreview] = useState<LinkDropPreview>(null);
   const [browserDropTarget, setBrowserDropTarget] = useState<{ collectionId: string; session: number } | null>(null);
   const [pendingDuplicateMove, setPendingDuplicateMove] = useState<PendingDuplicateMove>(null);
+  const [pendingDelete, setPendingDelete] = useState<Collection | null>(null);
+  const [deleting, setDeleting] = useState(false);
   const orderedCollections = [...collections].sort((a, b) => a.position - b.position);
   const canMutateCollection = (collection: Collection) => collection.origin === "saved" && !collection.read_only;
 
@@ -129,6 +133,25 @@ export function CollectionRows({ collections, links, allLinks = links, bookmarkD
     }
   }
 
+  async function deleteCollection() {
+    if (!pendingDelete || deleting || !canMutateCollection(pendingDelete)) return;
+    const deleted = pendingDelete;
+    setDeleting(true);
+    try {
+      await repository.deleteCollection(deleted.id);
+      setPendingDelete(null);
+      onMessage?.(`${deleted.name} deleted`);
+      await onReload();
+    } catch (reason) {
+      onError?.(reason instanceof Error ? reason.message : `Could not delete ${deleted.name}.`);
+    } finally {
+      setDeleting(false);
+    }
+  }
+
+  const pendingDeleteLinkCount = pendingDelete
+    ? allLinks.filter((link) => link.collection_id === pendingDelete.id && link.origin === "saved").length
+    : 0;
   const browserTabDragging = browserTabDragSession > 0;
   return <div className={`ext-columns ${dragged?.kind === "saved-link" || dragged?.kind === "browser-bookmark" ? "link-dragging" : ""} ${browserTabDragging ? "browser-tab-dragging" : ""}`}>
     {dragged?.kind === "browser-bookmark" && !!bookmarkDropCollections.length && <aside className="bookmark-copy-tray" aria-label="Saved collection drop targets">
@@ -159,7 +182,7 @@ export function CollectionRows({ collections, links, allLinks = links, bookmarkD
         onDrop={(event) => { event.preventDefault(); if (!canMutate) return clearDrag(); if (acceptBrowserTab(event, collection)) return; if (dragged?.kind === "collection") void moveCollection(collection.id); else if (dragged?.kind === "browser-bookmark") void copyBookmark(collection); else void moveLink(collection.id); }}
         role="group"
       >
-        <div className="ext-col-head"><b>{collection.name}</b><span>{collectionLinks.length} links</span></div>
+        <div className="ext-col-head"><b>{collection.name}</b><div className="ext-col-meta"><span>{collectionLinks.length} links</span>{canMutate && <button aria-label={`Delete ${collection.name}`} className="collection-delete" draggable={false} title={`Delete ${collection.name}`} onClick={(event) => { event.stopPropagation(); setPendingDelete(collection); }}><Trash2 size={15} /></button>}</div></div>
         <div className="ext-link-grid">
           {collectionLinks.map((link) => <Fragment key={link.id}>
             {showsPreview && linkDropPreview.targetLinkId === link.id && <div aria-hidden="true" className="ext-link-drop-preview"><span>Drop here</span></div>}
@@ -183,5 +206,11 @@ export function CollectionRows({ collections, links, allLinks = links, bookmarkD
       </article>;
     })}
     {pendingDuplicateMove && <div className="drop-confirm-backdrop"><section className="drop-confirm" role="dialog" aria-modal="true" aria-label="Duplicate link"><small>DUPLICATE LINK</small><h2>Already saved in this collection</h2><p>This URL is already represented by <strong>{pendingDuplicateMove.duplicate.title}</strong>. You can cancel or move another copy here.</p><div><button aria-label="Cancel move" onClick={() => setPendingDuplicateMove(null)}>Cancel</button><button className="close-after-save" onClick={() => void persistLinkMove(pendingDuplicateMove.sourceId, pendingDuplicateMove.collectionId, pendingDuplicateMove.targetLinkId)}>Move anyway</button></div></section></div>}
+    {pendingDelete && <div className="drop-confirm-backdrop"><section aria-label={`Delete ${pendingDelete.name}`} aria-modal="true" className="drop-confirm" role="dialog">
+      <button aria-label="Cancel deleting collection" className="dialog-close" disabled={deleting} onClick={() => setPendingDelete(null)}><X size={18} /></button>
+      <small>DELETE COLLECTION</small><h2>Delete “{pendingDelete.name}”?</h2>
+      <p>This permanently deletes {pendingDeleteLinkCount} saved link{pendingDeleteLinkCount === 1 ? "" : "s"}. Open browser tabs will not be closed.</p>
+      <div><button disabled={deleting} onClick={() => setPendingDelete(null)}>Cancel</button><button className="close-after-save" disabled={deleting} onClick={() => void deleteCollection()}>Delete collection permanently</button></div>
+    </section></div>}
   </div>;
 }

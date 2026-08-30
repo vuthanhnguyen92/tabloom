@@ -52,6 +52,46 @@ describe("filterWorkspace", () => {
   });
 });
 
+describe("workspace search results", () => {
+  it("ranks title matches above collection matches and includes their full location", () => {
+    const search = (domain as typeof domain & {
+      searchWorkspace?: (snapshot: ReturnType<typeof createDemoSnapshot>, query: string) => Array<{
+        link: { title: string };
+        collection: { name: string };
+        space: { name: string };
+      }>;
+    }).searchWorkspace;
+    expect(search).toBeTypeOf("function");
+
+    const snapshot = createDemoSnapshot("user-1");
+    snapshot.links[0] = { ...snapshot.links[0], title: "Design brief" };
+    snapshot.collections[0] = { ...snapshot.collections[0], name: "Design planning" };
+
+    const results = search!(snapshot, "design");
+
+    expect(results.map((result) => result.link.title)).toEqual([
+      "Design brief",
+      "Brand system",
+      "Homepage explorations",
+      "Prototype",
+      "Customer brief",
+      "Launch checklist",
+    ]);
+    expect(results[1]).toMatchObject({
+      collection: { name: "Design" },
+      space: { name: "Product launch" },
+    });
+  });
+
+  it("returns no suggestions until the user enters a query", () => {
+    const search = (domain as typeof domain & {
+      searchWorkspace?: (snapshot: ReturnType<typeof createDemoSnapshot>, query: string) => unknown[];
+    }).searchWorkspace;
+    expect(search).toBeTypeOf("function");
+    expect(search!(createDemoSnapshot(), "   ")).toEqual([]);
+  });
+});
+
 describe("normalizePositions", () => {
   it("returns dense ordered copies without mutating input", () => {
     const input = [{ id: "b", position: 8 }, { id: "a", position: 2 }];

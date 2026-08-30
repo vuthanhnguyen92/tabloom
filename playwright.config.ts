@@ -6,5 +6,11 @@ export default defineConfig({
   fullyParallel: false,
   workers: 1,
   reporter: "line",
-  projects: [{ name: "chromium", use: { browserName: "chromium" } }],
+  projects: [
+    { name: "chromium", testIgnore: /visual-consistency\.spec\.ts/, use: { browserName: "chromium" } },
+    { name: "chromium-visual", testMatch: /visual-consistency\.spec\.ts/, use: { browserName: "chromium" } },
+    { name: "firefox-visual", testMatch: /visual-consistency\.spec\.ts/, use: { browserName: "firefox" } },
+    { name: "webkit-visual", testMatch: /visual-consistency\.spec\.ts/, use: { browserName: "webkit" } },
+  ],
+  snapshotPathTemplate: "{testDir}/__screenshots__/{testFilePath}/{arg}-{projectName}{ext}",
 });

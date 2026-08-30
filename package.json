@@ -18,6 +18,7 @@
     "test:unit:watch": "vitest",
     "test:supabase": "supabase db reset && supabase test db supabase/tests/*.test.sql",
     "test:e2e:bookmarks": "playwright test tests/e2e/browser-bookmarks.spec.ts --project=chromium",
+    "test:e2e:visual": "playwright test tests/e2e/visual-consistency.spec.ts --project=chromium-visual --project=firefox-visual --project=webkit-visual",
     "build:extension": "node extension/scripts/build-extension.mjs",
     "build:extension:chromium": "node extension/scripts/build-extension.mjs --target=chromium",
     "build:extension:firefox": "node extension/scripts/build-extension.mjs --target=firefox",
