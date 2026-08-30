@@ -14,6 +14,7 @@ describe("Tabloom MCP service configuration", () => {
       "@modelcontextprotocol/server": "2.0.0",
       "@supabase/supabase-js": "2.112.4",
       "@tabloom/workspace": "file:../../shared",
+      "pg": "8.23.0",
       "mcp-handler": "2.1.1",
       "next": "16.3.3",
       "react": "19.2.6",
