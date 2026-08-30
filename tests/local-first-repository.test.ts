@@ -109,6 +109,19 @@ describe("LocalFirstWorkspaceRepository", () => {
     expect(pending.map((item) => item.payload)).toEqual([{ name: "First" }, { name: "Second" }]);
   });
 
+  it("merges different fields from consecutive partial updates under the newer operation id", async () => {
+    const { repository, storage } = await setup();
+    const link = await repository.createLink({ collection_id: COLLECTION_ID, url: "https://example.com", title: "Example", description: "", favicon_url: null });
+    await repository.updateLink(link.id, { title: "Renamed" });
+    const firstUpdateId = (await storage.loadOrThrow()).outbox.at(-1)!.operationId;
+    await repository.updateLink(link.id, { description: "Details" });
+
+    const pending = (await storage.loadOrThrow()).outbox;
+    expect(pending).toHaveLength(2);
+    expect(pending[1].operationId).not.toBe(firstUpdateId);
+    expect(pending[1]).toMatchObject({ action: "update", payload: { title: "Renamed", description: "Details" } });
+  });
+
   it("rejects unsupported URLs and read-only bookmark mutations before persistence", async () => {
     const { repository, storage, onMutation } = await setup();
     await expect(repository.createLink({ collection_id: COLLECTION_ID, url: "chrome://settings", title: "Settings", description: "", favicon_url: null })).rejects.toThrow(/http and https/i);

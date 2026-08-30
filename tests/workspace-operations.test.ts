@@ -87,12 +87,14 @@ describe("workspace operations", () => {
     expect(isWorkspaceOperation({ ...valid, payload: { title: "Updated", provider_token: "secret" } })).toBe(false);
     expect(isWorkspaceOperation({ ...valid, payload: { url: "chrome://settings" } })).toBe(false);
     expect(isWorkspaceOperation({ ...valid, entity: "space", payload: { title: "Wrong entity" } })).toBe(false);
+    expect(isWorkspaceOperation({ ...valid, payload: { title: undefined } })).toBe(false);
+    expect(isWorkspaceOperation({ ...valid, provider_token: "secret" })).toBe(false);
   });
 
   it("replaces only unsent updates and reorders", () => {
     const firstUpdate = operation();
-    const secondUpdate = operation({ operationId: "40000000-0000-4000-8000-000000000002", sequence: 2, payload: { title: "Later" } });
-    expect(coalesceWorkspaceOperations([firstUpdate], secondUpdate)).toEqual([secondUpdate]);
+    const secondUpdate = operation({ operationId: "40000000-0000-4000-8000-000000000002", sequence: 2, payload: { description: "Later" } });
+    expect(coalesceWorkspaceOperations([firstUpdate], secondUpdate)).toEqual([{ ...secondUpdate, payload: { title: "Updated", description: "Later" } }]);
     expect(coalesceWorkspaceOperations([firstUpdate], secondUpdate, new Set([firstUpdate.operationId]))).toEqual([firstUpdate, secondUpdate]);
 
     const firstReorder = operation({ entityId: COLLECTION_ID, action: "reorder", payload: { parentId: COLLECTION_ID, orderedIds: [LINK_ID] } });

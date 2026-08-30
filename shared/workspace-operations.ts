@@ -81,6 +81,14 @@ function isNonEmptyString(value: unknown, max: number): value is string {
   return typeof value === "string" && value.trim().length > 0 && value.length <= max;
 }
 
+function validOptional(
+  payload: Record<string, unknown>,
+  key: string,
+  validate: (value: unknown) => boolean,
+): boolean {
+  return !Object.hasOwn(payload, key) || (payload[key] !== undefined && validate(payload[key]));
+}
+
 function isCreatePayload(entity: WorkspaceEntity, entityId: string, payload: Record<string, unknown>): boolean {
   if (payload.id !== entityId) return false;
   if (entity === "space") {
@@ -117,18 +125,18 @@ function isUpdatePayload(entity: WorkspaceEntity, payload: Record<string, unknow
   if (keys.length === 0) return false;
   if (entity === "space") {
     return hasExactKeys(payload, ["name", "color"], [])
-      && (payload.name === undefined || isNonEmptyString(payload.name, 80))
-      && (payload.color === undefined || (typeof payload.color === "string" && /^#[0-9a-f]{6}$/i.test(payload.color)));
+      && validOptional(payload, "name", (value) => isNonEmptyString(value, 80))
+      && validOptional(payload, "color", (value) => typeof value === "string" && /^#[0-9a-f]{6}$/i.test(value));
   }
   if (entity === "collection") {
     return hasExactKeys(payload, ["name"], []) && isNonEmptyString(payload.name, 80);
   }
   return hasExactKeys(payload, ["collection_id", "url", "title", "description", "favicon_url"], [])
-    && (payload.collection_id === undefined || UUID_PATTERN.test(String(payload.collection_id)))
-    && (payload.url === undefined || isSaveableUrl(typeof payload.url === "string" ? payload.url : undefined))
-    && (payload.title === undefined || isNonEmptyString(payload.title, 300))
-    && (payload.description === undefined || (typeof payload.description === "string" && payload.description.length <= 1000))
-    && (payload.favicon_url === undefined || payload.favicon_url === null || typeof payload.favicon_url === "string");
+    && validOptional(payload, "collection_id", (value) => UUID_PATTERN.test(String(value)))
+    && validOptional(payload, "url", (value) => isSaveableUrl(typeof value === "string" ? value : undefined))
+    && validOptional(payload, "title", (value) => isNonEmptyString(value, 300))
+    && validOptional(payload, "description", (value) => typeof value === "string" && value.length <= 1000)
+    && validOptional(payload, "favicon_url", (value) => value === null || typeof value === "string");
 }
 
 export function isWorkspaceOperation(value: unknown): value is WorkspaceOperation {
@@ -183,8 +191,13 @@ export function coalesceWorkspaceOperations(
     return [...existing, incoming];
   }
   if (
-    (previous.action === "update" && incoming.action === "update")
-    || (previous.action === "reorder" && incoming.action === "reorder")
+    previous.action === "update" && incoming.action === "update"
+  ) {
+    const merged = { ...incoming, payload: { ...previous.payload, ...incoming.payload } } as WorkspaceOperation;
+    return existing.map((candidate, candidateIndex) => candidateIndex === index ? merged : candidate);
+  }
+  if (
+    (previous.action === "reorder" && incoming.action === "reorder")
     || (previous.action === "update" && incoming.action === "delete")
     || (previous.action === "delete" && incoming.action === "delete")
   ) {

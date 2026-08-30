@@ -144,6 +144,8 @@ function ExtensionApp() {
 
   async function beginWorkspaceSync(userId: string, localRepository: WorkspaceRepository, generation = ++activationGenerationRef.current) {
     if (!extensionSupabase || activationGenerationRef.current !== generation) return;
+    setWorkspaceSyncBusy(false);
+    setWorkspaceSyncError(null);
     setSyncStatus("checking");
     syncUserIdRef.current = userId;
     const bookmarks = new SupabaseBookmarkRepository(extensionSupabase, userId);
@@ -331,16 +333,17 @@ function ExtensionApp() {
 
   async function confirmWorkspaceSync() {
     if (!workspaceSync || workspaceSyncBusy) return;
+    const generation = workspaceSync.generation;
     setWorkspaceSyncBusy(true);
     setWorkspaceSyncError(null);
     try {
       await workspaceSync.coordinator.confirm(workspaceSync.preview);
-      if (activationGenerationRef.current !== workspaceSync.generation) return;
+      if (activationGenerationRef.current !== generation) return;
       setWorkspaceSync(null);
       setSyncStatus("synced");
       setMessage("Local and synced tabs were combined");
     } catch (reason) {
-      if (activationGenerationRef.current !== workspaceSync.generation) return;
+      if (activationGenerationRef.current !== generation) return;
       if (reason instanceof FirstSyncPreviewChangedError) {
         setWorkspaceSync({ coordinator: workspaceSync.coordinator, preview: reason.preview, generation: workspaceSync.generation });
         setWorkspaceSyncError(reason.message);
@@ -350,17 +353,24 @@ function ExtensionApp() {
         setSyncStatus("error");
       }
     } finally {
-      setWorkspaceSyncBusy(false);
+      if (activationGenerationRef.current === generation) setWorkspaceSyncBusy(false);
     }
   }
 
   async function cancelWorkspaceSync() {
     if (!workspaceSync || workspaceSyncBusy) return;
-    await workspaceSync.coordinator.cancel();
-    setWorkspaceSync(null);
-    setWorkspaceSyncError(null);
-    setSyncStatus("pending");
-    setMessage("Sync pending · this browser is still using local storage");
+    const generation = workspaceSync.generation;
+    setWorkspaceSyncBusy(true);
+    try {
+      await workspaceSync.coordinator.cancel();
+      if (activationGenerationRef.current !== generation) return;
+      setWorkspaceSync(null);
+      setWorkspaceSyncError(null);
+      setSyncStatus("pending");
+      setMessage("Sync pending · this browser is still using local storage");
+    } finally {
+      if (activationGenerationRef.current === generation) setWorkspaceSyncBusy(false);
+    }
   }
 
   async function retryWorkspaceSync() {
