@@ -87,6 +87,27 @@ describe("LocalFirstWorkspaceRepository", () => {
     expect((await second.load()).spaces[0].name).toBe("Renamed");
   });
 
+  it("does not coalesce a newer mutation into an immutable in-flight operation", async () => {
+    const { area } = memoryArea();
+    const storage = new LocalFirstStorage(area, USER_ID);
+    await storage.saveCanonical(snapshot(), 4);
+    const immutable = new Set<string>();
+    const repository = await LocalFirstWorkspaceRepository.create({
+      userId: USER_ID,
+      storage,
+      onMutation: vi.fn(),
+      immutableOperationIds: () => immutable,
+    });
+    await repository.updateSpace(SPACE_ID, { name: "First" });
+    immutable.add((await storage.loadOrThrow()).outbox[0].operationId);
+
+    await repository.updateSpace(SPACE_ID, { name: "Second" });
+
+    const pending = (await storage.loadOrThrow()).outbox;
+    expect(pending).toHaveLength(2);
+    expect(pending.map((item) => item.payload)).toEqual([{ name: "First" }, { name: "Second" }]);
+  });
+
   it("rejects unsupported URLs and read-only bookmark mutations before persistence", async () => {
     const { repository, storage, onMutation } = await setup();
     await expect(repository.createLink({ collection_id: COLLECTION_ID, url: "chrome://settings", title: "Settings", description: "", favicon_url: null })).rejects.toThrow(/http and https/i);

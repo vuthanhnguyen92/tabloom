@@ -122,6 +122,8 @@ declare
   entity_type text;
   action_type text;
   sequence_value bigint;
+  ordered_count integer;
+  matched_count integer;
   changed boolean := false;
   operation_changed boolean;
   outcomes jsonb := '[]'::jsonb;
@@ -251,6 +253,18 @@ begin
         if not found then raise exception 'workspace space not found' using errcode = 'P0002'; end if;
         operation_changed := true;
       elsif action_type = 'delete' then
+        insert into public.workspace_tombstones(user_id, entity_type, entity_id, deleted_revision)
+          select owner_id, 'link', links.id, current_revision + 1
+          from public.links
+          join public.collections on collections.id = links.collection_id
+          where links.user_id = owner_id and collections.user_id = owner_id
+            and collections.space_id = entity_id
+          on conflict on constraint workspace_tombstones_pkey do nothing;
+        insert into public.workspace_tombstones(user_id, entity_type, entity_id, deleted_revision)
+          select owner_id, 'collection', id, current_revision + 1
+          from public.collections
+          where user_id = owner_id and space_id = entity_id
+          on conflict on constraint workspace_tombstones_pkey do nothing;
         insert into tabloom_affected_collections(id)
           select id from public.collections where user_id = owner_id and space_id = entity_id
           on conflict do nothing;
@@ -258,12 +272,6 @@ begin
           select links.id from public.links join public.collections on collections.id = links.collection_id
           where links.user_id = owner_id and collections.space_id = entity_id
           on conflict do nothing;
-        insert into public.workspace_tombstones(user_id, entity_type, entity_id, deleted_revision)
-          select owner_id, 'link', id, current_revision + 1 from tabloom_affected_links
-          on conflict on constraint workspace_tombstones_pkey do nothing;
-        insert into public.workspace_tombstones(user_id, entity_type, entity_id, deleted_revision)
-          select owner_id, 'collection', id, current_revision + 1 from tabloom_affected_collections
-          on conflict on constraint workspace_tombstones_pkey do nothing;
         insert into public.workspace_tombstones(user_id, entity_type, entity_id, deleted_revision)
           values(owner_id, 'space', entity_id, current_revision + 1)
           on conflict on constraint workspace_tombstones_pkey do nothing;
@@ -307,12 +315,14 @@ begin
         select space_id into parent_id from public.collections
         where user_id = owner_id and id = entity_id;
         if parent_id is null then raise exception 'workspace collection not found' using errcode = 'P0002'; end if;
+        insert into public.workspace_tombstones(user_id, entity_type, entity_id, deleted_revision)
+          select owner_id, 'link', id, current_revision + 1
+          from public.links
+          where user_id = owner_id and collection_id = entity_id
+          on conflict on constraint workspace_tombstones_pkey do nothing;
         insert into tabloom_affected_links(id)
           select id from public.links where user_id = owner_id and collection_id = entity_id
           on conflict do nothing;
-        insert into public.workspace_tombstones(user_id, entity_type, entity_id, deleted_revision)
-          select owner_id, 'link', id, current_revision + 1 from tabloom_affected_links
-          on conflict on constraint workspace_tombstones_pkey do nothing;
         insert into public.workspace_tombstones(user_id, entity_type, entity_id, deleted_revision)
           values(owner_id, 'collection', entity_id, current_revision + 1)
           on conflict on constraint workspace_tombstones_pkey do nothing;
@@ -323,16 +333,32 @@ begin
         if not exists(select 1 from public.spaces where user_id = owner_id and id = parent_id)
           or jsonb_typeof(payload->'orderedIds') <> 'array'
         then raise exception 'invalid collection reorder' using errcode = '22023'; end if;
+        if exists (
+          select 1 from jsonb_array_elements_text(payload->'orderedIds') ordered_id(id)
+          where ordered_id.id !~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+        ) then raise exception 'invalid collection reorder' using errcode = '22023'; end if;
+        select jsonb_array_length(payload->'orderedIds') into ordered_count;
+        if ordered_count <> (
+          select count(distinct ordered_id.id) from jsonb_array_elements_text(payload->'orderedIds') ordered_id(id)
+        ) or ordered_count <> (
+          select count(*) from public.collections where user_id = owner_id and space_id = parent_id
+        ) or ordered_count <> (
+          select count(*) from public.collections
+          where user_id = owner_id and space_id = parent_id and id in (
+            select value::uuid from jsonb_array_elements_text(payload->'orderedIds')
+          )
+        ) then raise exception 'invalid collection reorder' using errcode = '22023'; end if;
         update public.collections as row_value set
           space_id = parent_id,
           position = ordered.ordinality - 1,
           updated_at = now()
         from jsonb_array_elements_text(payload->'orderedIds') with ordinality ordered(id, ordinality)
         where row_value.user_id = owner_id and row_value.id = ordered.id::uuid;
+        get diagnostics matched_count = row_count;
         insert into tabloom_affected_collections(id)
           select value::uuid from jsonb_array_elements_text(payload->'orderedIds')
           on conflict do nothing;
-        operation_changed := true;
+        operation_changed := matched_count > 0;
       end if;
       insert into tabloom_affected_collections values(entity_id) on conflict do nothing;
 
@@ -392,6 +418,23 @@ begin
         if not exists(select 1 from public.collections where user_id = owner_id and id = parent_id)
           or jsonb_typeof(payload->'orderedIds') <> 'array'
         then raise exception 'invalid link reorder' using errcode = '22023'; end if;
+        if exists (
+          select 1 from jsonb_array_elements_text(payload->'orderedIds') ordered_id(id)
+          where ordered_id.id !~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+        ) then raise exception 'invalid link reorder' using errcode = '22023'; end if;
+        select jsonb_array_length(payload->'orderedIds') into ordered_count;
+        if ordered_count <> (
+          select count(distinct ordered_id.id) from jsonb_array_elements_text(payload->'orderedIds') ordered_id(id)
+        ) or ordered_count <> (
+          select count(*) from public.links where user_id = owner_id and id in (
+            select value::uuid from jsonb_array_elements_text(payload->'orderedIds')
+          )
+        ) or exists (
+          select 1 from public.links
+          where user_id = owner_id and collection_id = parent_id and id not in (
+            select value::uuid from jsonb_array_elements_text(payload->'orderedIds')
+          )
+        ) then raise exception 'invalid link reorder' using errcode = '22023'; end if;
         insert into tabloom_affected_link_parents(id)
           select distinct collection_id from public.links
           where user_id = owner_id and id in (
@@ -403,10 +446,11 @@ begin
           updated_at = now()
         from jsonb_array_elements_text(payload->'orderedIds') with ordinality ordered(id, ordinality)
         where row_value.user_id = owner_id and row_value.id = ordered.id::uuid;
+        get diagnostics matched_count = row_count;
         insert into tabloom_affected_links(id)
           select value::uuid from jsonb_array_elements_text(payload->'orderedIds')
           on conflict do nothing;
-        operation_changed := true;
+        operation_changed := matched_count > 0;
       end if;
       insert into tabloom_affected_links values(entity_id) on conflict do nothing;
       if parent_id is not null then insert into tabloom_affected_link_parents values(parent_id) on conflict do nothing; end if;

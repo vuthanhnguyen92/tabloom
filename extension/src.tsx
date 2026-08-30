@@ -87,20 +87,29 @@ function ExtensionApp() {
     setEngineState(null);
   }
 
-  async function activateCanonical(userId: string, canonical: WorkspaceSnapshot) {
+  async function activateCanonical(userId: string) {
     if (!extensionSupabase) return;
     stopActiveEngine();
     const storage = new LocalFirstStorage(browserAdapter.storage, userId);
     localFirstStorageRef.current = storage;
+    const immutableOperationIds = new Set<string>();
     const localFirst = await LocalFirstWorkspaceRepository.create({
       userId,
       storage,
       onMutation: () => engineRef.current?.requestSync("mutation"),
+      immutableOperationIds: () => immutableOperationIds,
     });
     const engine = new WorkspaceSyncEngine({
+      userId,
       storage,
       transport: new SupabaseWorkspaceSyncTransport(extensionSupabase),
       onActionRequired: setError,
+      immutableOperationIds,
+      onSnapshotCommitted: (next) => {
+        if (engineRef.current !== engine || syncUserIdRef.current !== userId) return;
+        setSnapshot(next);
+        setSelectedSpace((current) => next.spaces.some((space) => space.id === current) ? current : next.spaces[0]?.id ?? "");
+      },
     });
     engineRef.current = engine;
     const unsubscribe = engine.subscribe((state) => {
@@ -120,8 +129,9 @@ function ExtensionApp() {
       window.removeEventListener("online", onOnline);
     };
     setRepository(localFirst);
-    setSnapshot(canonical);
-    setSelectedSpace((current) => canonical.spaces.some((space) => space.id === current) ? current : canonical.spaces[0]?.id ?? "");
+    const activated = await localFirst.load();
+    setSnapshot(activated);
+    setSelectedSpace((current) => activated.spaces.some((space) => space.id === current) ? current : activated.spaces[0]?.id ?? "");
     setError("");
     void engine.start();
   }
@@ -134,7 +144,7 @@ function ExtensionApp() {
     setBookmarkRepository(bookmarks);
     const cached = await cache.loadCloud(userId);
     if (cached) {
-      await activateCanonical(userId, cached.snapshot);
+      await activateCanonical(userId);
       setWorkspaceSync(null);
       return;
     }
@@ -144,7 +154,8 @@ function ExtensionApp() {
       syncRepository: new SupabaseWorkspaceSyncRepository(extensionSupabase),
       cache,
       activateCanonical: async (next, revision) => {
-        await activateCanonical(userId, next);
+        void next;
+        await activateCanonical(userId);
         setEngineState({ phase: "synced", revision, pending: 0, lastSyncedAt: new Date().toISOString() });
       },
     });

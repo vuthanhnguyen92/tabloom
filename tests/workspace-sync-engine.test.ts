@@ -9,6 +9,7 @@ import { WorkspaceRevisionConflictError } from "../shared/workspace-sync-reposit
 const USER_ID = "00000000-0000-4000-8000-00000000000a";
 const SPACE_ID = "10000000-0000-4000-8000-000000000001";
 const OPERATION_ID = "40000000-0000-4000-8000-000000000001";
+const LATER_OPERATION_ID = "40000000-0000-4000-8000-000000000002";
 const DEVICE_ID = "50000000-0000-4000-8000-000000000001";
 const timestamp = "2026-08-31T00:00:00.000Z";
 
@@ -30,6 +31,14 @@ const operation: WorkspaceOperation = {
   },
   createdAt: timestamp,
   baseRevision: 0,
+};
+
+const laterOperation: WorkspaceOperation = {
+  ...operation,
+  operationId: LATER_OPERATION_ID,
+  sequence: 2,
+  action: "update",
+  payload: { name: "Latest local name" },
 };
 
 function state(overrides: Partial<AccountWorkspaceState> = {}): AccountWorkspaceState {
@@ -156,6 +165,40 @@ describe("WorkspaceSyncEngine", () => {
     expect(read().revision).toBe(1);
   });
 
+  it("keeps and replays operations queued while an earlier batch is in flight", async () => {
+    let resolvePush!: (value: Awaited<ReturnType<WorkspaceSyncTransport["applyOperations"]>>) => void;
+    const push = new Promise<Awaited<ReturnType<WorkspaceSyncTransport["applyOperations"]>>>((resolve) => { resolvePush = resolve; });
+    const immutableOperationIds = new Set<string>();
+    const { storage, read } = storageWith(state({
+      snapshot: { ...empty, spaces: [{ ...operation.payload, user_id: USER_ID, origin: "saved", read_only: false }] },
+      outbox: [operation],
+      nextSequence: 2,
+    }));
+    const transport = transportWith({ applyOperations: vi.fn(() => push) });
+    const engine = new WorkspaceSyncEngine({ storage, transport, immutableOperationIds });
+
+    const running = engine.refresh();
+    await vi.waitFor(() => expect(immutableOperationIds).toEqual(new Set([OPERATION_ID])));
+    await storage.update(async (current) => [{
+      ...current,
+      snapshot: { ...current.snapshot, spaces: current.snapshot.spaces.map((space) => ({ ...space, name: "Latest local name" })) },
+      outbox: [...current.outbox, laterOperation],
+      nextSequence: 3,
+    }, undefined]);
+    resolvePush({
+      revision: 1,
+      outcomes: [{ operationId: OPERATION_ID, status: "applied" }],
+      patches: { spaces: [{ ...operation.payload, user_id: USER_ID, name: "Server name", origin: "saved", read_only: false }], collections: [], links: [] },
+      tombstones: [],
+      conflicts: [],
+    });
+    await running;
+
+    expect(read().outbox).toEqual([laterOperation]);
+    expect(read().snapshot.spaces[0].name).toBe("Latest local name");
+    expect(immutableOperationIds).toEqual(new Set());
+  });
+
   it("pulls newer canonical data while preserving bookmark records", async () => {
     const bookmark = {
       id: "10000000-0000-4000-8000-000000000002",
@@ -176,6 +219,36 @@ describe("WorkspaceSyncEngine", () => {
     await new WorkspaceSyncEngine({ storage, transport }).refresh();
     expect(read().snapshot.spaces).toEqual([bookmark]);
     expect(read().revision).toBe(2);
+  });
+
+  it("publishes a committed snapshot after pulling remote changes", async () => {
+    const remoteSpace = { ...operation.payload, user_id: USER_ID, origin: "saved" as const, read_only: false };
+    const onSnapshotCommitted = vi.fn();
+    const { storage } = storageWith(state());
+    const transport = transportWith({
+      getRevision: vi.fn(async () => ({ revision: 2, serverTime: timestamp })),
+      loadCanonical: vi.fn(async () => ({ revision: 2, snapshot: { ...empty, spaces: [remoteSpace] }, tombstones: [] })),
+    });
+    await new WorkspaceSyncEngine({ storage, transport, onSnapshotCommitted }).refresh();
+    expect(onSnapshotCommitted).toHaveBeenLastCalledWith(expect.objectContaining({ spaces: [remoteSpace] }));
+  });
+
+  it("retains rejected operations and reports their server message", async () => {
+    const onActionRequired = vi.fn();
+    const { storage, read } = storageWith(state({ outbox: [operation] }));
+    const transport = transportWith({
+      applyOperations: vi.fn(async () => ({
+        revision: 1,
+        outcomes: [{ operationId: OPERATION_ID, status: "rejected" as const, message: "Invalid reorder" }],
+        patches: empty,
+        tombstones: [],
+        conflicts: [{ operationId: OPERATION_ID, code: "invalid_reorder", message: "Invalid reorder" }],
+      })),
+      getRevision: vi.fn(async () => ({ revision: 1, serverTime: timestamp })),
+    });
+    await new WorkspaceSyncEngine({ storage, transport, onActionRequired }).refresh();
+    expect(read().outbox).toEqual([operation]);
+    expect(onActionRequired).toHaveBeenCalledWith("Invalid reorder");
   });
 
   it("rebases once after a conflict and reports rejected tombstoned work", async () => {
@@ -217,6 +290,41 @@ describe("WorkspaceSyncEngine", () => {
     await engine.refresh();
     expect(read().outbox).toEqual([operation]);
     expect(phases.at(-1)).toBe("offline");
+  });
+
+  it("rebases operations added while the canonical conflict snapshot is loading", async () => {
+    const localSpace = { ...operation.payload, user_id: USER_ID, origin: "saved" as const, read_only: false };
+    const { storage, read } = storageWith(state({ snapshot: { ...empty, spaces: [localSpace] }, outbox: [operation], nextSequence: 2 }));
+    const transport = transportWith({
+      applyOperations: vi.fn()
+        .mockRejectedValueOnce(new WorkspaceRevisionConflictError())
+        .mockResolvedValueOnce({
+          revision: 2,
+          outcomes: [
+            { operationId: OPERATION_ID, status: "applied" as const },
+            { operationId: LATER_OPERATION_ID, status: "applied" as const },
+          ],
+          patches: { spaces: [{ ...localSpace, name: "Latest local name" }], collections: [], links: [] },
+          tombstones: [],
+          conflicts: [],
+        }),
+      loadCanonical: vi.fn(async () => {
+        await storage.update(async (current) => [{
+          ...current,
+          snapshot: { ...current.snapshot, spaces: current.snapshot.spaces.map((space) => ({ ...space, name: "Latest local name" })) },
+          outbox: [...current.outbox, laterOperation],
+          nextSequence: 3,
+        }, undefined]);
+        return { revision: 1, snapshot: empty, tombstones: [] };
+      }),
+      getRevision: vi.fn(async () => ({ revision: 2, serverTime: timestamp })),
+    });
+
+    await new WorkspaceSyncEngine({ storage, transport }).refresh();
+
+    expect(transport.applyOperations).toHaveBeenNthCalledWith(2, [operation, laterOperation], 1);
+    expect(read().outbox).toEqual([]);
+    expect(read().snapshot.spaces[0].name).toBe("Latest local name");
   });
 
   it("syncs online immediately and checks focus only after freshness expires", async () => {

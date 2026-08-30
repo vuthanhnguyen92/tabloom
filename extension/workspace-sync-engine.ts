@@ -17,12 +17,15 @@ export type SyncEngineState =
   | { phase: "offline"; revision: number; pending: number; error?: string };
 
 type EngineInput = {
+  userId?: string;
   storage: LocalFirstStorage;
   transport: WorkspaceSyncTransport;
   mutationDebounceMs?: number;
   focusFreshnessMs?: number;
   now?: () => number;
   onActionRequired?: (message: string) => void;
+  onSnapshotCommitted?: (snapshot: WorkspaceSnapshot) => void;
+  immutableOperationIds?: Set<string>;
 };
 
 function errorMessage(error: unknown): string {
@@ -37,11 +40,14 @@ function snapshotUserId(snapshot: WorkspaceSnapshot): string | undefined {
 
 export class WorkspaceSyncEngine {
   private readonly storage: LocalFirstStorage;
+  private readonly userId?: string;
   private readonly transport: WorkspaceSyncTransport;
   private readonly mutationDebounceMs: number;
   private readonly focusFreshnessMs: number;
   private readonly now: () => number;
   private readonly onActionRequired?: (message: string) => void;
+  private readonly onSnapshotCommitted?: (snapshot: WorkspaceSnapshot) => void;
+  private readonly immutableOperationIds: Set<string>;
   private readonly listeners = new Set<(state: SyncEngineState) => void>();
   private current: SyncEngineState = { phase: "offline", revision: 0, pending: 0 };
   private active: Promise<void> | null = null;
@@ -51,12 +57,15 @@ export class WorkspaceSyncEngine {
   private stopped = false;
 
   constructor(input: EngineInput) {
+    this.userId = input.userId;
     this.storage = input.storage;
     this.transport = input.transport;
     this.mutationDebounceMs = input.mutationDebounceMs ?? 500;
     this.focusFreshnessMs = input.focusFreshnessMs ?? 30_000;
     this.now = input.now ?? Date.now;
     this.onActionRequired = input.onActionRequired;
+    this.onSnapshotCommitted = input.onSnapshotCommitted;
+    this.immutableOperationIds = input.immutableOperationIds ?? new Set();
   }
 
   subscribe(listener: (state: SyncEngineState) => void): () => void {
@@ -129,6 +138,7 @@ export class WorkspaceSyncEngine {
       const revision = local?.revision ?? this.current.revision;
       const pending = local?.outbox.length ?? this.current.pending;
       const message = errorMessage(error);
+      this.onActionRequired?.(message);
       if (local) {
         await this.storage.update(async (latest) => [{
           ...latest,
@@ -162,12 +172,16 @@ export class WorkspaceSyncEngine {
     if (remote.revision > local.revision && local.outbox.length === 0) {
       const canonical = await this.transport.loadCanonical();
       if (this.stopped) return;
-      await this.storage.update(async (latest) => [{
+      const committed = await this.storage.update(async (latest) => {
+        const snapshot = replaceSavedWorkspace(latest.snapshot, canonical.snapshot);
+        return [{
         ...latest,
-        snapshot: replaceSavedWorkspace(latest.snapshot, canonical.snapshot),
+        snapshot,
         revision: canonical.revision,
         cachedAt: new Date(this.now()).toISOString(),
-      }, undefined]);
+        }, snapshot] as const;
+      });
+      this.onSnapshotCommitted?.(committed);
     }
 
     const syncedAt = new Date(this.now()).toISOString();
@@ -191,54 +205,86 @@ export class WorkspaceSyncEngine {
   }
 
   private async push(local: AccountWorkspaceState): Promise<void> {
+    const batch = [...local.outbox];
+    for (const operation of batch) this.immutableOperationIds.add(operation.operationId);
     try {
-      const result = await this.transport.applyOperations(local.outbox, local.revision);
-      await this.commitPush(result);
+      const result = await this.transport.applyOperations(batch, local.revision);
+      await this.commitPush(result, batch);
     } catch (error) {
       if (!(error instanceof WorkspaceRevisionConflictError)) throw error;
-      await this.rebaseAndRetry(local.outbox);
+      await this.rebaseAndRetry();
+    } finally {
+      for (const operation of batch) this.immutableOperationIds.delete(operation.operationId);
     }
   }
 
-  private async commitPush(result: ApplyOperationsResult): Promise<void> {
+  private async commitPush(result: ApplyOperationsResult, sent: WorkspaceOperation[]): Promise<void> {
     if (this.stopped) return;
-    const acknowledged = new Set(result.outcomes.map((outcome) => outcome.operationId));
-    await this.storage.update(async (latest) => [{
-      ...latest,
-      snapshot: applyWorkspacePatch(latest.snapshot, {
+    const sentIds = new Set(sent.map((operation) => operation.operationId));
+    const acknowledged = new Set(result.outcomes
+      .filter((outcome) => sentIds.has(outcome.operationId) && outcome.status !== "rejected")
+      .map((outcome) => outcome.operationId));
+    const rejected = result.outcomes.filter((outcome) => outcome.status === "rejected");
+    if (rejected.length || result.conflicts.length) {
+      const message = rejected[0]?.message ?? result.conflicts[0]?.message ?? `${rejected.length + result.conflicts.length} local change could not be synced.`;
+      this.onActionRequired?.(message);
+    }
+    const committed = await this.storage.update(async (latest) => {
+      const remaining = latest.outbox.filter((operation) => !acknowledged.has(operation.operationId));
+      const patched = applyWorkspacePatch(latest.snapshot, {
         ...result.patches,
         tombstones: result.tombstones,
-      }),
-      revision: result.revision,
-      cachedAt: new Date(this.now()).toISOString(),
-      outbox: latest.outbox.filter((operation) => !acknowledged.has(operation.operationId)),
-    }, undefined]);
+      });
+      const userId = this.userId ?? snapshotUserId(latest.snapshot) ?? snapshotUserId(patched);
+      const replayed = userId
+        ? rebaseWorkspaceOperations(patched, result.tombstones, remaining, userId)
+        : { snapshot: patched, pending: remaining, rejected: [] };
+      return [{
+        ...latest,
+        snapshot: replayed.snapshot,
+        revision: result.revision,
+        cachedAt: new Date(this.now()).toISOString(),
+        outbox: replayed.pending,
+      }, replayed] as const;
+    });
+    if (committed.rejected.length) {
+      this.onActionRequired?.(`${committed.rejected.length} local change could not be synced because its item was deleted elsewhere.`);
+    }
+    if (!this.stopped) this.onSnapshotCommitted?.(committed.snapshot);
   }
 
-  private async rebaseAndRetry(originalPending: WorkspaceOperation[]): Promise<void> {
+  private async rebaseAndRetry(): Promise<void> {
     const canonical = await this.transport.loadCanonical();
     if (this.stopped) return;
-    const local = await this.storage.loadOrThrow();
-    const userId = snapshotUserId(local.snapshot) ?? snapshotUserId(canonical.snapshot);
-    if (!userId && originalPending.length) throw new Error("Workspace account could not be identified.");
-    const rebased = rebaseWorkspaceOperations(
-      canonical.snapshot,
-      canonical.tombstones,
-      originalPending,
-      userId ?? "",
-    );
-    await this.storage.update(async (latest) => [{
-      ...latest,
-      snapshot: replaceSavedWorkspace(latest.snapshot, rebased.snapshot),
-      revision: canonical.revision,
-      cachedAt: new Date(this.now()).toISOString(),
-      outbox: rebased.pending,
-    }, undefined]);
+    const rebased = await this.storage.update(async (latest) => {
+      const userId = this.userId ?? snapshotUserId(latest.snapshot) ?? snapshotUserId(canonical.snapshot);
+      if (!userId && latest.outbox.length) throw new Error("Workspace account could not be identified.");
+      const next = rebaseWorkspaceOperations(
+        canonical.snapshot,
+        canonical.tombstones,
+        latest.outbox,
+        userId ?? "",
+      );
+      const snapshot = replaceSavedWorkspace(latest.snapshot, next.snapshot);
+      return [{
+        ...latest,
+        snapshot,
+        revision: canonical.revision,
+        cachedAt: new Date(this.now()).toISOString(),
+        outbox: next.pending,
+      }, { ...next, snapshot }] as const;
+    });
+    if (!this.stopped) this.onSnapshotCommitted?.(rebased.snapshot);
     if (rebased.rejected.length) {
       this.onActionRequired?.(`${rebased.rejected.length} local change could not be synced because its item was deleted elsewhere.`);
     }
     if (!rebased.pending.length) return;
-    const retry = await this.transport.applyOperations(rebased.pending, canonical.revision);
-    await this.commitPush(retry);
+    for (const operation of rebased.pending) this.immutableOperationIds.add(operation.operationId);
+    try {
+      const retry = await this.transport.applyOperations(rebased.pending, canonical.revision);
+      await this.commitPush(retry, rebased.pending);
+    } finally {
+      for (const operation of rebased.pending) this.immutableOperationIds.delete(operation.operationId);
+    }
   }
 }

@@ -20,12 +20,12 @@ function memoryArea(initial: Record<string, unknown> = {}) {
   return { area, state };
 }
 
-function userSnapshot(): WorkspaceSnapshot {
+function userSnapshot(userId = "local-user"): WorkspaceSnapshot {
   return {
     spaces: [
       {
         id: "10000000-0000-4000-8000-000000000001",
-        user_id: "local-user",
+        user_id: userId,
         name: "Research",
         color: "#7357e6",
         position: 0,
@@ -47,12 +47,13 @@ describe("BrowserWorkspaceCache", () => {
     const snapshot = userSnapshot();
 
     await cache.saveLocal(snapshot);
-    await cache.saveCloud("user-a", { snapshot, revision: 2 });
+    const userACloud = userSnapshot("user-a");
+    await cache.saveCloud("user-a", { snapshot: userACloud, revision: 2 });
     await cache.saveCloud("user-b", { snapshot: createDemoSnapshot("user-b"), revision: 5 });
     await cache.saveSyncState("user-a", { status: "synced", revision: 2 });
 
     expect(state[LOCAL_WORKSPACE_KEY]).toMatchObject({ snapshot });
-    expect(state[cloudWorkspaceKey("user-a")]).toMatchObject({ version: 2, snapshot, revision: 2 });
+    expect(state[cloudWorkspaceKey("user-a")]).toMatchObject({ version: 2, snapshot: userACloud, revision: 2 });
     expect(state[cloudWorkspaceKey("user-b")]).toMatchObject({ revision: 5 });
     expect(state[syncStateKey("user-a")]).toMatchObject({ version: 2, phase: "synced", revision: 2 });
   });

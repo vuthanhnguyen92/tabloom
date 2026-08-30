@@ -1,4 +1,4 @@
-import type { WorkspaceSnapshot } from "../shared/domain";
+import { isSaveableUrl, type WorkspaceSnapshot } from "../shared/domain";
 import { isWorkspaceOperation, replaceSavedWorkspace, type WorkspaceOperation } from "../shared/workspace-operations";
 import type { StorageArea } from "./workspace-cache";
 
@@ -57,21 +57,71 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
-function isWorkspaceSnapshot(value: unknown): value is WorkspaceSnapshot {
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0;
+}
+
+function isTimestamp(value: unknown): value is string {
+  return typeof value === "string" && Number.isFinite(Date.parse(value));
+}
+
+function isPosition(value: unknown): value is number {
+  return Number.isSafeInteger(value) && Number(value) >= 0;
+}
+
+function hasValidMeta(value: Record<string, unknown>, userId?: string): boolean {
+  return isNonEmptyString(value.id)
+    && isNonEmptyString(value.user_id)
+    && (!userId || value.user_id === userId)
+    && ["saved", "browser-bookmark"].includes(String(value.origin))
+    && typeof value.read_only === "boolean"
+    && ((value.origin === "saved" && value.read_only === false)
+      || (value.origin === "browser-bookmark" && value.read_only === true))
+    && isPosition(value.position)
+    && isTimestamp(value.created_at)
+    && isTimestamp(value.updated_at);
+}
+
+function isWorkspaceSnapshot(value: unknown, userId?: string): value is WorkspaceSnapshot {
   if (!isRecord(value) || !Array.isArray(value.spaces) || !Array.isArray(value.collections) || !Array.isArray(value.links)) return false;
-  return [...value.spaces, ...value.collections, ...value.links].every((item) => isRecord(item) && typeof item.id === "string");
+  const spaces = value.spaces;
+  const collections = value.collections;
+  const links = value.links;
+  if (new Set(spaces.map((item) => isRecord(item) ? item.id : undefined)).size !== spaces.length
+    || new Set(collections.map((item) => isRecord(item) ? item.id : undefined)).size !== collections.length
+    || new Set(links.map((item) => isRecord(item) ? item.id : undefined)).size !== links.length) return false;
+  if (!spaces.every((item) => isRecord(item)
+    && hasValidMeta(item, userId)
+    && isNonEmptyString(item.name)
+    && isNonEmptyString(item.color))) return false;
+  const spaceIds = new Set(spaces.map((item) => item.id));
+  if (!collections.every((item) => isRecord(item)
+    && hasValidMeta(item, userId)
+    && isNonEmptyString(item.name)
+    && isNonEmptyString(item.space_id)
+    && spaceIds.has(item.space_id))) return false;
+  const collectionIds = new Set(collections.map((item) => item.id));
+  return links.every((item) => isRecord(item)
+    && hasValidMeta(item, userId)
+    && isNonEmptyString(item.collection_id)
+    && collectionIds.has(item.collection_id)
+    && isSaveableUrl(typeof item.url === "string" ? item.url : undefined)
+    && typeof item.title === "string"
+    && typeof item.description === "string"
+    && (item.favicon_url === null || typeof item.favicon_url === "string")
+    && (item.device_label === undefined || item.device_label === null || typeof item.device_label === "string"));
 }
 
 function isRevision(value: unknown): value is number {
   return Number.isSafeInteger(value) && Number(value) >= 0;
 }
 
-function isWorkspaceEnvelope(value: unknown): value is WorkspaceEnvelope {
+function isWorkspaceEnvelope(value: unknown, userId?: string): value is WorkspaceEnvelope {
   return isRecord(value)
     && value.version === 2
-    && isWorkspaceSnapshot(value.snapshot)
+    && isWorkspaceSnapshot(value.snapshot, userId)
     && isRevision(value.revision)
-    && typeof value.cachedAt === "string";
+    && isTimestamp(value.cachedAt);
 }
 
 function isLegacyEnvelope(value: unknown): value is LegacyCloudEnvelope {
@@ -84,7 +134,8 @@ function isOutboxEnvelope(value: unknown): value is OutboxEnvelope {
     && Array.isArray(value.outbox)
     && value.outbox.every(isWorkspaceOperation)
     && Number.isSafeInteger(value.nextSequence)
-    && Number(value.nextSequence) >= 1;
+    && Number(value.nextSequence) >= 1
+    && value.outbox.every((operation) => operation.sequence < Number(value.nextSequence));
 }
 
 function isSyncEnvelope(value: unknown): value is SyncEnvelope {
@@ -92,8 +143,8 @@ function isSyncEnvelope(value: unknown): value is SyncEnvelope {
     && value.version === 2
     && ["synced", "syncing", "offline"].includes(String(value.phase))
     && isRevision(value.revision)
-    && (value.lastSyncedAt === undefined || typeof value.lastSyncedAt === "string")
-    && (value.lastRevisionCheckAt === undefined || typeof value.lastRevisionCheckAt === "string")
+    && (value.lastSyncedAt === undefined || isTimestamp(value.lastSyncedAt))
+    && (value.lastRevisionCheckAt === undefined || isTimestamp(value.lastRevisionCheckAt))
     && (value.error === undefined || typeof value.error === "string");
 }
 
@@ -145,7 +196,7 @@ export class LocalFirstStorage {
 
   async load(): Promise<AccountWorkspaceState | null> {
     const raw = await this.readRaw();
-    if (!isWorkspaceEnvelope(raw.workspace)) return null;
+    if (!isWorkspaceEnvelope(raw.workspace, this.userId)) return null;
     let outbox: OutboxEnvelope;
     if (raw.outbox === undefined) outbox = { version: 1, outbox: [], nextSequence: 1 };
     else if (isOutboxEnvelope(raw.outbox)) outbox = raw.outbox;
@@ -206,15 +257,26 @@ export class LocalFirstStorage {
   }
 
   async saveCanonical(snapshot: WorkspaceSnapshot, revision: number): Promise<void> {
+    if (!isWorkspaceSnapshot(snapshot, this.userId) || !isRevision(revision)) {
+      throw new Error("Invalid canonical workspace snapshot.");
+    }
     await withWorkspaceLock(`tabloom-workspace-lock:${this.userId}`, async () => {
-      const current = await this.load();
+      const raw = await this.readRaw();
+      const workspace = isWorkspaceEnvelope(raw.workspace, this.userId) ? raw.workspace : undefined;
+      const outbox = isOutboxEnvelope(raw.outbox) ? raw.outbox : { version: 1 as const, outbox: [], nextSequence: 1 };
+      const sync = isSyncEnvelope(raw.sync) ? raw.sync : undefined;
       await this.save({
-        snapshot: current ? replaceSavedWorkspace(current.snapshot, snapshot) : structuredClone(snapshot),
+        snapshot: workspace ? replaceSavedWorkspace(workspace.snapshot, snapshot) : structuredClone(snapshot),
         revision,
         cachedAt: new Date(this.now()).toISOString(),
-        outbox: current?.outbox ?? [],
-        nextSequence: current?.nextSequence ?? 1,
-        sync: current?.sync ?? { phase: "synced" },
+        outbox: structuredClone(outbox.outbox),
+        nextSequence: outbox.nextSequence,
+        sync: sync ? {
+          phase: sync.phase,
+          ...(sync.lastSyncedAt ? { lastSyncedAt: sync.lastSyncedAt } : {}),
+          ...(sync.lastRevisionCheckAt ? { lastRevisionCheckAt: sync.lastRevisionCheckAt } : {}),
+          ...(sync.error ? { error: sync.error } : {}),
+        } : { phase: "synced" },
       });
     });
   }
