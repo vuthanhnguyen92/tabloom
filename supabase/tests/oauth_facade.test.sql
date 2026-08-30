@@ -28,7 +28,11 @@ select ok(
       and (
         member_role.rolname <> session_user
         or pg_has_role(member_role.oid, parent_role.oid, 'usage')
-        or pg_has_role(member_role.oid, parent_role.oid, 'set')
+        or case
+          when current_setting('server_version_num')::integer >= 160000
+            then pg_has_role(member_role.oid, parent_role.oid, 'set')
+          else false
+        end
       )
   ),
   'OAuth owner has no retained runtime-usable role memberships outside the trusted database administrator'
@@ -369,6 +373,10 @@ select throws_ok(
 
 reset role;
 
+do $$ begin
+  execute format('grant oauth_facade_owner to %I', current_user);
+end $$;
+set local role oauth_facade_owner;
 delete from public.oauth_clients;
 insert into public.oauth_clients(client_name, redirect_uris, created_at, expires_at)
 select 'expired-' || value,
@@ -376,6 +384,7 @@ select 'expired-' || value,
   clock_timestamp() - interval '1 day 1 minute',
   clock_timestamp() - interval '1 day'
 from generate_series(1, 150) value;
+reset role;
 set local role anon;
 select lives_ok(
   $$ select pg_temp.test_register(
@@ -446,6 +455,10 @@ grant select on expired_client_id to anon;
 set local role anon;
 select is(public.get_oauth_client((select client_id from expired_client_id)), null::jsonb, 'expired clients are not resolved');
 reset role;
+
+do $$ begin
+  execute format('revoke oauth_facade_owner from %I', current_user);
+end $$;
 
 select * from finish();
 rollback;

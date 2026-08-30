@@ -621,7 +621,11 @@ begin
       and (
         member_role.rolname <> session_user
         or pg_has_role(member_role.oid, parent_role.oid, 'usage')
-        or pg_has_role(member_role.oid, parent_role.oid, 'set')
+        or case
+          when current_setting('server_version_num')::integer >= 160000
+            then pg_has_role(member_role.oid, parent_role.oid, 'set')
+          else false
+        end
       )
   ) then
     raise exception 'OAuth facade owner has unsafe role memberships';
