@@ -510,7 +510,18 @@ begin
     ) order by tombstone.entity_type, tombstone.entity_id)
       from public.workspace_tombstones tombstone
       where tombstone.user_id = sync_batch.owner_id
-        and tombstone.deleted_revision = sync_batch.resulting_revision), '[]'::jsonb),
+        and (
+          (sync_batch.changed and tombstone.deleted_revision = sync_batch.resulting_revision)
+          or exists (
+            select 1
+            from jsonb_array_elements(operations) input_operation
+            join jsonb_array_elements(outcomes) outcome
+              on outcome->>'operationId' = input_operation->>'operationId'
+            where outcome->>'status' = 'deleted'
+              and input_operation->>'entity' = tombstone.entity_type
+              and (input_operation->>'entityId')::uuid = tombstone.entity_id
+          )
+        )), '[]'::jsonb),
     'conflicts', '[]'::jsonb
   );
 end;

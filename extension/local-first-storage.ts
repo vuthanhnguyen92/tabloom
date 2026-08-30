@@ -124,8 +124,8 @@ function isWorkspaceEnvelope(value: unknown, userId?: string): value is Workspac
     && isTimestamp(value.cachedAt);
 }
 
-function isLegacyEnvelope(value: unknown): value is LegacyCloudEnvelope {
-  return isRecord(value) && isWorkspaceSnapshot(value.snapshot) && isRevision(value.revision);
+function isLegacyEnvelope(value: unknown, userId?: string): value is LegacyCloudEnvelope {
+  return isRecord(value) && isWorkspaceSnapshot(value.snapshot, userId) && isRevision(value.revision);
 }
 
 function isOutboxEnvelope(value: unknown): value is OutboxEnvelope {
@@ -282,24 +282,33 @@ export class LocalFirstStorage {
   }
 
   async migrateV1(): Promise<AccountWorkspaceState | null> {
-    const current = await this.load();
-    if (current) return current;
-    const rawWorkspace = await this.readKey(accountWorkspaceKey(this.userId));
-    if (rawWorkspace !== undefined && !isWorkspaceEnvelope(rawWorkspace)) {
-      await this.area.set({ [corruptWorkspaceKey(this.userId, this.now())]: rawWorkspace });
-    }
-    const legacy = await this.readKey(legacyCloudWorkspaceKey(this.userId));
-    if (!isLegacyEnvelope(legacy)) return null;
-    const migrated: AccountWorkspaceState = {
-      snapshot: structuredClone(legacy.snapshot),
-      revision: legacy.revision,
-      cachedAt: new Date(this.now()).toISOString(),
-      outbox: [],
-      nextSequence: 1,
-      sync: { phase: "synced" },
-    };
-    await this.save(migrated);
-    return migrated;
+    return withWorkspaceLock(`tabloom-workspace-lock:${this.userId}`, async () => {
+      const current = await this.load();
+      if (current) return current;
+      const raw = await this.readRaw();
+      if (raw.workspace !== undefined && !isWorkspaceEnvelope(raw.workspace, this.userId)) {
+        await this.area.set({ [corruptWorkspaceKey(this.userId, this.now())]: raw.workspace });
+      }
+      const legacy = await this.readKey(legacyCloudWorkspaceKey(this.userId));
+      if (!isLegacyEnvelope(legacy, this.userId)) return null;
+      const outbox = isOutboxEnvelope(raw.outbox) ? raw.outbox : { version: 1 as const, outbox: [], nextSequence: 1 };
+      const sync = isSyncEnvelope(raw.sync) ? raw.sync : undefined;
+      const migrated: AccountWorkspaceState = {
+        snapshot: structuredClone(legacy.snapshot),
+        revision: legacy.revision,
+        cachedAt: new Date(this.now()).toISOString(),
+        outbox: structuredClone(outbox.outbox),
+        nextSequence: outbox.nextSequence,
+        sync: sync ? {
+          phase: sync.phase,
+          ...(sync.lastSyncedAt ? { lastSyncedAt: sync.lastSyncedAt } : {}),
+          ...(sync.lastRevisionCheckAt ? { lastRevisionCheckAt: sync.lastRevisionCheckAt } : {}),
+          ...(sync.error ? { error: sync.error } : {}),
+        } : { phase: "synced" },
+      };
+      await this.save(migrated);
+      return migrated;
+    });
   }
 
   async getOrCreateDeviceId(): Promise<string> {

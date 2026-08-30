@@ -3,6 +3,7 @@ import type { Collection, SavedLink, Space, WorkspaceSnapshot } from "../shared/
 import {
   applyWorkspacePatch,
   coalesceWorkspaceOperations,
+  isWorkspaceOperation,
   rebaseWorkspaceOperations,
   replaceSavedWorkspace,
   type WorkspaceOperation,
@@ -43,7 +44,7 @@ function operation(overrides: Partial<WorkspaceOperation> = {}): WorkspaceOperat
 }
 
 describe("workspace operations", () => {
-  it("coalesces an unsent create and update without adding ownership metadata", () => {
+  it("keeps create and update as separate identities so cross-page acknowledgements cannot erase the update", () => {
     const create = operation({
       action: "create",
       payload: {
@@ -67,22 +68,25 @@ describe("workspace operations", () => {
 
     const result = coalesceWorkspaceOperations([create], update);
 
-    expect(result).toHaveLength(1);
-    expect(result[0]).toMatchObject({
-      operationId: create.operationId,
-      action: "create",
-      payload: { id: LINK_ID, title: "Final" },
-    });
-    expect(result[0].payload).not.toHaveProperty("user_id");
-    expect(result[0].payload).not.toHaveProperty("access_token");
+    expect(result).toEqual([create, update]);
   });
 
-  it("removes an unsent create followed by delete", () => {
+  it("keeps create and delete so another page cannot cancel an in-flight create", () => {
     const create = operation({ action: "create", payload: {
       id: LINK_ID, collection_id: COLLECTION_ID, url: "https://example.com/", title: "Example", description: "", favicon_url: null, position: 0, created_at: NOW, updated_at: NOW,
     } });
     const remove = operation({ operationId: "40000000-0000-4000-8000-000000000002", sequence: 2, action: "delete", payload: {} });
-    expect(coalesceWorkspaceOperations([create], remove)).toEqual([]);
+    expect(coalesceWorkspaceOperations([create], remove)).toEqual([create, remove]);
+  });
+
+  it("strictly validates persisted operation payloads", () => {
+    const valid = operation();
+    expect(isWorkspaceOperation(valid)).toBe(true);
+    expect(isWorkspaceOperation({ ...valid, createdAt: "not-a-date" })).toBe(false);
+    expect(isWorkspaceOperation({ ...valid, payload: { title: 42 } })).toBe(false);
+    expect(isWorkspaceOperation({ ...valid, payload: { title: "Updated", provider_token: "secret" } })).toBe(false);
+    expect(isWorkspaceOperation({ ...valid, payload: { url: "chrome://settings" } })).toBe(false);
+    expect(isWorkspaceOperation({ ...valid, entity: "space", payload: { title: "Wrong entity" } })).toBe(false);
   });
 
   it("replaces only unsent updates and reorders", () => {

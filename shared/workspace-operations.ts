@@ -1,4 +1,4 @@
-import { normalizePositions, type Collection, type SavedLink, type Space, type WorkspaceSnapshot } from "./domain";
+import { isSaveableUrl, normalizePositions, type Collection, type SavedLink, type Space, type WorkspaceSnapshot } from "./domain";
 
 export type WorkspaceEntity = "space" | "collection" | "link";
 
@@ -64,22 +64,93 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
+function isTimestamp(value: unknown): value is string {
+  return typeof value === "string" && Number.isFinite(Date.parse(value));
+}
+
+function isPosition(value: unknown): value is number {
+  return Number.isSafeInteger(value) && Number(value) >= 0;
+}
+
+function hasExactKeys(value: Record<string, unknown>, allowed: string[], required: string[] = allowed): boolean {
+  return Object.keys(value).every((key) => allowed.includes(key))
+    && required.every((key) => Object.hasOwn(value, key));
+}
+
+function isNonEmptyString(value: unknown, max: number): value is string {
+  return typeof value === "string" && value.trim().length > 0 && value.length <= max;
+}
+
+function isCreatePayload(entity: WorkspaceEntity, entityId: string, payload: Record<string, unknown>): boolean {
+  if (payload.id !== entityId) return false;
+  if (entity === "space") {
+    return hasExactKeys(payload, ["id", "name", "color", "position", "created_at", "updated_at"])
+      && isNonEmptyString(payload.name, 80)
+      && typeof payload.color === "string"
+      && /^#[0-9a-f]{6}$/i.test(payload.color)
+      && isPosition(payload.position)
+      && isTimestamp(payload.created_at)
+      && isTimestamp(payload.updated_at);
+  }
+  if (entity === "collection") {
+    return hasExactKeys(payload, ["id", "space_id", "name", "position", "created_at", "updated_at"])
+      && UUID_PATTERN.test(String(payload.space_id))
+      && isNonEmptyString(payload.name, 80)
+      && isPosition(payload.position)
+      && isTimestamp(payload.created_at)
+      && isTimestamp(payload.updated_at);
+  }
+  return hasExactKeys(payload, ["id", "collection_id", "url", "title", "description", "favicon_url", "position", "created_at", "updated_at"])
+    && UUID_PATTERN.test(String(payload.collection_id))
+    && isSaveableUrl(typeof payload.url === "string" ? payload.url : undefined)
+    && isNonEmptyString(payload.title, 300)
+    && typeof payload.description === "string"
+    && payload.description.length <= 1000
+    && (payload.favicon_url === null || typeof payload.favicon_url === "string")
+    && isPosition(payload.position)
+    && isTimestamp(payload.created_at)
+    && isTimestamp(payload.updated_at);
+}
+
+function isUpdatePayload(entity: WorkspaceEntity, payload: Record<string, unknown>): boolean {
+  const keys = Object.keys(payload);
+  if (keys.length === 0) return false;
+  if (entity === "space") {
+    return hasExactKeys(payload, ["name", "color"], [])
+      && (payload.name === undefined || isNonEmptyString(payload.name, 80))
+      && (payload.color === undefined || (typeof payload.color === "string" && /^#[0-9a-f]{6}$/i.test(payload.color)));
+  }
+  if (entity === "collection") {
+    return hasExactKeys(payload, ["name"], []) && isNonEmptyString(payload.name, 80);
+  }
+  return hasExactKeys(payload, ["collection_id", "url", "title", "description", "favicon_url"], [])
+    && (payload.collection_id === undefined || UUID_PATTERN.test(String(payload.collection_id)))
+    && (payload.url === undefined || isSaveableUrl(typeof payload.url === "string" ? payload.url : undefined))
+    && (payload.title === undefined || isNonEmptyString(payload.title, 300))
+    && (payload.description === undefined || (typeof payload.description === "string" && payload.description.length <= 1000))
+    && (payload.favicon_url === undefined || payload.favicon_url === null || typeof payload.favicon_url === "string");
+}
+
 export function isWorkspaceOperation(value: unknown): value is WorkspaceOperation {
-  if (!isRecord(value) || !UUID_PATTERN.test(String(value.operationId)) || !UUID_PATTERN.test(String(value.deviceId))) return false;
+  if (!isRecord(value)
+    || !hasExactKeys(value, ["operationId", "deviceId", "sequence", "entity", "entityId", "action", "payload", "createdAt", "baseRevision"])
+    || !UUID_PATTERN.test(String(value.operationId))
+    || !UUID_PATTERN.test(String(value.deviceId))) return false;
   if (!Number.isSafeInteger(value.sequence) || Number(value.sequence) < 1) return false;
   if (!Number.isSafeInteger(value.baseRevision) || Number(value.baseRevision) < 0) return false;
   if (!["space", "collection", "link"].includes(String(value.entity)) || !UUID_PATTERN.test(String(value.entityId))) return false;
-  if (!["create", "update", "delete", "reorder"].includes(String(value.action)) || typeof value.createdAt !== "string" || !isRecord(value.payload)) return false;
-  if ("user_id" in value.payload || "access_token" in value.payload || "refresh_token" in value.payload) return false;
+  if (!["create", "update", "delete", "reorder"].includes(String(value.action)) || !isTimestamp(value.createdAt) || !isRecord(value.payload)) return false;
   if (value.action === "delete") return Object.keys(value.payload).length === 0;
   if (value.action === "reorder") {
     return ["collection", "link"].includes(String(value.entity))
       && UUID_PATTERN.test(String(value.payload.parentId))
+      && hasExactKeys(value.payload, ["parentId", "orderedIds"])
       && Array.isArray(value.payload.orderedIds)
-      && value.payload.orderedIds.every((id) => typeof id === "string" && UUID_PATTERN.test(id));
+      && value.payload.orderedIds.every((id) => typeof id === "string" && UUID_PATTERN.test(id))
+      && new Set(value.payload.orderedIds).size === value.payload.orderedIds.length;
   }
-  if (value.action === "create") return value.payload.id === value.entityId;
-  return true;
+  if (value.action === "create") return isCreatePayload(value.entity as WorkspaceEntity, String(value.entityId), value.payload);
+  return isUpdatePayload(value.entity as WorkspaceEntity, value.payload);
 }
 
 function clone<T>(value: T): T {
@@ -106,14 +177,10 @@ export function coalesceWorkspaceOperations(
 
   const previous = existing[index];
   if (previous.action === "create" && incoming.action === "update") {
-    const merged = {
-      ...previous,
-      payload: { ...previous.payload, ...incoming.payload, id: previous.entityId },
-    } as WorkspaceOperation;
-    return existing.map((candidate, candidateIndex) => candidateIndex === index ? merged : candidate);
+    return [...existing, incoming];
   }
   if (previous.action === "create" && incoming.action === "delete") {
-    return existing.filter((_, candidateIndex) => candidateIndex !== index);
+    return [...existing, incoming];
   }
   if (
     (previous.action === "update" && incoming.action === "update")

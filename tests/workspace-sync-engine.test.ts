@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { WorkspaceSnapshot } from "../shared/domain";
 import type { WorkspaceOperation } from "../shared/workspace-operations";
-import type { AccountWorkspaceState, LocalFirstStorage } from "../extension/local-first-storage";
-import type { WorkspaceSyncTransport } from "../extension/workspace-sync-transport";
+import { LocalFirstStorage, type AccountWorkspaceState, type StorageArea } from "../extension/local-first-storage";
+import { LocalFirstWorkspaceRepository } from "../extension/local-first-repository";
+import type { ApplyOperationsResult, WorkspaceSyncTransport } from "../extension/workspace-sync-transport";
 import { WorkspaceSyncEngine } from "../extension/workspace-sync-engine";
 import { WorkspaceRevisionConflictError } from "../shared/workspace-sync-repository";
 
@@ -197,6 +198,54 @@ describe("WorkspaceSyncEngine", () => {
     expect(read().outbox).toEqual([laterOperation]);
     expect(read().snapshot.spaces[0].name).toBe("Latest local name");
     expect(immutableOperationIds).toEqual(new Set());
+  });
+
+  it("preserves an edit from a second new-tab page while the first page uploads a create", async () => {
+    const values: Record<string, unknown> = {};
+    const area: StorageArea = {
+      get: vi.fn(async (key: string) => ({ [key]: values[key] })),
+      set: vi.fn(async (next: Record<string, unknown>) => { Object.assign(values, next); }),
+    };
+    const storageA = new LocalFirstStorage(area, USER_ID);
+    const storageB = new LocalFirstStorage(area, USER_ID);
+    await storageA.saveCanonical(empty, 0);
+    const immutableA = new Set<string>();
+    const repositoryA = await LocalFirstWorkspaceRepository.create({
+      userId: USER_ID,
+      storage: storageA,
+      onMutation: vi.fn(),
+      immutableOperationIds: () => immutableA,
+    });
+    const repositoryB = await LocalFirstWorkspaceRepository.create({
+      userId: USER_ID,
+      storage: storageB,
+      onMutation: vi.fn(),
+      immutableOperationIds: () => new Set(),
+    });
+    const created = await repositoryA.createSpace({ name: "First page", color: "#7357e6" });
+    let resolvePush!: (value: Awaited<ReturnType<WorkspaceSyncTransport["applyOperations"]>>) => void;
+    const transport = transportWith({
+      applyOperations: vi.fn(() => new Promise<ApplyOperationsResult>((resolve) => { resolvePush = resolve; })),
+      getRevision: vi.fn(async () => ({ revision: 1, serverTime: timestamp })),
+    });
+    const engine = new WorkspaceSyncEngine({ userId: USER_ID, storage: storageA, transport, immutableOperationIds: immutableA });
+
+    const running = engine.refresh();
+    await vi.waitFor(() => expect(transport.applyOperations).toHaveBeenCalledOnce());
+    await repositoryB.updateSpace(created.id, { name: "Second page edit" });
+    resolvePush({
+      revision: 1,
+      outcomes: [{ operationId: (await storageA.loadOrThrow()).outbox[0].operationId, status: "applied" }],
+      patches: { spaces: [{ ...created, name: "First page" }], collections: [], links: [] },
+      tombstones: [],
+      conflicts: [],
+    });
+    await running;
+
+    const current = await storageA.loadOrThrow();
+    expect(current.outbox).toHaveLength(1);
+    expect(current.outbox[0]).toMatchObject({ action: "update", payload: { name: "Second page edit" } });
+    expect(current.snapshot.spaces[0].name).toBe("Second page edit");
   });
 
   it("pulls newer canonical data while preserving bookmark records", async () => {

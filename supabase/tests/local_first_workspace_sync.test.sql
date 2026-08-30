@@ -1,6 +1,6 @@
 begin;
 
-select plan(40);
+select plan(41);
 
 select has_table('public', 'workspace_operations', 'applied operation table exists');
 select has_table('public', 'workspace_tombstones', 'workspace tombstone table exists');
@@ -140,6 +140,14 @@ select is(
 );
 select is((select count(*) from public.links), 0::bigint, 'tombstoned link is not resurrected');
 select is((select revision from public.workspace_sync_state), 4::bigint, 'deleted outcome does not increment revision');
+select is(
+  jsonb_array_length(public.apply_workspace_operations(
+    '[{"operationId":"40000000-0000-4000-8000-000000000014","deviceId":"50000000-0000-4000-8000-000000000001","sequence":14,"entity":"link","entityId":"30000000-0000-4000-8000-000000000001","action":"update","payload":{"title":"Still deleted"},"createdAt":"2026-08-31T00:00:00Z","baseRevision":4}]'::jsonb,
+    4
+  )->'tombstones'),
+  1,
+  'deleted outcomes return the older tombstone needed to clear stale local data'
+);
 
 set local request.jwt.claim.sub = '00000000-0000-0000-0000-00000000000b';
 select is((select count(*) from public.workspace_operations), 0::bigint, 'RLS hides another user operation ids');

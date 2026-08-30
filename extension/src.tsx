@@ -47,7 +47,7 @@ function ExtensionApp() {
   const [error, setError] = useState("");
   const [user, setUser] = useState<SyncUser | null>(null);
   const [syncStatus, setSyncStatus] = useState<"local" | "checking" | "pending" | "synced" | "error">("local");
-  const [workspaceSync, setWorkspaceSync] = useState<{ coordinator: FirstSyncCoordinator; preview: WorkspaceMergePlan } | null>(null);
+  const [workspaceSync, setWorkspaceSync] = useState<{ coordinator: FirstSyncCoordinator; preview: WorkspaceMergePlan; generation: number } | null>(null);
   const [workspaceSyncBusy, setWorkspaceSyncBusy] = useState(false);
   const [workspaceSyncError, setWorkspaceSyncError] = useState<string | null>(null);
   const [tabsExpanded, setTabsExpanded] = useState(true);
@@ -62,6 +62,7 @@ function ExtensionApp() {
   const localFirstStorageRef = useRef<LocalFirstStorage | null>(null);
   const engineRef = useRef<WorkspaceSyncEngine | null>(null);
   const engineCleanupRef = useRef<(() => void) | null>(null);
+  const activationGenerationRef = useRef(0);
   const [engineState, setEngineState] = useState<SyncEngineState | null>(null);
 
   async function load(repo: WorkspaceRepository) {
@@ -87,8 +88,8 @@ function ExtensionApp() {
     setEngineState(null);
   }
 
-  async function activateCanonical(userId: string) {
-    if (!extensionSupabase) return;
+  async function activateCanonical(userId: string, generation: number) {
+    if (!extensionSupabase || activationGenerationRef.current !== generation) return;
     stopActiveEngine();
     const storage = new LocalFirstStorage(browserAdapter.storage, userId);
     localFirstStorageRef.current = storage;
@@ -99,6 +100,7 @@ function ExtensionApp() {
       onMutation: () => engineRef.current?.requestSync("mutation"),
       immutableOperationIds: () => immutableOperationIds,
     });
+    if (activationGenerationRef.current !== generation) return;
     const engine = new WorkspaceSyncEngine({
       userId,
       storage,
@@ -106,14 +108,14 @@ function ExtensionApp() {
       onActionRequired: setError,
       immutableOperationIds,
       onSnapshotCommitted: (next) => {
-        if (engineRef.current !== engine || syncUserIdRef.current !== userId) return;
+        if (engineRef.current !== engine || syncUserIdRef.current !== userId || activationGenerationRef.current !== generation) return;
         setSnapshot(next);
         setSelectedSpace((current) => next.spaces.some((space) => space.id === current) ? current : next.spaces[0]?.id ?? "");
       },
     });
     engineRef.current = engine;
     const unsubscribe = engine.subscribe((state) => {
-      if (engineRef.current !== engine) return;
+      if (engineRef.current !== engine || activationGenerationRef.current !== generation) return;
       setEngineState(state);
       setSyncStatus(state.phase === "syncing" ? "checking" : state.phase === "synced" ? "synced" : state.pending > 0 ? "pending" : "error");
     });
@@ -130,21 +132,27 @@ function ExtensionApp() {
     };
     setRepository(localFirst);
     const activated = await localFirst.load();
+    if (activationGenerationRef.current !== generation || engineRef.current !== engine) {
+      engine.stop();
+      return;
+    }
     setSnapshot(activated);
     setSelectedSpace((current) => activated.spaces.some((space) => space.id === current) ? current : activated.spaces[0]?.id ?? "");
     setError("");
     void engine.start();
   }
 
-  async function beginWorkspaceSync(userId: string, localRepository: WorkspaceRepository) {
-    if (!extensionSupabase) return;
+  async function beginWorkspaceSync(userId: string, localRepository: WorkspaceRepository, generation = ++activationGenerationRef.current) {
+    if (!extensionSupabase || activationGenerationRef.current !== generation) return;
     setSyncStatus("checking");
     syncUserIdRef.current = userId;
     const bookmarks = new SupabaseBookmarkRepository(extensionSupabase, userId);
     setBookmarkRepository(bookmarks);
     const cached = await cache.loadCloud(userId);
+    if (activationGenerationRef.current !== generation) return;
     if (cached) {
-      await activateCanonical(userId);
+      await activateCanonical(userId, generation);
+      if (activationGenerationRef.current !== generation) return;
       setWorkspaceSync(null);
       return;
     }
@@ -155,14 +163,17 @@ function ExtensionApp() {
       cache,
       activateCanonical: async (next, revision) => {
         void next;
-        await activateCanonical(userId);
+        if (activationGenerationRef.current !== generation) return;
+        await activateCanonical(userId, generation);
+        if (activationGenerationRef.current !== generation) return;
         setEngineState({ phase: "synced", revision, pending: 0, lastSyncedAt: new Date().toISOString() });
       },
     });
     try {
       const advanced = await advanceFirstSync(coordinator);
+      if (activationGenerationRef.current !== generation) return;
       if (advanced.kind === "confirmation") {
-        setWorkspaceSync({ coordinator, preview: advanced.preview });
+        setWorkspaceSync({ coordinator, preview: advanced.preview, generation });
         setWorkspaceSyncError(null);
         setSyncStatus("pending");
         setMessage("Review how local and synced tabs should be combined");
@@ -172,6 +183,7 @@ function ExtensionApp() {
         setMessage("");
       }
     } catch (reason) {
+      if (activationGenerationRef.current !== generation) return;
       setSyncStatus("error");
       setMessage("Cloud sync is unavailable · your local workspace is still ready");
       throw reason;
@@ -187,18 +199,21 @@ function ExtensionApp() {
       setRepository(local);
       await load(local);
       if (!extensionSupabase) return;
+      const generation = ++activationGenerationRef.current;
       try {
         const { data } = await extensionSupabase.auth.getSession();
+        if (!active || activationGenerationRef.current !== generation) return;
         if (data.session) {
           setUser(data.session.user);
-          await beginWorkspaceSync(data.session.user.id, local);
+          await beginWorkspaceSync(data.session.user.id, local, generation);
         }
       } catch {
-        if (active) setMessage("Cloud sync is unavailable · your local workspace is still ready");
+        if (active && activationGenerationRef.current === generation) setMessage("Cloud sync is unavailable · your local workspace is still ready");
       }
     })();
     return () => {
       active = false;
+      activationGenerationRef.current += 1;
       stopActiveEngine();
     };
     // Bootstrap owns the initial repository and engine lifecycle; rerunning it would create duplicate listeners.
@@ -280,18 +295,21 @@ function ExtensionApp() {
   }
 
   async function signIn() {
+    const generation = ++activationGenerationRef.current;
     const session = await signInExtensionWithGoogle();
     const local = localRepositoryRef.current;
-    if (!extensionSupabase || !local) return;
+    if (!extensionSupabase || !local || activationGenerationRef.current !== generation) return;
     setUser(session.user);
-    await beginWorkspaceSync(session.user.id, local);
+    await beginWorkspaceSync(session.user.id, local, generation);
   }
 
   async function switchAccount() {
+    const generation = ++activationGenerationRef.current;
     const local = localRepositoryRef.current;
     if (!extensionSupabase || !local) return;
     stopActiveEngine();
     await extensionSupabase.auth.signOut();
+    if (activationGenerationRef.current !== generation) return;
     syncUserIdRef.current = null;
     setBookmarkRepository(null);
     setWorkspaceSync(null);
@@ -300,9 +318,11 @@ function ExtensionApp() {
     await load(local);
     try {
       const session = await signInExtensionWithGoogle({ selectAccount: true });
+      if (activationGenerationRef.current !== generation) return;
       setUser(session.user);
-      await beginWorkspaceSync(session.user.id, local);
+      await beginWorkspaceSync(session.user.id, local, generation);
     } catch (reason) {
+      if (activationGenerationRef.current !== generation) return;
       setUser(null);
       setError(reason instanceof Error ? reason.message : "Could not switch accounts.");
       throw reason;
@@ -315,12 +335,14 @@ function ExtensionApp() {
     setWorkspaceSyncError(null);
     try {
       await workspaceSync.coordinator.confirm(workspaceSync.preview);
+      if (activationGenerationRef.current !== workspaceSync.generation) return;
       setWorkspaceSync(null);
       setSyncStatus("synced");
       setMessage("Local and synced tabs were combined");
     } catch (reason) {
+      if (activationGenerationRef.current !== workspaceSync.generation) return;
       if (reason instanceof FirstSyncPreviewChangedError) {
-        setWorkspaceSync({ coordinator: workspaceSync.coordinator, preview: reason.preview });
+        setWorkspaceSync({ coordinator: workspaceSync.coordinator, preview: reason.preview, generation: workspaceSync.generation });
         setWorkspaceSyncError(reason.message);
         setSyncStatus("pending");
       } else {

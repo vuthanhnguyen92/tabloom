@@ -61,7 +61,8 @@ describe("LocalFirstWorkspaceRepository", () => {
     expect(current.snapshot.links).toContainEqual(expect.objectContaining({ id: link.id, collection_id: second.id, title: "Updated" }));
     expect(current.outbox).toEqual(expect.arrayContaining([
       expect.objectContaining({ entity: "collection", entityId: second.id, action: "create" }),
-      expect.objectContaining({ entity: "link", entityId: link.id, action: "create", payload: expect.objectContaining({ title: "Updated" }) }),
+      expect.objectContaining({ entity: "link", entityId: link.id, action: "create", payload: expect.objectContaining({ title: "Example" }) }),
+      expect.objectContaining({ entity: "link", entityId: link.id, action: "update", payload: { title: "Updated" } }),
       expect.objectContaining({ entity: "link", entityId: second.id, action: "reorder", payload: { parentId: second.id, orderedIds: [link.id] } }),
       expect.objectContaining({ entity: "collection", entityId: COLLECTION_ID, action: "delete" }),
     ]));

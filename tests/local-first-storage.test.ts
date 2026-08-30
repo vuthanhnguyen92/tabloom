@@ -91,6 +91,25 @@ describe("LocalFirstStorage", () => {
     expect(area.set).toHaveBeenCalledTimes(1);
   });
 
+  it("preserves a valid pending outbox while migrating a valid legacy cache over corrupt v2 data", async () => {
+    const pending = operation();
+    const legacy = { snapshot: snapshot(), revision: 7 };
+    const { area } = memoryArea({
+      [accountWorkspaceKey(USER_ID)]: { version: 2, revision: -1, snapshot: { spaces: [] } },
+      [accountOutboxKey(USER_ID)]: { version: 1, outbox: [pending], nextSequence: 2 },
+      [accountSyncStateKey(USER_ID)]: { version: 2, phase: "offline", revision: 2, error: "offline" },
+      [legacyCloudWorkspaceKey(USER_ID)]: legacy,
+    });
+    const storage = new LocalFirstStorage(area, USER_ID);
+
+    await expect(storage.migrateV1()).resolves.toMatchObject({
+      revision: 7,
+      outbox: [pending],
+      nextSequence: 2,
+      sync: { phase: "offline", error: "offline" },
+    });
+  });
+
   it("quarantines an invalid v2 workspace while preserving a valid outbox", async () => {
     const pending = operation();
     const invalid = { version: 2, revision: -1, snapshot: { spaces: [] } };
