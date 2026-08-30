@@ -604,13 +604,25 @@ begin
 end
 $$;
 
+-- PostgreSQL 17 on Supabase retains an ADMIN-only creator row granted by
+-- supabase_admin, which the managed postgres runner cannot revoke. The managed
+-- database administrator is an explicit trusted boundary: its credentials are
+-- never available to the application runtime. Permit only that session user
+-- when it cannot currently SET ROLE or inherit privileges; reject every other
+-- or runtime-usable membership.
 do $$
 begin
   if exists (
     select 1
     from pg_auth_members membership
     join pg_roles parent_role on parent_role.oid = membership.roleid
+    join pg_roles member_role on member_role.oid = membership.member
     where parent_role.rolname = 'oauth_facade_owner'
+      and (
+        member_role.rolname <> session_user
+        or pg_has_role(member_role.oid, parent_role.oid, 'usage')
+        or pg_has_role(member_role.oid, parent_role.oid, 'set')
+      )
   ) then
     raise exception 'OAuth facade owner has unsafe role memberships';
   end if;

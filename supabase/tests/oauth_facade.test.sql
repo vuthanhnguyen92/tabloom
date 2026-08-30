@@ -23,9 +23,15 @@ select ok(
     select 1
     from pg_auth_members membership
     join pg_roles parent_role on parent_role.oid = membership.roleid
+    join pg_roles member_role on member_role.oid = membership.member
     where parent_role.rolname = 'oauth_facade_owner'
+      and (
+        member_role.rolname <> session_user
+        or pg_has_role(member_role.oid, parent_role.oid, 'usage')
+        or pg_has_role(member_role.oid, parent_role.oid, 'set')
+      )
   ),
-  'OAuth owner has no retained role memberships'
+  'OAuth owner has no retained runtime-usable role memberships outside the trusted database administrator'
 );
 
 select ok(

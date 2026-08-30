@@ -105,6 +105,15 @@ ticket, or log. Never grant the private schema/table to `anon`,
 `authenticated`, or `service_role`. The migration intentionally contains no
 production secret.
 
+Supabase PostgreSQL 17 retains an automatic `ADMIN OPTION` membership from the
+managed `postgres` migration runner to roles it creates. Supabase grants that
+row through `supabase_admin`, so the managed runner cannot revoke it. Tabloom
+therefore treats the managed database administrator as an explicit trusted
+operator boundary while rejecting every membership that can currently inherit
+or `SET ROLE` into `oauth_facade_owner`. Never expose the database connection
+string or managed administrator credentials to Vercel, browser code, extension
+packages, logs, or saved SQL; the application receives only the anonymous key.
+
 Do not use command substitution or put JSON after the command name. Confirm the
 files are untracked, transfer them through the approved secret channel, and
 securely remove the local copies under the operator's retention policy.
