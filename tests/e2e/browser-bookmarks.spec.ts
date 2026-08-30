@@ -38,6 +38,7 @@ async function signInWithTestSession(page: Page) {
   const session = await response.json();
   const projectRef = new URL(supabaseUrl).hostname.split(".")[0];
   await page.evaluate(({ key, value }) => localStorage.setItem(key, value), { key: `sb-${projectRef}-auth-token`, value: JSON.stringify(session) });
+  return session as { user: { id: string } };
 }
 
 async function installBookmarkFixture(page: Page, entries: readonly { title: string; url: string; folderPath: readonly string[] }[]) {
@@ -81,6 +82,41 @@ test("versioned build overrides Chrome's new-tab page", async () => {
     await expect(page.locator(".ext-brand")).toContainText("tabloom");
     await expect(page.getByRole("heading", { name: "Product launch" })).toBeVisible();
     await expect(page.getByText("Current tabs")).toBeVisible();
+  } finally {
+    await context.close();
+  }
+});
+
+test("account cache renders while Supabase is offline", async () => {
+  const required = ["VITE_SUPABASE_URL", "VITE_SUPABASE_ANON_KEY", "TABLOOM_E2E_USER_EMAIL", "TABLOOM_E2E_USER_PASSWORD"];
+  test.skip(process.env.TABLOOM_E2E_LIVE !== "1" || required.some((name) => !process.env[name]), "Set the documented TABLOOM_E2E variables to run authenticated cached-startup coverage.");
+
+  const context = await launchExtension();
+  try {
+    const page = await context.newPage();
+    await page.goto("chrome://newtab");
+    const session = await signInWithTestSession(page);
+    const now = new Date().toISOString();
+    const spaceId = "10000000-0000-4000-8000-000000000091";
+    const collectionId = "20000000-0000-4000-8000-000000000091";
+    const snapshot = {
+      spaces: [{ id: spaceId, user_id: session.user.id, name: "Offline Space", color: "#7357e6", position: 0, created_at: now, updated_at: now, origin: "saved", read_only: false }],
+      collections: [{ id: collectionId, user_id: session.user.id, space_id: spaceId, name: "Cached Collection", position: 0, created_at: now, updated_at: now, origin: "saved", read_only: false }],
+      links: [{ id: "30000000-0000-4000-8000-000000000091", user_id: session.user.id, collection_id: collectionId, url: "https://cached.example/", title: "Cached while offline", description: "", favicon_url: null, position: 0, created_at: now, updated_at: now, origin: "saved", read_only: false, device_label: null }],
+    };
+    await page.evaluate(async ({ userId, cachedAt, value }) => {
+      await chrome.storage.local.set({
+        [`tabloom-cloud-workspace-v2:${userId}`]: { version: 2, snapshot: value, revision: 4, cachedAt },
+        [`tabloom-sync-outbox-v1:${userId}`]: { version: 1, outbox: [], nextSequence: 1 },
+        [`tabloom-sync-state-v2:${userId}`]: { version: 2, phase: "synced", revision: 4 },
+      });
+    }, { userId: session.user.id, cachedAt: now, value: snapshot });
+    await context.route("**/*.supabase.co/**", (route) => route.abort("internetdisconnected"));
+
+    await page.reload();
+
+    await expect(page.getByText("Cached Collection", { exact: true })).toBeVisible();
+    await expect(page.getByText("Cached while offline", { exact: true })).toBeVisible();
   } finally {
     await context.close();
   }
