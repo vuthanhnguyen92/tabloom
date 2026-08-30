@@ -97,7 +97,7 @@ describe("SupabaseWorkspaceSyncRepository", () => {
     ).rejects.toBeInstanceOf(WorkspaceRevisionConflictError);
   });
 
-  it.each(["28000", "PGRST301", "401"])(
+  it.each(["28000", "42501", "PGRST301", "401"])(
     "classifies authentication failures with code %s",
     async (code) => {
       const { client } = clientWith({

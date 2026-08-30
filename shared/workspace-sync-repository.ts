@@ -36,14 +36,16 @@ export interface WorkspaceSyncRepository {
   ): Promise<WorkspaceMergeResult>;
 }
 
-type RpcError = { code?: string; message: string };
+export type WorkspaceSyncRpcError = { code?: string; message: string };
 
-function throwSyncError(error: RpcError | null): void {
+export function throwWorkspaceSyncError(
+  error: WorkspaceSyncRpcError | null,
+): void {
   if (!error) return;
   if (error.code === "40001") {
     throw new WorkspaceRevisionConflictError(error.message);
   }
-  if (["28000", "PGRST301", "401"].includes(error.code ?? "")) {
+  if (["28000", "42501", "PGRST301", "401"].includes(error.code ?? "")) {
     throw new WorkspaceAuthenticationError(error.message);
   }
   throw new Error(error.message);
@@ -94,7 +96,7 @@ export class SupabaseWorkspaceSyncRepository
 
   async loadVersioned(): Promise<VersionedWorkspaceSnapshot> {
     const result = await this.client.rpc("load_workspace_snapshot");
-    throwSyncError(result.error);
+    throwWorkspaceSyncError(result.error);
     return parseVersioned(result.data);
   }
 
@@ -106,7 +108,7 @@ export class SupabaseWorkspaceSyncRepository
       local_snapshot: local,
       expected_revision: expectedRevision,
     });
-    throwSyncError(result.error);
+    throwWorkspaceSyncError(result.error);
     if (!isRecord(result.data)) {
       throw new Error("invalid workspace sync response");
     }
