@@ -1,5 +1,21 @@
 begin;
 
+-- Fail closed if a previously provisioned owner has already been granted to
+-- any principal. PostgreSQL 17 may automatically grant a newly created role
+-- to its creator, so this check intentionally runs before CREATE ROLE.
+do $$
+begin
+  if exists (
+    select 1
+    from pg_auth_members membership
+    join pg_roles parent_role on parent_role.oid = membership.roleid
+    where parent_role.rolname = 'oauth_facade_owner'
+  ) then
+    raise exception 'OAuth facade owner has unsafe role memberships';
+  end if;
+end
+$$;
+
 do $$
 begin
   create role oauth_facade_owner
@@ -39,22 +55,9 @@ begin
 end
 $$;
 
-do $$
-begin
-  if exists (
-    select 1
-    from pg_auth_members membership
-    join pg_roles parent_role on parent_role.oid = membership.roleid
-    where parent_role.rolname = 'oauth_facade_owner'
-  ) then
-    raise exception 'OAuth facade owner has unsafe role memberships';
-  end if;
-end
-$$;
-
--- Managed Supabase database owners can create roles but are not implicitly
--- members of them. Membership is needed only while assigning object ownership
--- and is revoked again before this transaction commits.
+-- Membership is needed only while assigning object ownership. GRANT is safe
+-- whether PostgreSQL already added creator membership or not, and the
+-- membership is revoked again before this transaction commits.
 do $$
 begin
   execute format('grant oauth_facade_owner to %I', current_user);
@@ -571,6 +574,19 @@ grant execute on function public.is_oauth_grant_revoked(text) to anon;
 do $$
 begin
   execute format('revoke oauth_facade_owner from %I', current_user);
+end
+$$;
+
+do $$
+begin
+  if exists (
+    select 1
+    from pg_auth_members membership
+    join pg_roles parent_role on parent_role.oid = membership.roleid
+    where parent_role.rolname = 'oauth_facade_owner'
+  ) then
+    raise exception 'OAuth facade owner has unsafe role memberships';
+  end if;
 end
 $$;
 
