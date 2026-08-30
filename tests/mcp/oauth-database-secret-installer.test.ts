@@ -24,7 +24,7 @@ vi.mock("pg", () => ({
     endCalls = 0;
     errorListeners: Array<(error: Error) => void> = [];
 
-    constructor(_options: { connectionString: string }) {
+    constructor() {
       pgTestState.clients.push(this);
     }
 
@@ -224,7 +224,7 @@ returning encode(extensions.digest(secret, 'sha256'), 'hex') as fingerprint`,
       expect(errors).toEqual(["Error: OAuth database secret installation failed"]);
       const failure = await runOAuthDatabaseSecretInstallerCli({
         argv: ["--secret-file", secretPath],
-        env: { TABLOOM_OAUTH_DATABASE_URL: DATABASE_URL },
+        env: { NODE_ENV: "test", TABLOOM_OAUTH_DATABASE_URL: DATABASE_URL },
         connect: async () => { throw new Error(`${DATABASE_URL} ${SECRET}`); },
         stdout: (message: string) => { stdout.push(message); },
         stderr: (message: string) => { stderr.push(message); },
@@ -252,7 +252,7 @@ returning encode(extensions.digest(secret, 'sha256'), 'hex') as fingerprint`,
       await writeFile(secretPath, SECRET, { mode: 0o600 });
       const exitCode = await runOAuthDatabaseSecretInstallerCli({
         argv: ["--secret-file", secretPath],
-        env: { TABLOOM_OAUTH_DATABASE_URL: DATABASE_URL },
+        env: { NODE_ENV: "test", TABLOOM_OAUTH_DATABASE_URL: DATABASE_URL },
         stdout: (message: string) => { stdout.push(message); },
         stderr: (message: string) => { stderr.push(message); },
       });
@@ -281,7 +281,7 @@ returning encode(extensions.digest(secret, 'sha256'), 'hex') as fingerprint`,
       await writeFile(secretPath, SECRET, { mode: 0o600 });
       const exitCode = await runOAuthDatabaseSecretInstallerCli({
         argv: ["--secret-file", secretPath],
-        env: { TABLOOM_OAUTH_DATABASE_URL: DATABASE_URL },
+        env: { NODE_ENV: "test", TABLOOM_OAUTH_DATABASE_URL: DATABASE_URL },
         connect: async () => database().client,
         stdout: (message: string) => { stdout.push(message); },
         stderr: (message: string) => { stderr.push(message); },
@@ -291,7 +291,7 @@ returning encode(extensions.digest(secret, 'sha256'), 'hex') as fingerprint`,
       expect(stderr).toEqual([]);
       await expect(runOAuthDatabaseSecretInstallerCli({
         argv: ["--unknown", secretPath],
-        env: { TABLOOM_OAUTH_DATABASE_URL: DATABASE_URL },
+        env: { NODE_ENV: "test", TABLOOM_OAUTH_DATABASE_URL: DATABASE_URL },
         connect: async () => database().client,
       })).resolves.toBe(1);
     } finally {
