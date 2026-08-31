@@ -9,7 +9,7 @@ import {
 import { coalesceWorkspaceOperations, type WorkspaceOperation } from "../shared/workspace-operations";
 import { LocalFirstStorage } from "./local-first-storage";
 
-export type LocalMutationListener = () => void;
+export type LocalMutationListener = (operations: WorkspaceOperation[]) => Promise<void>;
 
 type OperationIntent = Pick<WorkspaceOperation, "entity" | "entityId" | "action" | "payload">;
 
@@ -39,14 +39,12 @@ export class LocalFirstWorkspaceRepository implements WorkspaceRepository {
     private readonly storage: LocalFirstStorage,
     private readonly deviceId: string,
     private readonly onMutation: LocalMutationListener,
-    private readonly immutableOperationIds: () => ReadonlySet<string>,
   ) {}
 
   static async create(input: {
     userId: string;
     storage: LocalFirstStorage;
     onMutation: LocalMutationListener;
-    immutableOperationIds?: () => ReadonlySet<string>;
   }): Promise<LocalFirstWorkspaceRepository> {
     await input.storage.loadOrThrow();
     const deviceId = await input.storage.getOrCreateDeviceId();
@@ -55,7 +53,6 @@ export class LocalFirstWorkspaceRepository implements WorkspaceRepository {
       input.storage,
       deviceId,
       input.onMutation,
-      input.immutableOperationIds ?? (() => new Set()),
     );
   }
 
@@ -67,7 +64,7 @@ export class LocalFirstWorkspaceRepository implements WorkspaceRepository {
     apply: (memory: MemoryWorkspaceRepository, before: WorkspaceSnapshot) => Promise<T>,
     makeIntents: (before: WorkspaceSnapshot, after: WorkspaceSnapshot, result: T) => OperationIntent[],
   ): Promise<T> {
-    const result = await this.storage.update(async (state) => {
+    const committed = await this.storage.update(async (state) => {
       const before = structuredClone(state.snapshot);
       const memory = new MemoryWorkspaceRepository(this.userId, before);
       const value = await apply(memory, before);
@@ -82,21 +79,35 @@ export class LocalFirstWorkspaceRepository implements WorkspaceRepository {
         createdAt: timestamp,
         baseRevision: state.revision,
       }) as WorkspaceOperation);
-      const immutable = this.immutableOperationIds();
-      const outbox = operations.reduce(
+      const immutable = new Set([
+        ...state.queue
+          .filter((entry) => entry.state === "failed" || Boolean(entry.attemptedAt))
+          .map((entry) => entry.operation.operationId),
+      ]);
+      const pending = operations.reduce(
         (pending, operation) => coalesceWorkspaceOperations(pending, operation, immutable),
-        state.outbox,
+        state.queue.map((entry) => entry.operation),
       );
-      return [{
+      const previousById = new Map(state.queue.map((entry) => [entry.operation.operationId, entry]));
+      const generatedIds = new Set(operations.map((operation) => operation.operationId));
+      const queue = pending.map((operation) => {
+        const previous = previousById.get(operation.operationId);
+        return previous ? { ...previous, operation } : { operation, state: "waiting" as const };
+      });
+      const submitted = queue
+        .filter((entry) => generatedIds.has(entry.operation.operationId))
+        .map((entry) => entry.operation);
+      const next = {
         ...state,
         snapshot: after,
-        outbox,
+        queue,
         nextSequence: state.nextSequence + operations.length,
         cachedAt: timestamp,
-      }, value];
+      };
+      return [next, { value, operations: submitted }] as const;
     });
-    this.onMutation();
-    return result;
+    if (committed.operations.length) await this.onMutation(committed.operations);
+    return committed.value;
   }
 
   createSpace(input: CreateSpaceInput): Promise<Space> {
