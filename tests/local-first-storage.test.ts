@@ -4,6 +4,7 @@ import type { WorkspaceOperation } from "../shared/workspace-operations";
 import {
   LocalFirstStorage,
   accountOutboxKey,
+  accountQueueKey,
   accountSyncStateKey,
   accountWorkspaceKey,
   corruptWorkspaceKey,
@@ -51,12 +52,13 @@ describe("LocalFirstStorage", () => {
   it("uses the approved account-scoped storage keys", () => {
     expect(accountWorkspaceKey("user-a")).toBe("tabloom-cloud-workspace-v2:user-a");
     expect(accountOutboxKey("user-a")).toBe("tabloom-sync-outbox-v1:user-a");
+    expect(accountQueueKey("user-a")).toBe("tabloom-sync-queue-v2:user-a");
     expect(accountSyncStateKey("user-a")).toBe("tabloom-sync-state-v2:user-a");
     expect(accountWorkspaceKey("user-b")).not.toBe(accountWorkspaceKey("user-a"));
     expect(deviceIdKey).toBe("tabloom-device-id-v1");
   });
 
-  it("writes workspace, outbox, and sync state atomically", async () => {
+  it("writes workspace, queue, and sync state atomically", async () => {
     const { area, state } = memoryArea();
     const storage = new LocalFirstStorage(area, USER_ID);
     await storage.saveCanonical(snapshot(), 2);
@@ -64,17 +66,17 @@ describe("LocalFirstStorage", () => {
 
     await storage.update(async (current) => [{
       ...current,
-      outbox: [pending],
+      queue: [{ operation: pending, state: "waiting" }],
       nextSequence: 2,
       sync: { ...current.sync, phase: "offline", error: "offline" },
     }, undefined]);
 
     expect(area.set).toHaveBeenLastCalledWith({
       [accountWorkspaceKey(USER_ID)]: expect.objectContaining({ version: 2, revision: 2, snapshot: snapshot() }),
-      [accountOutboxKey(USER_ID)]: { version: 1, outbox: [pending], nextSequence: 2 },
-      [accountSyncStateKey(USER_ID)]: expect.objectContaining({ version: 2, revision: 2, phase: "offline", error: "offline" }),
+      [accountQueueKey(USER_ID)]: { version: 2, queue: [{ operation: pending, state: "waiting" }], nextSequence: 2 },
+      [accountSyncStateKey(USER_ID)]: expect.objectContaining({ version: 3, revision: 2, phase: "offline", error: "offline" }),
     });
-    expect(state[accountOutboxKey(USER_ID)]).toMatchObject({ outbox: [pending] });
+    expect(state[accountQueueKey(USER_ID)]).toMatchObject({ queue: [{ operation: pending, state: "waiting" }] });
   });
 
   it("migrates v1 cloud data once without deleting the recovery key", async () => {
@@ -82,12 +84,12 @@ describe("LocalFirstStorage", () => {
     const { area, state } = memoryArea({ [legacyCloudWorkspaceKey(USER_ID)]: legacy });
     const storage = new LocalFirstStorage(area, USER_ID);
 
-    await expect(storage.migrateV1()).resolves.toMatchObject({ revision: 7, outbox: [], nextSequence: 1 });
+    await expect(storage.migrateV1()).resolves.toMatchObject({ revision: 7, queue: [], nextSequence: 1 });
     await storage.migrateV1();
 
     expect(state[legacyCloudWorkspaceKey(USER_ID)]).toEqual(legacy);
     expect(state[accountWorkspaceKey(USER_ID)]).toMatchObject({ version: 2, revision: 7, snapshot: legacy.snapshot });
-    expect(state[accountOutboxKey(USER_ID)]).toEqual({ version: 1, outbox: [], nextSequence: 1 });
+    expect(state[accountQueueKey(USER_ID)]).toEqual({ version: 2, queue: [], nextSequence: 1 });
     expect(area.set).toHaveBeenCalledTimes(1);
   });
 
@@ -104,9 +106,9 @@ describe("LocalFirstStorage", () => {
 
     await expect(storage.migrateV1()).resolves.toMatchObject({
       revision: 7,
-      outbox: [pending],
+      queue: [{ operation: pending, state: "failed", error: expect.stringMatching(/retry/i) }],
       nextSequence: 2,
-      sync: { phase: "offline", error: "offline" },
+      sync: { phase: "failed", error: expect.stringMatching(/retry/i) },
     });
   });
 
@@ -182,7 +184,7 @@ describe("LocalFirstStorage", () => {
     const pending = operation();
     const { area } = memoryArea();
     const storage = new LocalFirstStorage(area, USER_ID);
-    await storage.save({ snapshot: initial, revision: 2, cachedAt: NOW, outbox: [pending], nextSequence: 2, sync: { phase: "offline" } });
+    await storage.save({ snapshot: initial, revision: 2, cachedAt: NOW, queue: [{ operation: pending, state: "waiting" }], nextSequence: 2, sync: { phase: "offline" } });
 
     const remote = snapshot();
     remote.spaces[0] = { ...remote.spaces[0], name: "Remote" };
@@ -190,7 +192,7 @@ describe("LocalFirstStorage", () => {
 
     expect(await storage.load()).toMatchObject({
       revision: 3,
-      outbox: [pending],
+      queue: [{ operation: pending, state: "waiting" }],
       nextSequence: 2,
       snapshot: { spaces: expect.arrayContaining([
         expect.objectContaining({ name: "Remote" }),
@@ -212,9 +214,61 @@ describe("LocalFirstStorage", () => {
 
     expect(await storage.load()).toMatchObject({
       revision: 3,
-      outbox: [pending],
+      queue: [{ operation: pending, state: "failed", error: expect.stringMatching(/retry/i) }],
       nextSequence: 2,
-      sync: { phase: "offline", error: "offline" },
+      sync: { phase: "failed", error: expect.stringMatching(/retry/i) },
     });
+  });
+
+  it("migrates a legacy outbox into a blocked queue without losing optimistic data", async () => {
+    const first = operation();
+    const second: WorkspaceOperation = {
+      ...first,
+      operationId: "40000000-0000-4000-8000-000000000002",
+      sequence: 2,
+      payload: { name: "Renamed again" },
+    };
+    const optimistic = snapshot();
+    optimistic.spaces[0] = { ...optimistic.spaces[0], name: "Renamed again" };
+    const { area } = memoryArea({
+      [accountWorkspaceKey(USER_ID)]: { version: 2, snapshot: optimistic, revision: 2, cachedAt: NOW },
+      [accountOutboxKey(USER_ID)]: { version: 1, outbox: [first, second], nextSequence: 3 },
+      [accountSyncStateKey(USER_ID)]: { version: 2, phase: "syncing", revision: 2 },
+    });
+
+    const loaded = await new LocalFirstStorage(area, USER_ID).loadOrThrow();
+
+    expect(loaded.snapshot).toEqual(optimistic);
+    expect(loaded).toMatchObject({
+      queue: [
+        { operation: first, state: "failed", error: expect.stringMatching(/retry/i) },
+        { operation: second, state: "waiting" },
+      ],
+      sync: { phase: "failed", error: expect.stringMatching(/retry/i) },
+    });
+  });
+
+  it("turns an interrupted waiting attempt into an explicit retry failure", async () => {
+    const pending = operation();
+    const attemptedAt = "2026-08-31T00:01:00.000Z";
+    const { area } = memoryArea({
+      [accountWorkspaceKey(USER_ID)]: { version: 2, snapshot: snapshot(), revision: 2, cachedAt: NOW },
+      [accountQueueKey(USER_ID)]: {
+        version: 2,
+        queue: [{ operation: pending, state: "waiting", attemptedAt }],
+        nextSequence: 2,
+      },
+      [accountSyncStateKey(USER_ID)]: { version: 3, phase: "synced", revision: 2 },
+    });
+
+    const loaded = await new LocalFirstStorage(area, USER_ID).loadOrThrow();
+
+    expect(loaded.queue).toEqual([{
+      operation: pending,
+      state: "failed",
+      attemptedAt,
+      error: expect.stringMatching(/interrupted.*retry/i),
+    }]);
+    expect(loaded.sync).toMatchObject({ phase: "failed", error: expect.stringMatching(/interrupted.*retry/i) });
   });
 });

@@ -6,15 +6,23 @@ export type { StorageArea } from "./workspace-cache";
 
 export const accountWorkspaceKey = (userId: string) => `tabloom-cloud-workspace-v2:${userId}`;
 export const accountOutboxKey = (userId: string) => `tabloom-sync-outbox-v1:${userId}`;
+export const accountQueueKey = (userId: string) => `tabloom-sync-queue-v2:${userId}`;
 export const accountSyncStateKey = (userId: string) => `tabloom-sync-state-v2:${userId}`;
 export const legacyCloudWorkspaceKey = (userId: string) => `tabloom-cloud-workspace-v1:${userId}`;
 export const corruptWorkspaceKey = (userId: string, timestamp: number) => `tabloom-corrupt-workspace:${userId}:${timestamp}`;
 export const deviceIdKey = "tabloom-device-id-v1";
 
 export type PersistedSyncState = {
-  phase: "synced" | "syncing" | "offline";
+  phase: "synced" | "failed" | "offline";
   lastSyncedAt?: string;
   lastRevisionCheckAt?: string;
+  error?: string;
+};
+
+export type QueuedWorkspaceOperation = {
+  operation: WorkspaceOperation;
+  state: "waiting" | "failed";
+  attemptedAt?: string;
   error?: string;
 };
 
@@ -22,7 +30,7 @@ export type AccountWorkspaceState = {
   snapshot: WorkspaceSnapshot;
   revision: number;
   cachedAt: string;
-  outbox: WorkspaceOperation[];
+  queue: QueuedWorkspaceOperation[];
   nextSequence: number;
   sync: PersistedSyncState;
 };
@@ -34,15 +42,27 @@ type WorkspaceEnvelope = {
   cachedAt: string;
 };
 
-type OutboxEnvelope = {
+type LegacyOutboxEnvelope = {
   version: 1;
   outbox: WorkspaceOperation[];
   nextSequence: number;
 };
 
+type QueueEnvelope = {
+  version: 2;
+  queue: QueuedWorkspaceOperation[];
+  nextSequence: number;
+};
+
 type SyncEnvelope = PersistedSyncState & {
+  version: 3;
+  revision: number;
+};
+
+type LegacySyncEnvelope = Omit<PersistedSyncState, "phase"> & {
   version: 2;
   revision: number;
+  phase: "synced" | "syncing" | "offline";
 };
 
 type LegacyCloudEnvelope = {
@@ -128,7 +148,7 @@ function isLegacyEnvelope(value: unknown, userId?: string): value is LegacyCloud
   return isRecord(value) && isWorkspaceSnapshot(value.snapshot, userId) && isRevision(value.revision);
 }
 
-function isOutboxEnvelope(value: unknown): value is OutboxEnvelope {
+function isOutboxEnvelope(value: unknown): value is LegacyOutboxEnvelope {
   return isRecord(value)
     && value.version === 1
     && Array.isArray(value.outbox)
@@ -138,7 +158,37 @@ function isOutboxEnvelope(value: unknown): value is OutboxEnvelope {
     && value.outbox.every((operation) => operation.sequence < Number(value.nextSequence));
 }
 
+function isQueuedOperation(value: unknown): value is QueuedWorkspaceOperation {
+  if (!isRecord(value) || !isWorkspaceOperation(value.operation)) return false;
+  if (value.state !== "waiting" && value.state !== "failed") return false;
+  if (value.attemptedAt !== undefined && !isTimestamp(value.attemptedAt)) return false;
+  if (value.error !== undefined && typeof value.error !== "string") return false;
+  return value.state !== "failed" || isNonEmptyString(value.error);
+}
+
+function isQueueEnvelope(value: unknown): value is QueueEnvelope {
+  if (!isRecord(value)
+    || value.version !== 2
+    || !Array.isArray(value.queue)
+    || !value.queue.every(isQueuedOperation)
+    || !Number.isSafeInteger(value.nextSequence)
+    || Number(value.nextSequence) < 1) return false;
+  const sequences = value.queue.map((entry) => entry.operation.sequence);
+  return sequences.every((sequence, index) => sequence < Number(value.nextSequence)
+    && (index === 0 || sequence > sequences[index - 1]));
+}
+
 function isSyncEnvelope(value: unknown): value is SyncEnvelope {
+  return isRecord(value)
+    && value.version === 3
+    && ["synced", "failed", "offline"].includes(String(value.phase))
+    && isRevision(value.revision)
+    && (value.lastSyncedAt === undefined || isTimestamp(value.lastSyncedAt))
+    && (value.lastRevisionCheckAt === undefined || isTimestamp(value.lastRevisionCheckAt))
+    && (value.error === undefined || typeof value.error === "string");
+}
+
+function isLegacySyncEnvelope(value: unknown): value is LegacySyncEnvelope {
   return isRecord(value)
     && value.version === 2
     && ["synced", "syncing", "offline"].includes(String(value.phase))
@@ -146,6 +196,19 @@ function isSyncEnvelope(value: unknown): value is SyncEnvelope {
     && (value.lastSyncedAt === undefined || isTimestamp(value.lastSyncedAt))
     && (value.lastRevisionCheckAt === undefined || isTimestamp(value.lastRevisionCheckAt))
     && (value.error === undefined || typeof value.error === "string");
+}
+
+const LEGACY_RETRY_MESSAGE = "Pending changes need your confirmation. Retry to continue.";
+const INTERRUPTED_RETRY_MESSAGE = "The previous sync was interrupted. Retry to continue.";
+
+function normalizeQueue(queue: QueuedWorkspaceOperation[]): { queue: QueuedWorkspaceOperation[]; interrupted: boolean } {
+  let interrupted = false;
+  const normalized = queue.map((entry) => {
+    if (entry.state !== "waiting" || !entry.attemptedAt) return entry;
+    interrupted = true;
+    return { ...entry, state: "failed" as const, error: INTERRUPTED_RETRY_MESSAGE };
+  });
+  return { queue: normalized, interrupted };
 }
 
 async function withFallbackLock<T>(name: string, operation: () => Promise<T>): Promise<T> {
@@ -186,31 +249,68 @@ export class LocalFirstStorage {
   }
 
   private async readRaw() {
-    const [workspace, outbox, sync] = await Promise.all([
+    const [workspace, queue, outbox, sync] = await Promise.all([
       this.readKey(accountWorkspaceKey(this.userId)),
+      this.readKey(accountQueueKey(this.userId)),
       this.readKey(accountOutboxKey(this.userId)),
       this.readKey(accountSyncStateKey(this.userId)),
     ]);
-    return { workspace, outbox, sync };
+    return { workspace, queue, outbox, sync };
   }
 
   async load(): Promise<AccountWorkspaceState | null> {
     const raw = await this.readRaw();
     if (!isWorkspaceEnvelope(raw.workspace, this.userId)) return null;
-    let outbox: OutboxEnvelope;
-    if (raw.outbox === undefined) outbox = { version: 1, outbox: [], nextSequence: 1 };
-    else if (isOutboxEnvelope(raw.outbox)) outbox = raw.outbox;
+    let queueEnvelope: QueueEnvelope;
+    let migratedLegacyQueue = false;
+    if (isQueueEnvelope(raw.queue)) queueEnvelope = raw.queue;
+    else if (raw.queue !== undefined) return null;
+    else if (isOutboxEnvelope(raw.outbox)) {
+      migratedLegacyQueue = true;
+      queueEnvelope = {
+        version: 2,
+        queue: raw.outbox.outbox.map((operation, index) => index === 0
+          ? { operation, state: "failed", error: LEGACY_RETRY_MESSAGE }
+          : { operation, state: "waiting" }),
+        nextSequence: raw.outbox.nextSequence,
+      };
+    } else if (raw.outbox === undefined) queueEnvelope = { version: 2, queue: [], nextSequence: 1 };
     else return null;
+
+    const normalized = normalizeQueue(queueEnvelope.queue);
     let sync: SyncEnvelope;
-    if (raw.sync === undefined) sync = { version: 2, phase: "synced", revision: raw.workspace.revision };
-    else if (isSyncEnvelope(raw.sync)) sync = raw.sync;
-    else return null;
-    return {
+    let migratedLegacySync = false;
+    if (isSyncEnvelope(raw.sync)) sync = raw.sync;
+    else if (isLegacySyncEnvelope(raw.sync)) {
+      migratedLegacySync = true;
+      const hasFailed = normalized.queue.some((entry) => entry.state === "failed");
+      const phase = hasFailed ? "failed" : raw.sync.phase === "syncing" ? "offline" : raw.sync.phase;
+      sync = {
+        version: 3,
+        revision: raw.workspace.revision,
+        phase,
+        ...(raw.sync.lastSyncedAt ? { lastSyncedAt: raw.sync.lastSyncedAt } : {}),
+        ...(raw.sync.lastRevisionCheckAt ? { lastRevisionCheckAt: raw.sync.lastRevisionCheckAt } : {}),
+        ...((hasFailed || raw.sync.phase === "syncing")
+          ? { error: hasFailed ? normalized.queue.find((entry) => entry.state === "failed")?.error ?? LEGACY_RETRY_MESSAGE : raw.sync.error ?? INTERRUPTED_RETRY_MESSAGE }
+          : raw.sync.error ? { error: raw.sync.error } : {}),
+      };
+    } else if (raw.sync === undefined) {
+      const failed = normalized.queue.find((entry) => entry.state === "failed");
+      sync = failed
+        ? { version: 3, phase: "failed", revision: raw.workspace.revision, error: failed.error }
+        : { version: 3, phase: "synced", revision: raw.workspace.revision };
+    } else return null;
+    if (normalized.interrupted) {
+      sync = { ...sync, phase: "failed", error: INTERRUPTED_RETRY_MESSAGE };
+    }
+
+    const state: AccountWorkspaceState = {
       snapshot: structuredClone(raw.workspace.snapshot),
       revision: raw.workspace.revision,
       cachedAt: raw.workspace.cachedAt,
-      outbox: structuredClone(outbox.outbox),
-      nextSequence: outbox.nextSequence,
+      queue: structuredClone(normalized.queue),
+      nextSequence: queueEnvelope.nextSequence,
       sync: {
         phase: sync.phase,
         ...(sync.lastSyncedAt ? { lastSyncedAt: sync.lastSyncedAt } : {}),
@@ -218,6 +318,11 @@ export class LocalFirstStorage {
         ...(sync.error ? { error: sync.error } : {}),
       },
     };
+    if (migratedLegacyQueue || migratedLegacySync || normalized.interrupted) {
+      await this.save(state);
+      if (migratedLegacyQueue) await this.area.remove?.(accountOutboxKey(this.userId));
+    }
+    return state;
   }
 
   async loadOrThrow(): Promise<AccountWorkspaceState> {
@@ -234,13 +339,13 @@ export class LocalFirstStorage {
         revision: state.revision,
         cachedAt: state.cachedAt,
       } satisfies WorkspaceEnvelope,
-      [accountOutboxKey(this.userId)]: {
-        version: 1,
-        outbox: state.outbox,
-        nextSequence: state.nextSequence,
-      } satisfies OutboxEnvelope,
-      [accountSyncStateKey(this.userId)]: {
+      [accountQueueKey(this.userId)]: {
         version: 2,
+        queue: state.queue,
+        nextSequence: state.nextSequence,
+      } satisfies QueueEnvelope,
+      [accountSyncStateKey(this.userId)]: {
+        version: 3,
         revision: state.revision,
         ...state.sync,
       } satisfies SyncEnvelope,
@@ -263,20 +368,27 @@ export class LocalFirstStorage {
     await withWorkspaceLock(`tabloom-workspace-lock:${this.userId}`, async () => {
       const raw = await this.readRaw();
       const workspace = isWorkspaceEnvelope(raw.workspace, this.userId) ? raw.workspace : undefined;
-      const outbox = isOutboxEnvelope(raw.outbox) ? raw.outbox : { version: 1 as const, outbox: [], nextSequence: 1 };
+      const queue = isQueueEnvelope(raw.queue)
+        ? raw.queue
+        : isOutboxEnvelope(raw.outbox)
+          ? { version: 2 as const, queue: raw.outbox.outbox.map((operation, index) => index === 0
+            ? { operation, state: "failed" as const, error: LEGACY_RETRY_MESSAGE }
+            : { operation, state: "waiting" as const }), nextSequence: raw.outbox.nextSequence }
+          : { version: 2 as const, queue: [], nextSequence: 1 };
       const sync = isSyncEnvelope(raw.sync) ? raw.sync : undefined;
+      const failed = queue.queue.find((entry) => entry.state === "failed");
       await this.save({
         snapshot: workspace ? replaceSavedWorkspace(workspace.snapshot, snapshot) : structuredClone(snapshot),
         revision,
         cachedAt: new Date(this.now()).toISOString(),
-        outbox: structuredClone(outbox.outbox),
-        nextSequence: outbox.nextSequence,
+        queue: structuredClone(queue.queue),
+        nextSequence: queue.nextSequence,
         sync: sync ? {
           phase: sync.phase,
           ...(sync.lastSyncedAt ? { lastSyncedAt: sync.lastSyncedAt } : {}),
           ...(sync.lastRevisionCheckAt ? { lastRevisionCheckAt: sync.lastRevisionCheckAt } : {}),
           ...(sync.error ? { error: sync.error } : {}),
-        } : { phase: "synced" },
+        } : failed ? { phase: "failed", error: failed.error } : { phase: "synced" },
       });
     });
   }
@@ -291,20 +403,27 @@ export class LocalFirstStorage {
       }
       const legacy = await this.readKey(legacyCloudWorkspaceKey(this.userId));
       if (!isLegacyEnvelope(legacy, this.userId)) return null;
-      const outbox = isOutboxEnvelope(raw.outbox) ? raw.outbox : { version: 1 as const, outbox: [], nextSequence: 1 };
+      const queue = isQueueEnvelope(raw.queue)
+        ? raw.queue
+        : isOutboxEnvelope(raw.outbox)
+          ? { version: 2 as const, queue: raw.outbox.outbox.map((operation, index) => index === 0
+            ? { operation, state: "failed" as const, error: LEGACY_RETRY_MESSAGE }
+            : { operation, state: "waiting" as const }), nextSequence: raw.outbox.nextSequence }
+          : { version: 2 as const, queue: [], nextSequence: 1 };
       const sync = isSyncEnvelope(raw.sync) ? raw.sync : undefined;
+      const failed = queue.queue.find((entry) => entry.state === "failed");
       const migrated: AccountWorkspaceState = {
         snapshot: structuredClone(legacy.snapshot),
         revision: legacy.revision,
         cachedAt: new Date(this.now()).toISOString(),
-        outbox: structuredClone(outbox.outbox),
-        nextSequence: outbox.nextSequence,
+        queue: structuredClone(queue.queue),
+        nextSequence: queue.nextSequence,
         sync: sync ? {
           phase: sync.phase,
           ...(sync.lastSyncedAt ? { lastSyncedAt: sync.lastSyncedAt } : {}),
           ...(sync.lastRevisionCheckAt ? { lastRevisionCheckAt: sync.lastRevisionCheckAt } : {}),
           ...(sync.error ? { error: sync.error } : {}),
-        } : { phase: "synced" },
+        } : failed ? { phase: "failed", error: failed.error } : { phase: "synced" },
       };
       await this.save(migrated);
       return migrated;
