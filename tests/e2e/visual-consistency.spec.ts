@@ -30,8 +30,8 @@ test("matches the shared Chrome-reference workspace", async ({ page }) => {
               <button aria-label="Account" class="account-trigger"><svg aria-hidden="true" fill="none" height="18" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" width="18"><circle cx="12" cy="8" r="5"></circle><path d="M20 21a8 8 0 0 0-16 0"></path></svg></button>
               <div aria-label="Account" class="account-menu" role="menu">
                 <div class="account-profile"><span>♙</span><div><strong>Nick Vu</strong><small>nick@example.com</small></div></div>
-                <div class="account-sync-status sync-state-synced"><span>✓</span><span><strong>Synced</strong><small>Synced just now</small></span><button aria-label="Sync now" title="Sync now">↻</button></div>
-                <button role="menuitem">♙ <span>Switch account</span></button>
+                <div class="account-sync-status sync-state-synced"><span>✓</span><span><strong>Synced</strong><small>Synced just now</small></span></div>
+                <button role="menuitem">↪ <span>Log out</span></button>
               </div>
             </div>
           </div>
@@ -74,8 +74,24 @@ test("matches the shared Chrome-reference workspace", async ({ page }) => {
   await expect(page.locator(".global-search-trigger")).toHaveCSS("height", "42px");
   await expect(page.locator(".account-menu")).toHaveCSS("background-color", "rgb(255, 255, 255)");
   await expect(page.locator(".account-sync-status")).toHaveCSS("color", "rgb(54, 179, 126)");
-  await expect(page.getByRole("button", { name: "Sync now" })).toHaveCSS("width", "36px");
-  await expect(page.getByRole("button", { name: "Sync now" })).toHaveCSS("height", "36px");
+  const syncStatus = page.locator(".account-sync-status");
+  await syncStatus.evaluate((node) => {
+    node.setAttribute("class", "account-sync-status sync-state-syncing");
+    node.querySelector("small")!.textContent = "2 changes pending";
+  });
+  await expect(syncStatus.locator("small")).toHaveCSS("color", "rgb(230, 185, 74)");
+  await syncStatus.evaluate((node) => {
+    node.setAttribute("class", "account-sync-status sync-state-failed");
+    node.querySelector("small")!.textContent = "1 failed · 2 waiting";
+    node.insertAdjacentHTML("beforeend", '<button aria-label="Retry sync" title="Retry sync">↻</button>');
+  });
+  await expect(page.getByRole("button", { name: "Retry sync" })).toHaveCSS("width", "36px");
+  await expect(page.getByRole("button", { name: "Retry sync" })).toHaveCSS("height", "36px");
+  await syncStatus.evaluate((node) => {
+    node.setAttribute("class", "account-sync-status sync-state-synced");
+    node.querySelector("small")!.textContent = "Synced just now";
+    node.querySelector("button")?.remove();
+  });
   await expect(page).toHaveScreenshot("workspace.png", {
     animations: "disabled",
     caret: "hide",
@@ -109,4 +125,36 @@ test("matches the shared Chrome-reference workspace", async ({ page }) => {
     caret: "hide",
     maxDiffPixelRatio: 0.01,
   });
+});
+
+test("uses available header width before truncating the active space name", async ({ page }) => {
+  await page.setViewportSize({ width: 1100, height: 700 });
+  await page.setContent(`
+    <main class="ext-shell sheet-open">
+      <aside class="ext-sidebar collapsed"></aside>
+      <section class="ext-main">
+        <header>
+          <div><h1>My Space</h1></div>
+          <div class="ext-header-tools">
+            <button class="new-collection-trigger">New collection</button>
+            <button class="global-search-trigger"><span>Search</span><kbd>⌘ F</kbd></button>
+            <button class="sync-login-trigger">Sign in to sync</button>
+          </div>
+        </header>
+      </section>
+      <aside class="current-tabs-sheet"></aside>
+    </main>
+  `);
+  await page.addStyleTag({ content: `${poppinsFaces}\n${extensionCss}` });
+  await page.evaluate(() => document.fonts.ready);
+
+  const heading = page.locator(".ext-main > header h1");
+  await expect.poll(async () => (await heading.boundingBox())?.height).toBeLessThan(40);
+
+  await heading.evaluate((node) => {
+    node.textContent = "A very long workspace name that cannot fit beside the header actions";
+  });
+  await expect(heading).toHaveCSS("white-space", "nowrap");
+  await expect(heading).toHaveCSS("text-overflow", "ellipsis");
+  await expect.poll(() => heading.evaluate((node) => node.scrollWidth > node.clientWidth)).toBe(true);
 });

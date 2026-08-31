@@ -1,19 +1,19 @@
-import { CheckCircle2, ChevronDown, Cloud, LoaderCircle, LogIn, RefreshCw, UserRound, WifiOff, X } from "lucide-react";
+import { CheckCircle2, ChevronDown, CircleAlert, Cloud, LoaderCircle, LogIn, LogOut, RefreshCw, UserRound, WifiOff, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import type { BrowserTarget } from "./browser";
 import { AuthCallbackDetails } from "./AuthCallbackDetails";
-import type { SyncEngineState } from "./workspace-sync-engine";
+import type { WorkspaceSyncState } from "./workspace-sync-coordinator";
 
 export type SyncLoginPromptProps = {
   callbackUrl: string;
   configured: boolean;
   onSignIn: () => Promise<void>;
-  onSwitchAccount?: () => Promise<void>;
+  onLogout?: () => Promise<void>;
   target: BrowserTarget;
   user?: SyncUser | null;
-  syncState?: SyncEngineState;
-  onSyncNow?: () => Promise<void>;
+  syncState?: WorkspaceSyncState;
+  onRetrySync?: () => Promise<void>;
 };
 
 export type SyncUser = {
@@ -38,7 +38,7 @@ function accountDetails(user: SyncUser) {
   };
 }
 
-export function SyncLoginPrompt({ callbackUrl, configured, onSignIn, onSwitchAccount, target, user, syncState, onSyncNow }: SyncLoginPromptProps) {
+export function SyncLoginPrompt({ callbackUrl, configured, onSignIn, onLogout, target, user, syncState, onRetrySync }: SyncLoginPromptProps) {
   const [open, setOpen] = useState(false);
   const [accountOpen, setAccountOpen] = useState(false);
   const [connecting, setConnecting] = useState(false);
@@ -75,27 +75,27 @@ export function SyncLoginPrompt({ callbackUrl, configured, onSignIn, onSwitchAcc
     }
   }
 
-  async function switchAccount() {
-    if (!onSwitchAccount || connecting) return;
+  async function logout() {
+    if (!onLogout || connecting) return;
     setConnecting(true);
     setError("");
     try {
-      await onSwitchAccount();
+      await onLogout();
       setAccountOpen(false);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Could not switch accounts.");
+      setError(reason instanceof Error ? reason.message : "Could not log out.");
     } finally {
       setConnecting(false);
     }
   }
 
-  async function syncNow() {
-    if (!onSyncNow || connecting) return;
+  async function retrySync() {
+    if (!onRetrySync || connecting) return;
     setError("");
     try {
-      await onSyncNow();
+      await onRetrySync();
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Could not sync this workspace.");
+      setError(reason instanceof Error ? reason.message : "Could not retry workspace sync.");
     }
   }
 
@@ -125,22 +125,25 @@ export function SyncLoginPrompt({ callbackUrl, configured, onSignIn, onSwitchAcc
             ? <CheckCircle2 aria-hidden="true" size={18} />
             : syncState.phase === "syncing"
               ? <LoaderCircle aria-hidden="true" className="is-spinning" size={18} />
-              : <WifiOff aria-hidden="true" size={18} />}
+              : syncState.phase === "failed"
+                ? <CircleAlert aria-hidden="true" size={18} />
+                : <WifiOff aria-hidden="true" size={18} />}
           <span>
-            <strong>{syncState.phase === "synced" ? "Synced" : syncState.phase === "syncing" ? "Syncing" : "Offline"}</strong>
+            <strong>{syncState.phase === "synced" ? "Synced" : syncState.phase === "syncing" ? "Syncing" : syncState.phase === "failed" ? "Failed to sync" : "Offline"}</strong>
             {syncState.phase === "synced" && <small>Synced just now</small>}
-            {syncState.phase === "syncing" && syncState.pending > 0 && <small>{syncState.pending} {syncState.pending === 1 ? "change" : "changes"} pending</small>}
-            {syncState.phase === "offline" && syncState.pending > 0 && <small>{syncState.pending} {syncState.pending === 1 ? "change" : "changes"} waiting to sync</small>}
-            {syncState.phase === "offline" && syncState.pending === 0 && syncState.error && <small>{syncState.error}</small>}
+            {syncState.phase === "syncing" && syncState.failed + syncState.waiting > 0 && <small>{syncState.failed + syncState.waiting} {syncState.failed + syncState.waiting === 1 ? "change" : "changes"} pending</small>}
+            {syncState.phase === "failed" && <small>{syncState.failed} failed · {syncState.waiting} waiting</small>}
+            {syncState.phase === "failed" && syncState.error && <small>{syncState.error}</small>}
+            {syncState.phase === "offline" && syncState.error && <small>{syncState.error}</small>}
           </span>
-          <button aria-label="Sync now" title="Sync now" onClick={() => void syncNow()}>
-            <RefreshCw className={syncState.phase === "syncing" ? "is-spinning" : undefined} size={17} />
-          </button>
+          {syncState.phase === "failed" && onRetrySync && <button aria-label="Retry sync" title="Retry sync" onClick={() => void retrySync()}>
+            <RefreshCw size={17} />
+          </button>}
         </div>}
         {error && <p className="account-error" role="alert">{error}</p>}
-        <button disabled={connecting} onClick={() => void switchAccount()} role="menuitem">
-          {connecting ? <RefreshCw className="account-switching" size={16} /> : <UserRound size={16} />}
-          {connecting ? "Switching…" : "Switch account"}
+        <button disabled={connecting} onClick={() => void logout()} role="menuitem">
+          {connecting ? <RefreshCw className="account-switching" size={16} /> : <LogOut size={16} />}
+          {connecting ? "Logging out…" : "Log out"}
         </button>
       </div>}
     </div>;

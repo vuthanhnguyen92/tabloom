@@ -2,13 +2,13 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { SyncLoginPrompt } from "../extension/SyncLoginPrompt";
-import type { SyncEngineState } from "../extension/workspace-sync-engine";
+import type { WorkspaceSyncState } from "../extension/workspace-sync-coordinator";
 
 const signedInProps = {
   callbackUrl: "https://stable.chromiumapp.org/auth-callback",
   configured: true,
   onSignIn: vi.fn(async () => undefined),
-  onSwitchAccount: vi.fn(async () => undefined),
+  onLogout: vi.fn(async () => undefined),
   target: "chromium" as const,
   user: { email: "nick@example.com", user_metadata: { full_name: "Nick Vu" } },
 };
@@ -44,7 +44,7 @@ describe("SyncLoginPrompt", () => {
       callbackUrl="https://stable.chromiumapp.org/auth-callback"
       configured
       onSignIn={vi.fn()}
-      onSwitchAccount={vi.fn()}
+      onLogout={vi.fn()}
       target="chromium"
       user={{
         email: "nick@example.com",
@@ -66,72 +66,66 @@ describe("SyncLoginPrompt", () => {
     expect(screen.queryByRole("button", { name: "Sign in to sync" })).not.toBeInTheDocument();
   });
 
-  it("switches accounts from the signed-in account menu", async () => {
-    const onSwitchAccount = vi.fn(async () => undefined);
+  it("logs out from the signed-in account menu", async () => {
+    const onLogout = vi.fn(async () => undefined);
     render(<SyncLoginPrompt
       callbackUrl="https://stable.chromiumapp.org/auth-callback"
       configured
       onSignIn={vi.fn()}
-      onSwitchAccount={onSwitchAccount}
+      onLogout={onLogout}
       target="chromium"
       user={{ email: "nick@example.com", user_metadata: {} }}
     />);
 
     await userEvent.click(screen.getByRole("button", { name: "Open account menu" }));
-    await userEvent.click(screen.getByRole("menuitem", { name: "Switch account" }));
+    await userEvent.click(screen.getByRole("menuitem", { name: "Log out" }));
 
-    await waitFor(() => expect(onSwitchAccount).toHaveBeenCalledOnce());
+    await waitFor(() => expect(onLogout).toHaveBeenCalledOnce());
     expect(screen.queryByRole("menu", { name: "Account" })).not.toBeInTheDocument();
   });
 
   it.each([
-    [{ phase: "synced", revision: 3, pending: 0, lastSyncedAt: new Date().toISOString() }, "Synced", "sync-state-synced"],
-    [{ phase: "syncing", revision: 3, pending: 2 }, "Syncing", "sync-state-syncing"],
-    [{ phase: "offline", revision: 3, pending: 3 }, "Offline", "sync-state-offline"],
-  ] as Array<[SyncEngineState, string, string]>) (
+    [{ phase: "synced", revision: 3, failed: 0, waiting: 0, lastSyncedAt: new Date().toISOString() }, "Synced", "sync-state-synced"],
+    [{ phase: "syncing", activity: "write", revision: 3, failed: 0, waiting: 2 }, "Syncing", "sync-state-syncing"],
+    [{ phase: "offline", revision: 3, failed: 0, waiting: 0, error: "Network unavailable" }, "Offline", "sync-state-offline"],
+  ] as Array<[WorkspaceSyncState, string, string]>) (
     "shows the %s account sync state",
     async (syncState, label, className) => {
-      render(<SyncLoginPrompt {...signedInProps} syncState={syncState} onSyncNow={vi.fn()} />);
+      render(<SyncLoginPrompt {...signedInProps} syncState={syncState} onRetrySync={vi.fn()} />);
       await userEvent.click(screen.getByRole("button", { name: "Open account menu" }));
       expect(screen.getByText(label).closest(".account-sync-status")).toHaveClass(className);
-      expect(screen.getByRole("button", { name: "Sync now" })).toHaveAttribute("title", "Sync now");
     },
   );
 
-  it("shows pending offline work and keeps profile, status, then switch account order", async () => {
+  it("shows failed and waiting counts with an explicit retry action", async () => {
+    const onRetrySync = vi.fn(async () => undefined);
     render(<SyncLoginPrompt
       {...signedInProps}
-      syncState={{ phase: "offline", revision: 3, pending: 3 }}
-      onSyncNow={vi.fn()}
+      syncState={{ phase: "failed", revision: 3, failed: 1, waiting: 3, error: "Request timed out" }}
+      onRetrySync={onRetrySync}
     />);
     await userEvent.click(screen.getByRole("button", { name: "Open account menu" }));
-    expect(screen.getByText("3 changes waiting to sync")).toBeInTheDocument();
+    expect(screen.getByText("Failed to sync").closest(".account-sync-status")).toHaveClass("sync-state-failed");
+    expect(screen.getByText("1 failed · 3 waiting")).toBeInTheDocument();
+    expect(screen.getByText("Request timed out")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Retry sync" }));
+    expect(onRetrySync).toHaveBeenCalledOnce();
     const menu = screen.getByRole("menu", { name: "Account" });
     expect(Array.from(menu.children).map((node) => node.className || node.textContent)).toEqual([
       "account-profile",
       expect.stringContaining("account-sync-status"),
-      expect.stringContaining("Switch account"),
+      expect.stringContaining("Log out"),
     ]);
   });
 
-  it("runs manual sync once and animates refresh only while syncing", async () => {
-    const onSyncNow = vi.fn(async () => undefined);
-    const { rerender } = render(<SyncLoginPrompt
+  it("does not offer retry while a finite request is active", async () => {
+    render(<SyncLoginPrompt
       {...signedInProps}
-      syncState={{ phase: "synced", revision: 3, pending: 0, lastSyncedAt: new Date().toISOString() }}
-      onSyncNow={onSyncNow}
+      syncState={{ phase: "syncing", activity: "write", revision: 3, failed: 0, waiting: 1 }}
+      onRetrySync={vi.fn()}
     />);
     await userEvent.click(screen.getByRole("button", { name: "Open account menu" }));
-    const syncButton = screen.getByRole("button", { name: "Sync now" });
-    expect(syncButton.querySelector(".lucide-refresh-cw")).not.toHaveClass("is-spinning");
-    await userEvent.click(syncButton);
-    expect(onSyncNow).toHaveBeenCalledOnce();
-
-    rerender(<SyncLoginPrompt
-      {...signedInProps}
-      syncState={{ phase: "syncing", revision: 3, pending: 1 }}
-      onSyncNow={onSyncNow}
-    />);
-    expect(screen.getByRole("button", { name: "Sync now" }).querySelector(".lucide-refresh-cw")).toHaveClass("is-spinning");
+    expect(screen.queryByRole("button", { name: "Retry sync" })).not.toBeInTheDocument();
+    expect(screen.getByText("1 change pending")).toBeInTheDocument();
   });
 });

@@ -101,15 +101,15 @@ describe("extension cross-browser visual baseline", () => {
     expect(getComputedStyle(input).fontSize).toBe("24px");
   });
 
-  it("uses labeled, theme-safe sync colors and a 36px manual target", () => {
-    render(<div className="account-sync-status sync-state-synced">
-      <span><strong>Synced</strong><small>Synced just now</small></span>
-      <button aria-label="Sync now">Refresh</button>
+  it("uses labeled, theme-safe sync colors and a 36px retry target", () => {
+    render(<div className="account-sync-status sync-state-failed">
+      <span><strong>Failed to sync</strong><small>1 failed · 2 waiting</small></span>
+      <button aria-label="Retry sync">Refresh</button>
     </div>);
-    const status = screen.getByText("Synced").closest(".account-sync-status")!;
-    const subtitle = screen.getByText("Synced just now");
-    const button = screen.getByRole("button", { name: "Sync now" });
-    expect(getComputedStyle(status).getPropertyValue("--sync-state-color").trim()).toBe("#36b37e");
+    const status = screen.getByText("Failed to sync").closest(".account-sync-status")!;
+    const subtitle = screen.getByText("1 failed · 2 waiting");
+    const button = screen.getByRole("button", { name: "Retry sync" });
+    expect(getComputedStyle(status).getPropertyValue("--sync-state-color").trim()).toBe("#ef646b");
     expect(getComputedStyle(subtitle).color).toBe("var(--sync-state-color)");
     expect(getComputedStyle(button).width).toBe("36px");
     expect(getComputedStyle(button).height).toBe("36px");
