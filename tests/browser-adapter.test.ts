@@ -8,6 +8,7 @@ function createNamespace({ withGroups = true } = {}) {
     tabs: {
       query: vi.fn(async () => [{ id: 1, title: "Tab", url: "https://example.com", active: true, index: 0 }]),
       create: vi.fn(async () => ({ id: nextTabId++ })),
+      update: vi.fn(async (tabId: number) => ({ id: tabId, title: "Target", url: "https://target.example", active: true, index: 1 })),
       remove: vi.fn(async () => undefined),
       group: withGroups ? vi.fn(async () => 7) : undefined,
       ungroup: withGroups ? vi.fn(async () => undefined) : undefined,
@@ -53,6 +54,44 @@ describe("BrowserAdapter", () => {
 
     expect(result).toEqual({ opened: 2, grouped: false });
     expect(namespace.permissions.request).not.toHaveBeenCalled();
+  });
+
+  it("activates an existing tab before closing the calling Tabloom tab", async () => {
+    const namespace = createNamespace();
+    const adapter = createWebExtensionAdapter("chromium", namespace);
+
+    await expect(adapter.tabs.activateExisting(9)).resolves.toEqual({ tabloomClosed: true });
+
+    expect(namespace.tabs.query).toHaveBeenCalledWith({ currentWindow: true, active: true });
+    expect(namespace.tabs.update).toHaveBeenCalledWith(9, { active: true });
+    expect(namespace.tabs.update.mock.invocationCallOrder[0]).toBeLessThan(namespace.tabs.remove.mock.invocationCallOrder[0]);
+    expect(namespace.tabs.remove).toHaveBeenCalledWith(1);
+  });
+
+  it("leaves Tabloom open when target activation fails", async () => {
+    const namespace = createNamespace();
+    namespace.tabs.update.mockRejectedValueOnce(new Error("activation failed"));
+    const adapter = createWebExtensionAdapter("firefox", namespace);
+
+    await expect(adapter.tabs.activateExisting(9)).rejects.toThrow("activation failed");
+    expect(namespace.tabs.remove).not.toHaveBeenCalled();
+  });
+
+  it("reports cleanup failure after a successful activation", async () => {
+    const namespace = createNamespace();
+    namespace.tabs.remove.mockRejectedValueOnce(new Error("close failed"));
+    const adapter = createWebExtensionAdapter("safari", namespace);
+
+    await expect(adapter.tabs.activateExisting(9)).resolves.toEqual({ tabloomClosed: false, cleanupError: "close failed" });
+    expect(namespace.tabs.update).toHaveBeenCalledWith(9, { active: true });
+  });
+
+  it("does not close the target when it is already the calling tab", async () => {
+    const namespace = createNamespace();
+    const adapter = createWebExtensionAdapter("chromium", namespace);
+
+    await expect(adapter.tabs.activateExisting(1)).resolves.toEqual({ tabloomClosed: false });
+    expect(namespace.tabs.remove).not.toHaveBeenCalled();
   });
 
   it("feature-detects and names tab groups when available", async () => {

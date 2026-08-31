@@ -19,6 +19,7 @@ function createApi(permissionGranted: boolean) {
     tabs: {
       query: vi.fn(async () => []),
       create: vi.fn(async () => ({ id: nextTabId++ })),
+      update: vi.fn(async (tabId: number) => ({ id: tabId, active: true })),
       remove: vi.fn(async () => undefined),
       group: vi.fn(async () => 27),
       ungroup: vi.fn(async () => undefined),

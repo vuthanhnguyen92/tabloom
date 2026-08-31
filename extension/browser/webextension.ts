@@ -30,6 +30,22 @@ export function createWebExtensionAdapter(target: BrowserTarget, api: WebExtensi
     },
     tabs: {
       listCurrentWindow: () => api.tabs.query({ currentWindow: true }),
+      async activateExisting(tabId) {
+        const [callingTab] = await api.tabs.query({ currentWindow: true, active: true });
+        await api.tabs.update(tabId, { active: true });
+        if (typeof callingTab?.id !== "number" || callingTab.id === tabId) {
+          return { tabloomClosed: false };
+        }
+        try {
+          await api.tabs.remove(callingTab.id);
+          return { tabloomClosed: true };
+        } catch (error) {
+          return {
+            tabloomClosed: false,
+            cleanupError: error instanceof Error ? error.message : "Tabloom could not close the previous new tab.",
+          };
+        }
+      },
       close: (tabIds) => api.tabs.remove(tabIds),
       async openCollection(name, urls) {
         if (!urls.length) return { opened: 0, grouped: false };

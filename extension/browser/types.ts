@@ -4,6 +4,7 @@ import type { StorageArea } from "../storage";
 
 export type BrowserTarget = "chromium" | "firefox" | "safari";
 export type OpenCollectionResult = { opened: number; grouped: boolean };
+export type ActivateExistingTabResult = { tabloomClosed: boolean; cleanupError?: string };
 
 export type SafariNativeAuthRequest = {
   type: "tabloom.oauth.start";
@@ -18,8 +19,9 @@ export type SafariNativeAuthResponse =
 
 export type WebExtensionNamespace = {
   tabs: {
-    query(queryInfo: { currentWindow: boolean }): Promise<BrowserTab[]>;
+    query(queryInfo: { currentWindow: boolean; active?: boolean }): Promise<BrowserTab[]>;
     create(createProperties: { url: string; active: boolean }): Promise<{ id?: number }>;
+    update(tabId: number, updateProperties: { active: boolean }): Promise<BrowserTab>;
     remove(tabIds: number | number[]): Promise<void>;
     group?: (options: { tabIds: number[] }) => Promise<number>;
     ungroup?: (tabIds: number[]) => Promise<void>;
@@ -61,6 +63,7 @@ export interface BrowserAdapter {
   readonly permissions: { request(permission: "bookmarks" | "tabGroups"): Promise<boolean> };
   readonly tabs: {
     listCurrentWindow(): Promise<BrowserTab[]>;
+    activateExisting(tabId: number): Promise<ActivateExistingTabResult>;
     close(tabIds: number[]): Promise<void>;
     openCollection(name: string, urls: string[]): Promise<OpenCollectionResult>;
   };
