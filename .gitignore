@@ -46,4 +46,5 @@ yarn-error.log*
 /supabase/.temp/
 /supabase/.branches/
 /.worktrees/
+/.superpowers/
 *.tsbuildinfo

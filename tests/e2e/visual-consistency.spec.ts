@@ -13,7 +13,7 @@ test("matches the shared Chrome-reference workspace", async ({ page }) => {
   await page.setContent(`
     <main class="ext-shell sheet-open">
       <aside class="ext-sidebar collapsed">
-        <div class="sidebar-top"><span class="ext-brand"><i>✦</i>tabloom</span><button class="sidebar-toggle">›</button></div>
+        <div class="sidebar-top"><button aria-label="Expand sidebar" class="sidebar-toggle"><svg aria-hidden="true" fill="none" height="18" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" width="18"><rect height="18" rx="2" width="18" x="3" y="3"></rect><path d="M9 3v18"></path><path d="m14 9 3 3-3 3"></path></svg></button></div>
         <div class="space-sidebar-heading"><button aria-label="Add space">+</button></div>
         <div class="space-list">
           <div class="space-row active"><button class="space-select"><i style="background:#f56f72">M</i></button></div>

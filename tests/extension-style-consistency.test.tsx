@@ -63,6 +63,23 @@ describe("extension cross-browser visual baseline", () => {
     expect(getComputedStyle(workspace).overflowY).toBe("auto");
   });
 
+  it("uses a single deliberate control at the top of the collapsed icon rail", () => {
+    render(<aside className="ext-sidebar collapsed">
+      <div className="sidebar-top"><button aria-label="Expand sidebar" className="sidebar-toggle">Expand</button></div>
+      <div className="space-list"><div className="space-row active"><button className="space-select"><i>M</i></button></div></div>
+    </aside>);
+
+    const top = document.querySelector<HTMLElement>(".sidebar-top")!;
+    const toggle = screen.getByRole("button", { name: "Expand sidebar" });
+    const spaceIcon = document.querySelector<HTMLElement>(".space-select i")!;
+    expect(getComputedStyle(top).flexDirection).toBe("row");
+    expect(getComputedStyle(top).borderBottomWidth).toBe("1px");
+    expect(getComputedStyle(toggle).width).toBe("38px");
+    expect(getComputedStyle(toggle).height).toBe("38px");
+    expect(getComputedStyle(spaceIcon).width).toBe("34px");
+    expect(getComputedStyle(spaceIcon).height).toBe("34px");
+  });
+
   it("presents global search as a full-screen layer with a larger search control", () => {
     render(<>
       <button className="global-search-trigger">Search</button>
@@ -86,12 +103,14 @@ describe("extension cross-browser visual baseline", () => {
 
   it("uses labeled, theme-safe sync colors and a 36px manual target", () => {
     render(<div className="account-sync-status sync-state-synced">
-      <strong>Synced</strong>
+      <span><strong>Synced</strong><small>Synced just now</small></span>
       <button aria-label="Sync now">Refresh</button>
     </div>);
-    const status = screen.getByText("Synced").parentElement!;
+    const status = screen.getByText("Synced").closest(".account-sync-status")!;
+    const subtitle = screen.getByText("Synced just now");
     const button = screen.getByRole("button", { name: "Sync now" });
     expect(getComputedStyle(status).getPropertyValue("--sync-state-color").trim()).toBe("#36b37e");
+    expect(getComputedStyle(subtitle).color).toBe("var(--sync-state-color)");
     expect(getComputedStyle(button).width).toBe("36px");
     expect(getComputedStyle(button).height).toBe("36px");
   });

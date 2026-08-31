@@ -11,6 +11,7 @@ function setup(snapshot: WorkspaceSnapshot = createDemoSnapshot()) {
   render(
     <SpaceSidebar
       activeSpaceId={snapshot.spaces[0]?.id ?? ""}
+      brand={<span className="ext-brand">tabloom</span>}
       onError={vi.fn()}
       onReload={vi.fn(async () => undefined)}
       onSelect={onSelect}
@@ -28,12 +29,14 @@ describe("SpaceSidebar", () => {
     const productSpace = screen.getByRole("button", { name: "Select Product launch" });
 
     expect(sidebar).toHaveClass("collapsed");
+    expect(screen.queryByText("tabloom")).not.toBeInTheDocument();
     expect(productSpace).toHaveTextContent("P");
     expect(productSpace).not.toHaveTextContent("Product launch");
     expect(screen.queryByRole("button", { name: "Edit Product launch" })).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Expand sidebar" }));
     expect(sidebar).not.toHaveClass("collapsed");
+    expect(screen.getByText("tabloom")).toBeInTheDocument();
     expect(productSpace).toHaveTextContent("Product launch");
     expect(screen.getByRole("button", { name: "Edit Product launch" })).toBeInTheDocument();
   });

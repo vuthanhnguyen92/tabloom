@@ -32,10 +32,14 @@ import { LocalFirstStorage } from "./local-first-storage";
 import { LocalFirstWorkspaceRepository } from "./local-first-repository";
 import { WorkspaceSyncEngine, type SyncEngineState } from "./workspace-sync-engine";
 import { SupabaseWorkspaceSyncTransport } from "./workspace-sync-transport";
+import { SelectedSpacePreference } from "./selected-space-preference";
 import "./style.css";
 
 const cache = new ChromeSnapshotCache();
 const oauthCallbackUrl = callbackForTarget(browserTarget, browserAdapter.identity);
+const selectedSpacePreference = new SelectedSpacePreference(browserAdapter.storage);
+const LOCAL_SPACE_SCOPE = "local";
+const accountSpaceScope = (userId: string) => `account:${userId}`;
 
 function Mark() { return <span className="ext-brand"><TabloomMark className="ext-brand-mark" />tabloom</span>; }
 
@@ -64,18 +68,41 @@ function ExtensionApp() {
   const engineRef = useRef<WorkspaceSyncEngine | null>(null);
   const engineCleanupRef = useRef<(() => void) | null>(null);
   const activationGenerationRef = useRef(0);
+  const selectionScopeRef = useRef(LOCAL_SPACE_SCOPE);
   const [engineState, setEngineState] = useState<SyncEngineState | null>(null);
 
-  async function load(repo: WorkspaceRepository) {
+  async function preferredSpaceId(next: WorkspaceSnapshot, scope: string): Promise<string> {
+    try {
+      return await selectedSpacePreference.reconcile(scope, next.spaces);
+    } catch {
+      return next.spaces[0]?.id ?? "";
+    }
+  }
+
+  function selectSpace(spaceId: string) {
+    setSelectedSpace(spaceId);
+    void selectedSpacePreference.select(selectionScopeRef.current, spaceId).catch(() => undefined);
+  }
+
+  async function load(repo: WorkspaceRepository, scope = selectionScopeRef.current) {
     try {
       const next = await repo.load();
-      setSnapshot(next); setSelectedSpace((current) => current || next.spaces[0]?.id || "");
+      const preferred = await preferredSpaceId(next, scope);
+      if (selectionScopeRef.current !== scope) return;
+      setSnapshot(next);
+      setSelectedSpace(preferred);
       setError("");
     } catch {
       const cached = syncUserIdRef.current
         ? (await cache.loadCloud(syncUserIdRef.current))?.snapshot ?? null
         : await cache.read();
-      if (cached) { setSnapshot(cached); setMessage("Offline · showing your last synced workspace"); }
+      if (cached) {
+        const preferred = await preferredSpaceId(cached, scope);
+        if (selectionScopeRef.current !== scope) return;
+        setSnapshot(cached);
+        setSelectedSpace(preferred);
+        setMessage("Offline · showing your last synced workspace");
+      }
       else setError("Connect to the internet to load your workspace.");
     }
   }
@@ -91,6 +118,8 @@ function ExtensionApp() {
 
   async function activateCanonical(userId: string, generation: number) {
     if (!extensionSupabase || activationGenerationRef.current !== generation) return;
+    const selectionScope = accountSpaceScope(userId);
+    selectionScopeRef.current = selectionScope;
     stopActiveEngine();
     const storage = new LocalFirstStorage(browserAdapter.storage, userId);
     localFirstStorageRef.current = storage;
@@ -110,8 +139,11 @@ function ExtensionApp() {
       immutableOperationIds,
       onSnapshotCommitted: (next) => {
         if (engineRef.current !== engine || syncUserIdRef.current !== userId || activationGenerationRef.current !== generation) return;
-        setSnapshot(next);
-        setSelectedSpace((current) => next.spaces.some((space) => space.id === current) ? current : next.spaces[0]?.id ?? "");
+        void preferredSpaceId(next, selectionScope).then((preferred) => {
+          if (engineRef.current !== engine || syncUserIdRef.current !== userId || activationGenerationRef.current !== generation || selectionScopeRef.current !== selectionScope) return;
+          setSnapshot(next);
+          setSelectedSpace(preferred);
+        });
       },
     });
     engineRef.current = engine;
@@ -137,8 +169,13 @@ function ExtensionApp() {
       engine.stop();
       return;
     }
+    const preferred = await preferredSpaceId(activated, selectionScope);
+    if (activationGenerationRef.current !== generation || engineRef.current !== engine || selectionScopeRef.current !== selectionScope) {
+      engine.stop();
+      return;
+    }
     setSnapshot(activated);
-    setSelectedSpace((current) => activated.spaces.some((space) => space.id === current) ? current : activated.spaces[0]?.id ?? "");
+    setSelectedSpace(preferred);
     setError("");
     void engine.start();
   }
@@ -318,7 +355,8 @@ function ExtensionApp() {
     setWorkspaceSync(null);
     setSyncStatus("local");
     setRepository(local);
-    await load(local);
+    selectionScopeRef.current = LOCAL_SPACE_SCOPE;
+    await load(local, LOCAL_SPACE_SCOPE);
     try {
       const session = await signInExtensionWithGoogle({ selectAccount: true });
       if (activationGenerationRef.current !== generation) return;
@@ -415,7 +453,7 @@ function ExtensionApp() {
     : null;
 
   return <main className={`ext-shell ${tabsExpanded ? "sheet-open" : "sheet-collapsed"}`}>
-    {snapshot ? <SpaceSidebar activeSpaceId={activeSpace?.id ?? ""} brand={<Mark />} repository={repository} snapshot={snapshot} onError={setError} onMessage={setMessage} onReload={() => repository ? load(repository) : Promise.resolve()} onSelect={setSelectedSpace} /> : <aside className="ext-sidebar collapsed"><div className="sidebar-top"><Mark /></div></aside>}
+    {snapshot ? <SpaceSidebar activeSpaceId={activeSpace?.id ?? ""} brand={<Mark />} repository={repository} snapshot={snapshot} onError={setError} onMessage={setMessage} onReload={() => repository ? load(repository) : Promise.resolve()} onSelect={selectSpace} /> : <aside className="ext-sidebar collapsed"><div className="sidebar-top" /></aside>}
     <section className="ext-main"><header><div><h1>{activeSpace?.name || "Your workspace"}</h1></div><div className="ext-header-tools">{repository && <CreateCollectionPrompt activeSpaceId={activeSpace?.origin === "saved" && !activeSpace.read_only ? activeSpace.id : undefined} repository={repository} onCreated={() => load(repository)} onError={setError} />}{user && !engineState && (syncStatus === "pending" || syncStatus === "error") && <button className="sync-login-trigger sync-retry-trigger" onClick={() => void retryWorkspaceSync()}>Retry sync</button>}{snapshot && <GlobalSearch listCurrentTabs={() => browserAdapter.tabs.listCurrentWindow()} onActivateCurrentTab={async (tabId) => { const result = await browserAdapter.tabs.activateExisting(tabId); if (result.cleanupError) setError(result.cleanupError); }} onError={setError} snapshot={snapshot} />}<SyncLoginPrompt callbackUrl={oauthCallbackUrl} configured={Boolean(extensionSupabase)} onSignIn={signIn} onSwitchAccount={switchAccount} onSyncNow={() => engineRef.current?.refresh() ?? Promise.resolve()} syncState={engineState ?? undefined} target={browserTarget} user={user} /></div></header>
       {activeSpace?.id === BROWSER_BOOKMARKS_SPACE_ID && bookmarkRepository && repository && bookmarkWorkspace && browserAdapter.capabilities.bookmarks
         ? <BrowserBookmarksPanel repository={bookmarkRepository} workspace={bookmarkWorkspace} cache={bookmarkCache} onWorkspaceReload={() => load(repository)} />

@@ -1,5 +1,11 @@
 import type { WorkspaceSnapshot } from "./domain";
 import { isSaveableUrl, normalizeUrlForDuplicate } from "./domain";
+export {
+  convertTobyExport,
+  type TobyImportOptions,
+  type TobyImportResult,
+  type TobyImportSummary,
+} from "./toby-import";
 
 export type VersionedWorkspaceSnapshot = {
   snapshot: WorkspaceSnapshot;

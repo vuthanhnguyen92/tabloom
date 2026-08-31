@@ -1,4 +1,4 @@
-import { Check, ChevronLeft, ChevronRight, Pencil, Plus, Trash2, X } from "lucide-react";
+import { Check, ChevronLeft, PanelLeftOpen, Pencil, Plus, Trash2, X } from "lucide-react";
 import { type FormEvent, type ReactNode, useState } from "react";
 import type { Space, WorkspaceSnapshot } from "../shared/domain";
 import type { WorkspaceRepository } from "../shared/repository";
@@ -100,7 +100,7 @@ export function SpaceSidebar({ activeSpaceId, brand, onError, onMessage, onReloa
   }
 
   return <aside aria-label="Spaces" className={`ext-sidebar ${collapsed ? "collapsed" : "expanded"}`}>
-    <div className="sidebar-top">{brand}<button aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"} className="sidebar-toggle" onClick={toggleCollapsed}>{collapsed ? <ChevronRight size={17} /> : <ChevronLeft size={17} />}</button></div>
+    <div className="sidebar-top">{!collapsed && brand}<button aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"} className="sidebar-toggle" onClick={toggleCollapsed}>{collapsed ? <PanelLeftOpen size={18} /> : <ChevronLeft size={17} />}</button></div>
     <div className="space-sidebar-heading">{!collapsed && <span>MY SPACES</span>}<button aria-label="Add space" disabled={!repository || busy} onClick={beginCreate}><Plus size={15} /></button></div>
     {editor?.mode === "create" && editorForm("Create space")}
     <div className="space-list">{snapshot.spaces.map((space) => editor?.mode === "edit" && editor.space.id === space.id
