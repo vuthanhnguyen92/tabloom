@@ -79,8 +79,10 @@ test("versioned build overrides Chrome's new-tab page", async () => {
   try {
     const page = await context.newPage();
     await page.goto("chrome://newtab");
+    await expect(page.getByRole("heading", { name: "My Space" })).toBeVisible();
+    await page.getByRole("button", { name: "Expand sidebar" }).click();
     await expect(page.locator(".ext-brand")).toContainText("tabloom");
-    await expect(page.getByRole("heading", { name: "Product launch" })).toBeVisible();
+    await expect(page.locator(".ext-brand-mark")).toBeVisible();
     await expect(page.getByText("Current tabs")).toBeVisible();
   } finally {
     await context.close();
