@@ -5,6 +5,7 @@ import type { StorageArea } from "../storage";
 export type BrowserTarget = "chromium" | "firefox" | "safari";
 export type OpenCollectionResult = { opened: number; grouped: boolean };
 export type ActivateExistingTabResult = { tabloomClosed: boolean; cleanupError?: string };
+export type StorageChanges = Record<string, { oldValue?: unknown; newValue?: unknown }>;
 
 export type SafariNativeAuthRequest = {
   type: "tabloom.oauth.start";
@@ -37,7 +38,13 @@ export type WebExtensionNamespace = {
   tabGroups?: { update(groupId: number, updateProperties: { title: string; collapsed: boolean }): Promise<unknown> };
   permissions: { request(permission: { permissions: string[] }): Promise<boolean> };
   bookmarks?: { getTree(): Promise<BookmarkNode[]> };
-  storage: { local: StorageArea & { remove(key: string): Promise<void> } };
+  storage: {
+    local: StorageArea & { remove(key: string): Promise<void> };
+    onChanged?: {
+      addListener(listener: (changes: StorageChanges, areaName: string) => void): void;
+      removeListener(listener: (changes: StorageChanges, areaName: string) => void): void;
+    };
+  };
   identity?: {
     getRedirectURL(path?: string): string;
     launchWebAuthFlow(details: { url: string; interactive: boolean }): Promise<string | undefined>;
@@ -55,6 +62,9 @@ export interface BrowserAdapter {
   readonly target: BrowserTarget;
   readonly capabilities: { bookmarks: boolean; identity: boolean; tabGroups: boolean };
   readonly storage: WebExtensionNamespace["storage"]["local"];
+  readonly storageChanges: {
+    subscribe(listener: (changedKeys: string[]) => void): () => void;
+  };
   readonly identity: {
     getRedirectURL(path?: string): string;
     launchWebAuthFlow(details: { url: string; interactive: boolean }): Promise<string | undefined>;

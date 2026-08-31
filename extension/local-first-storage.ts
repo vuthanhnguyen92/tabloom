@@ -235,13 +235,39 @@ async function withWorkspaceLock<T>(name: string, operation: () => Promise<T>): 
 
 export class LocalFirstStorage {
   private readonly now: () => number;
+  private readonly subscribeToChanges?: (listener: (changedKeys: string[]) => void) => () => void;
+  private readonly accountKeys: ReadonlySet<string>;
 
   constructor(
     private readonly area: StorageArea,
     private readonly userId: string,
-    options: { now?: () => number } = {},
+    options: {
+      now?: () => number;
+      subscribeToChanges?: (listener: (changedKeys: string[]) => void) => () => void;
+    } = {},
   ) {
     this.now = options.now ?? Date.now;
+    this.subscribeToChanges = options.subscribeToChanges;
+    this.accountKeys = new Set([
+      accountWorkspaceKey(userId),
+      accountQueueKey(userId),
+      accountSyncStateKey(userId),
+    ]);
+  }
+
+  subscribe(listener: (state: AccountWorkspaceState) => void): () => void {
+    if (!this.subscribeToChanges) return () => undefined;
+    let active = true;
+    const unsubscribe = this.subscribeToChanges((changedKeys) => {
+      if (!changedKeys.some((key) => this.accountKeys.has(key))) return;
+      void this.load().then((state) => {
+        if (active && state) listener(state);
+      }).catch(() => undefined);
+    });
+    return () => {
+      active = false;
+      unsubscribe();
+    };
   }
 
   private async readKey(key: string): Promise<unknown> {

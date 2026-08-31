@@ -4,6 +4,7 @@ import { createSafariAdapter } from "../extension/browser/safari";
 
 function createNamespace({ withGroups = true } = {}) {
   let nextTabId = 10;
+  const storageListeners = new Set<(changes: Record<string, { oldValue?: unknown; newValue?: unknown }>, areaName: string) => void>();
   const namespace = {
     tabs: {
       query: vi.fn(async () => [{ id: 1, title: "Tab", url: "https://example.com", active: true, index: 0 }]),
@@ -14,13 +15,20 @@ function createNamespace({ withGroups = true } = {}) {
       ungroup: withGroups ? vi.fn(async () => undefined) : undefined,
     },
     tabGroups: withGroups ? { update: vi.fn(async () => ({ id: 7 })) } : undefined,
-    permissions: { request: vi.fn(async () => true) },
+    permissions: { request: vi.fn(async (_request: { permissions: string[] }) => true) },
     bookmarks: { getTree: vi.fn(async () => [{ id: "0", title: "", children: [] }]) },
     storage: {
       local: {
         get: vi.fn(async () => ({})),
         set: vi.fn(async () => undefined),
         remove: vi.fn(async () => undefined),
+      },
+      onChanged: {
+        addListener: vi.fn((listener: (changes: Record<string, { oldValue?: unknown; newValue?: unknown }>, areaName: string) => void) => storageListeners.add(listener)),
+        removeListener: vi.fn((listener: (changes: Record<string, { oldValue?: unknown; newValue?: unknown }>, areaName: string) => void) => storageListeners.delete(listener)),
+        emit(changes: Record<string, { oldValue?: unknown; newValue?: unknown }>, areaName: string) {
+          for (const listener of storageListeners) listener(changes, areaName);
+        },
       },
     },
     identity: {
@@ -44,6 +52,22 @@ describe("BrowserAdapter", () => {
     expect(await adapter.bookmarks.getTree()).toHaveLength(1);
     expect(adapter.identity.getRedirectURL("auth-callback")).toContain("auth-callback");
     expect(await adapter.identity.launchWebAuthFlow({ url: "https://accounts.example", interactive: true })).toContain("code=abc");
+  });
+
+  it("emits local storage keys and stops after unsubscribe", () => {
+    const namespace = createNamespace();
+    const adapter = createWebExtensionAdapter("chromium", namespace);
+    const listener = vi.fn();
+
+    const unsubscribe = adapter.storageChanges.subscribe(listener);
+    namespace.storage.onChanged.emit({ workspace: { newValue: { revision: 2 } } }, "local");
+    namespace.storage.onChanged.emit({ ignored: { newValue: true } }, "sync");
+
+    expect(listener).toHaveBeenCalledOnce();
+    expect(listener).toHaveBeenCalledWith(["workspace"]);
+    unsubscribe();
+    namespace.storage.onChanged.emit({ queue: { newValue: [] } }, "local");
+    expect(listener).toHaveBeenCalledOnce();
   });
 
   it("opens an ungrouped collection when the target lacks tab-group APIs", async () => {
@@ -105,6 +129,29 @@ describe("BrowserAdapter", () => {
     expect(namespace.permissions.request.mock.invocationCallOrder[0]).toBeLessThan(namespace.tabs.create.mock.invocationCallOrder[0]);
     expect(namespace.tabs.group).toHaveBeenCalledWith({ tabIds: [10] });
     expect(namespace.tabGroups?.update).toHaveBeenCalledWith(7, { title: "Design", collapsed: false });
+  });
+
+  it("requests tab-group permission before checking the permission-gated naming API", async () => {
+    const namespace = createNamespace();
+    let tabGroupsGranted = false;
+    const updateGroup = vi.fn(async () => ({ id: 7 }));
+    namespace.permissions.request.mockImplementation(async ({ permissions }) => {
+      tabGroupsGranted = permissions.includes("tabGroups");
+      return tabGroupsGranted;
+    });
+    Object.defineProperty(namespace, "tabGroups", {
+      configurable: true,
+      get: () => tabGroupsGranted ? { update: updateGroup } : undefined,
+    });
+    const adapter = createWebExtensionAdapter("chromium", namespace);
+
+    expect(adapter.capabilities.tabGroups).toBe(true);
+    await expect(adapter.tabs.openCollection("Design", ["https://example.com"])).resolves.toEqual({
+      opened: 1,
+      grouped: true,
+    });
+    expect(namespace.permissions.request).toHaveBeenCalledWith({ permissions: ["tabGroups"] });
+    expect(updateGroup).toHaveBeenCalledWith(7, { title: "Design", collapsed: false });
   });
 
   it("reports unavailable optional APIs with target-specific errors", async () => {

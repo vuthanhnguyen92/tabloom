@@ -271,4 +271,28 @@ describe("LocalFirstStorage", () => {
     }]);
     expect(loaded.sync).toMatchObject({ phase: "failed", error: expect.stringMatching(/interrupted.*retry/i) });
   });
+
+  it("observes only this account's workspace keys and unsubscribes cleanly", async () => {
+    const { area } = memoryArea();
+    let emit: (keys: string[]) => void = () => undefined;
+    const stop = vi.fn();
+    const storage = new LocalFirstStorage(area, USER_ID, {
+      subscribeToChanges(listener) {
+        emit = listener;
+        return stop;
+      },
+    });
+    await storage.saveCanonical(snapshot(), 2);
+    const listener = vi.fn();
+
+    const unsubscribe = storage.subscribe(listener);
+    emit([accountWorkspaceKey("another-user"), "unrelated"]);
+    await Promise.resolve();
+    expect(listener).not.toHaveBeenCalled();
+
+    emit([accountQueueKey(USER_ID)]);
+    await vi.waitFor(() => expect(listener).toHaveBeenCalledWith(expect.objectContaining({ revision: 2 })));
+    unsubscribe();
+    expect(stop).toHaveBeenCalledOnce();
+  });
 });

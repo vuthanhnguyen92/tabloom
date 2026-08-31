@@ -6,9 +6,22 @@ export function createWebExtensionAdapter(target: BrowserTarget, api: WebExtensi
     capabilities: {
       bookmarks: Boolean(api.bookmarks),
       identity: Boolean(api.identity),
-      tabGroups: Boolean(api.tabs.group && api.tabs.ungroup && api.tabGroups?.update),
+      tabGroups: Boolean(api.tabs.group && api.tabs.ungroup),
     },
     storage: api.storage.local,
+    storageChanges: {
+      subscribe(listener) {
+        const onChanged = api.storage.onChanged;
+        if (!onChanged) return () => undefined;
+        const handleChange = (changes: Record<string, { oldValue?: unknown; newValue?: unknown }>, areaName: string) => {
+          if (areaName !== "local") return;
+          const keys = Object.keys(changes);
+          if (keys.length) listener(keys);
+        };
+        onChanged.addListener(handleChange);
+        return () => onChanged.removeListener(handleChange);
+      },
+    },
     identity: {
       getRedirectURL(path) {
         if (!api.identity) throw new Error(`${target} does not provide the identity API required for sign-in.`);
@@ -51,7 +64,7 @@ export function createWebExtensionAdapter(target: BrowserTarget, api: WebExtensi
         if (!urls.length) return { opened: 0, grouped: false };
 
         let granted = false;
-        const canGroup = Boolean(api.tabs.group && api.tabs.ungroup && api.tabGroups?.update);
+        const canGroup = Boolean(api.tabs.group && api.tabs.ungroup);
         if (canGroup) {
           try {
             granted = await api.permissions.request({ permissions: ["tabGroups"] });
@@ -62,7 +75,10 @@ export function createWebExtensionAdapter(target: BrowserTarget, api: WebExtensi
 
         const openedTabs = await Promise.all(urls.map((url, index) => api.tabs.create({ url, active: index === 0 })));
         const tabIds = openedTabs.flatMap((tab) => typeof tab.id === "number" ? [tab.id] : []);
-        if (!canGroup || !granted || tabIds.length !== openedTabs.length) return { opened: openedTabs.length, grouped: false };
+        const canNameGroup = Boolean(api.tabGroups?.update);
+        if (!canGroup || !granted || !canNameGroup || tabIds.length !== openedTabs.length) {
+          return { opened: openedTabs.length, grouped: false };
+        }
 
         try {
           const groupId = await api.tabs.group!({ tabIds });
