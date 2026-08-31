@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { twoDeviceFixture } from "./fixtures/bookmarks";
 
-const extensionPath = resolve("dist-extension");
+const extensionPath = resolve("dist-extension/chromium");
 
 async function launchExtension(path = extensionPath): Promise<BrowserContext> {
   const profileDir = await mkdtemp(join(tmpdir(), "tabloom-e2e-"));
@@ -71,7 +71,7 @@ async function installBookmarkFixture(page: Page, entries: readonly { title: str
 
 test("versioned build overrides Chrome's new-tab page", async () => {
   const manifest = JSON.parse(await readFile(join(extensionPath, "manifest.json"), "utf8"));
-  expect(manifest.version).toBe("0.6.0");
+  expect(manifest.version).toBe("0.7.0");
   expect(manifest.optional_permissions).toContain("bookmarks");
   expect(manifest.chrome_url_overrides.newtab).toBe("index.html");
 
@@ -82,6 +82,32 @@ test("versioned build overrides Chrome's new-tab page", async () => {
     await expect(page.locator(".ext-brand")).toContainText("tabloom");
     await expect(page.getByRole("heading", { name: "Product launch" })).toBeVisible();
     await expect(page.getByText("Current tabs")).toBeVisible();
+  } finally {
+    await context.close();
+  }
+});
+
+test("activates a current-tab search result and closes the calling Tabloom tab", async () => {
+  const context = await launchExtension();
+  try {
+    await context.route("https://current-tab.example/**", (route) => route.fulfill({
+      body: "<!doctype html><title>Current Tab Search Target</title><main>Existing browser tab</main>",
+      contentType: "text/html",
+    }));
+    const target = await context.newPage();
+    await target.goto("https://current-tab.example/");
+    const tabloom = await context.newPage();
+    await tabloom.goto("chrome://newtab");
+    await expect(tabloom.getByRole("button", { name: "Search all links" })).toBeVisible();
+    const pageCountBeforeSelection = context.pages().length;
+
+    await tabloom.keyboard.press("Meta+KeyF");
+    await tabloom.getByRole("searchbox", { name: "Search all spaces and collections" }).fill("Current Tab Search Target");
+    await tabloom.getByRole("button", { name: /Current Tab Search Target, Current window/ }).click();
+
+    await expect.poll(() => tabloom.isClosed()).toBe(true);
+    await expect.poll(() => target.evaluate(() => document.hasFocus())).toBe(true);
+    expect(context.pages()).toHaveLength(pageCountBeforeSelection - 1);
   } finally {
     await context.close();
   }

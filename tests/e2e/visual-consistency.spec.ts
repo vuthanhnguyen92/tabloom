@@ -25,7 +25,7 @@ test("matches the shared Chrome-reference workspace", async ({ page }) => {
           <div><h1>My Space</h1></div>
           <div class="ext-header-tools">
             <button class="new-collection-trigger">New collection</button>
-            <button aria-label="Search all links" class="global-search-trigger"><span>⌕</span><span>Search</span><kbd>⌘ K</kbd></button>
+            <button aria-label="Search all links" class="global-search-trigger"><span>⌕</span><span>Search</span><kbd>⌘ F</kbd></button>
             <div class="account-control">
               <button aria-label="Account" class="account-trigger"><svg aria-hidden="true" fill="none" height="18" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" width="18"><circle cx="12" cy="8" r="5"></circle><path d="M20 21a8 8 0 0 0-16 0"></path></svg></button>
               <div aria-label="Account" class="account-menu" role="menu">
@@ -87,7 +87,18 @@ test("matches the shared Chrome-reference workspace", async ({ page }) => {
       <button aria-label="Close search backdrop" class="global-search-backdrop"></button>
       <div class="global-search-shell">
         <header><span>⌕</span><input aria-label="Search all spaces and collections" placeholder="Search all spaces and collections" type="search"><button aria-label="Close search">×</button></header>
-        <div class="global-search-content"><div class="global-search-state"><span>⌕</span><p>Search links, spaces, collections, and bookmarks</p><small>Type a title, URL, description, space, or collection name</small></div></div>
+        <div class="global-search-content">
+          <div aria-label="Search results" class="global-search-results" role="listbox">
+            <section class="global-search-section">
+              <h2>Current tabs</h2>
+              <div aria-selected="true" class="global-search-result" role="option"><button><span class="global-search-favicon">D</span><span class="global-search-copy"><strong>Documentation</strong><span>developer.mozilla.org</span><small>Current window</small></span><span class="global-search-url">developer.mozilla.org</span></button></div>
+            </section>
+            <section class="global-search-section">
+              <h2>Saved links</h2>
+              <div aria-selected="false" class="global-search-result" role="option"><a href="#"><span class="global-search-favicon">P</span><span class="global-search-copy"><strong>Product roadmap</strong><span>My Space › Product</span><small>Tabloom</small></span><span class="global-search-url">linear.app</span></a></div>
+            </section>
+          </div>
+        </div>
         <footer><span><kbd>↑</kbd><kbd>↓</kbd> Navigate</span><span><kbd>↵</kbd> Open</span><span><kbd>esc</kbd> Close</span></footer>
       </div>
     </section>

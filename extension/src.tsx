@@ -11,6 +11,7 @@ import { findDuplicateLink, type SavedLink, type WorkspaceSnapshot } from "../sh
 import type { WorkspaceRepository } from "../shared/repository";
 import type { WorkspaceMergePlan } from "../shared/workspace-merge";
 import { SupabaseWorkspaceSyncRepository } from "../shared/workspace-sync-repository";
+import { TabloomMark } from "../shared/TabloomMark";
 import { openCollectionTabs, type CaptureTab } from "./chrome-api";
 import { ChromeSnapshotCache, createLocalWorkspaceRepository } from "./storage";
 import { extensionSupabase, signInExtensionWithGoogle } from "./supabase";
@@ -36,7 +37,7 @@ import "./style.css";
 const cache = new ChromeSnapshotCache();
 const oauthCallbackUrl = callbackForTarget(browserTarget, browserAdapter.identity);
 
-function Mark() { return <span className="ext-brand"><i>✦</i>tabloom</span>; }
+function Mark() { return <span className="ext-brand"><TabloomMark className="ext-brand-mark" />tabloom</span>; }
 
 function ExtensionApp() {
   const [repository, setRepository] = useState<WorkspaceRepository | null>(null);
@@ -415,7 +416,7 @@ function ExtensionApp() {
 
   return <main className={`ext-shell ${tabsExpanded ? "sheet-open" : "sheet-collapsed"}`}>
     {snapshot ? <SpaceSidebar activeSpaceId={activeSpace?.id ?? ""} brand={<Mark />} repository={repository} snapshot={snapshot} onError={setError} onMessage={setMessage} onReload={() => repository ? load(repository) : Promise.resolve()} onSelect={setSelectedSpace} /> : <aside className="ext-sidebar collapsed"><div className="sidebar-top"><Mark /></div></aside>}
-    <section className="ext-main"><header><div><h1>{activeSpace?.name || "Your workspace"}</h1></div><div className="ext-header-tools">{repository && <CreateCollectionPrompt activeSpaceId={activeSpace?.origin === "saved" && !activeSpace.read_only ? activeSpace.id : undefined} repository={repository} onCreated={() => load(repository)} onError={setError} />}{user && !engineState && (syncStatus === "pending" || syncStatus === "error") && <button className="sync-login-trigger sync-retry-trigger" onClick={() => void retryWorkspaceSync()}>Retry sync</button>}{snapshot && <GlobalSearch snapshot={snapshot} />}<SyncLoginPrompt callbackUrl={oauthCallbackUrl} configured={Boolean(extensionSupabase)} onSignIn={signIn} onSwitchAccount={switchAccount} onSyncNow={() => engineRef.current?.refresh() ?? Promise.resolve()} syncState={engineState ?? undefined} target={browserTarget} user={user} /></div></header>
+    <section className="ext-main"><header><div><h1>{activeSpace?.name || "Your workspace"}</h1></div><div className="ext-header-tools">{repository && <CreateCollectionPrompt activeSpaceId={activeSpace?.origin === "saved" && !activeSpace.read_only ? activeSpace.id : undefined} repository={repository} onCreated={() => load(repository)} onError={setError} />}{user && !engineState && (syncStatus === "pending" || syncStatus === "error") && <button className="sync-login-trigger sync-retry-trigger" onClick={() => void retryWorkspaceSync()}>Retry sync</button>}{snapshot && <GlobalSearch listCurrentTabs={() => browserAdapter.tabs.listCurrentWindow()} onActivateCurrentTab={async (tabId) => { const result = await browserAdapter.tabs.activateExisting(tabId); if (result.cleanupError) setError(result.cleanupError); }} onError={setError} snapshot={snapshot} />}<SyncLoginPrompt callbackUrl={oauthCallbackUrl} configured={Boolean(extensionSupabase)} onSignIn={signIn} onSwitchAccount={switchAccount} onSyncNow={() => engineRef.current?.refresh() ?? Promise.resolve()} syncState={engineState ?? undefined} target={browserTarget} user={user} /></div></header>
       {activeSpace?.id === BROWSER_BOOKMARKS_SPACE_ID && bookmarkRepository && repository && bookmarkWorkspace && browserAdapter.capabilities.bookmarks
         ? <BrowserBookmarksPanel repository={bookmarkRepository} workspace={bookmarkWorkspace} cache={bookmarkCache} onWorkspaceReload={() => load(repository)} />
         : null}
