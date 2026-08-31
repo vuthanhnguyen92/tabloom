@@ -15,7 +15,10 @@ function createNamespace({ withGroups = true } = {}) {
       ungroup: withGroups ? vi.fn(async () => undefined) : undefined,
     },
     tabGroups: withGroups ? { update: vi.fn(async () => ({ id: 7 })) } : undefined,
-    permissions: { request: vi.fn(async () => true) },
+    permissions: { request: vi.fn(async (request: { permissions: string[] }) => {
+      void request;
+      return true;
+    }) },
     bookmarks: { getTree: vi.fn(async () => [{ id: "0", title: "", children: [] }]) },
     storage: {
       local: {
