@@ -30,9 +30,12 @@ import { GlobalSearch } from "./GlobalSearch";
 import { advanceFirstSync, FirstSyncCoordinator, FirstSyncPreviewChangedError } from "./first-sync";
 import { LocalFirstStorage } from "./local-first-storage";
 import { LocalFirstWorkspaceRepository } from "./local-first-repository";
-import { WorkspaceSyncEngine, type SyncEngineState } from "./workspace-sync-engine";
+import { WorkspaceSyncCoordinator, type WorkspaceSyncState } from "./workspace-sync-coordinator";
+import { WorkspaceSyncLock } from "./workspace-sync-lock";
 import { SupabaseWorkspaceSyncTransport } from "./workspace-sync-transport";
+import { registerWorkspaceSyncLifecycle } from "./workspace-sync-lifecycle";
 import { SelectedSpacePreference } from "./selected-space-preference";
+import { mergeAccountWorkspaceIntoLocal } from "./logout-workspace";
 import "./style.css";
 
 const cache = new ChromeSnapshotCache();
@@ -40,6 +43,21 @@ const oauthCallbackUrl = callbackForTarget(browserTarget, browserAdapter.identit
 const selectedSpacePreference = new SelectedSpacePreference(browserAdapter.storage);
 const LOCAL_SPACE_SCOPE = "local";
 const accountSpaceScope = (userId: string) => `account:${userId}`;
+
+function waitForStorageKey(key: string, expiresAt: number): Promise<void> {
+  return new Promise((resolve) => {
+    let unsubscribe: () => void = () => undefined;
+    const finish = () => {
+      clearTimeout(timeout);
+      unsubscribe();
+      resolve();
+    };
+    const timeout = setTimeout(finish, Math.max(0, expiresAt - Date.now()));
+    unsubscribe = browserAdapter.storageChanges.subscribe((keys) => {
+      if (keys.includes(key)) finish();
+    });
+  });
+}
 
 function Mark() { return <span className="ext-brand"><TabloomMark className="ext-brand-mark" />tabloom</span>; }
 
@@ -65,11 +83,11 @@ function ExtensionApp() {
   const localRepositoryRef = useRef<WorkspaceRepository | null>(null);
   const syncUserIdRef = useRef<string | null>(null);
   const localFirstStorageRef = useRef<LocalFirstStorage | null>(null);
-  const engineRef = useRef<WorkspaceSyncEngine | null>(null);
-  const engineCleanupRef = useRef<(() => void) | null>(null);
+  const coordinatorRef = useRef<WorkspaceSyncCoordinator | null>(null);
+  const coordinatorCleanupRef = useRef<(() => void) | null>(null);
   const activationGenerationRef = useRef(0);
   const selectionScopeRef = useRef(LOCAL_SPACE_SCOPE);
-  const [engineState, setEngineState] = useState<SyncEngineState | null>(null);
+  const [coordinatorState, setCoordinatorState] = useState<WorkspaceSyncState | null>(null);
 
   async function preferredSpaceId(next: WorkspaceSnapshot, scope: string): Promise<string> {
     try {
@@ -107,77 +125,78 @@ function ExtensionApp() {
     }
   }
 
-  function stopActiveEngine() {
-    engineCleanupRef.current?.();
-    engineCleanupRef.current = null;
-    engineRef.current?.stop();
-    engineRef.current = null;
+  function stopActiveCoordinator() {
+    coordinatorCleanupRef.current?.();
+    coordinatorCleanupRef.current = null;
+    coordinatorRef.current?.stop();
+    coordinatorRef.current = null;
     localFirstStorageRef.current = null;
-    setEngineState(null);
+    setCoordinatorState(null);
   }
 
   async function activateCanonical(userId: string, generation: number) {
     if (!extensionSupabase || activationGenerationRef.current !== generation) return;
     const selectionScope = accountSpaceScope(userId);
     selectionScopeRef.current = selectionScope;
-    stopActiveEngine();
-    const storage = new LocalFirstStorage(browserAdapter.storage, userId);
-    localFirstStorageRef.current = storage;
-    const immutableOperationIds = new Set<string>();
-    const localFirst = await LocalFirstWorkspaceRepository.create({
-      userId,
-      storage,
-      onMutation: () => engineRef.current?.requestSync("mutation"),
-      immutableOperationIds: () => immutableOperationIds,
+    stopActiveCoordinator();
+    const storage = new LocalFirstStorage(browserAdapter.storage, userId, {
+      subscribeToChanges: (listener) => browserAdapter.storageChanges.subscribe(listener),
     });
-    if (activationGenerationRef.current !== generation) return;
-    const engine = new WorkspaceSyncEngine({
+    localFirstStorageRef.current = storage;
+    const coordinator = new WorkspaceSyncCoordinator({
       userId,
       storage,
       transport: new SupabaseWorkspaceSyncTransport(extensionSupabase),
+      exclusiveRunner: new WorkspaceSyncLock({
+        area: browserAdapter.storage,
+        waitForLeaseChange: waitForStorageKey,
+      }),
       onActionRequired: setError,
-      immutableOperationIds,
       onSnapshotCommitted: (next) => {
-        if (engineRef.current !== engine || syncUserIdRef.current !== userId || activationGenerationRef.current !== generation) return;
+        if (coordinatorRef.current !== coordinator || syncUserIdRef.current !== userId || activationGenerationRef.current !== generation) return;
         void preferredSpaceId(next, selectionScope).then((preferred) => {
-          if (engineRef.current !== engine || syncUserIdRef.current !== userId || activationGenerationRef.current !== generation || selectionScopeRef.current !== selectionScope) return;
+          if (coordinatorRef.current !== coordinator || syncUserIdRef.current !== userId || activationGenerationRef.current !== generation || selectionScopeRef.current !== selectionScope) return;
           setSnapshot(next);
           setSelectedSpace(preferred);
         });
       },
     });
-    engineRef.current = engine;
-    const unsubscribe = engine.subscribe((state) => {
-      if (engineRef.current !== engine || activationGenerationRef.current !== generation) return;
-      setEngineState(state);
-      setSyncStatus(state.phase === "syncing" ? "checking" : state.phase === "synced" ? "synced" : state.pending > 0 ? "pending" : "error");
+    coordinatorRef.current = coordinator;
+    const localFirst = await LocalFirstWorkspaceRepository.create({
+      userId,
+      storage,
+      onMutation: async (operations) => {
+        for (const operation of operations) await coordinator.submit(operation);
+      },
     });
-    const onVisibility = () => {
-      if (document.visibilityState === "visible") engine.requestSync("focus");
-    };
-    const onOnline = () => engine.requestSync("online");
-    document.addEventListener("visibilitychange", onVisibility);
-    window.addEventListener("online", onOnline);
-    engineCleanupRef.current = () => {
+    if (activationGenerationRef.current !== generation) return;
+    const unsubscribe = coordinator.subscribe((state) => {
+      if (coordinatorRef.current !== coordinator || activationGenerationRef.current !== generation) return;
+      setCoordinatorState(state);
+      setSyncStatus(state.phase === "syncing" ? "checking" : state.phase === "synced" ? "synced" : state.phase === "failed" ? "pending" : "error");
+    });
+    const unregisterLifecycle = registerWorkspaceSyncLifecycle(coordinator);
+    coordinatorCleanupRef.current = () => {
       unsubscribe();
-      document.removeEventListener("visibilitychange", onVisibility);
-      window.removeEventListener("online", onOnline);
+      unregisterLifecycle();
     };
     setRepository(localFirst);
     const activated = await localFirst.load();
-    if (activationGenerationRef.current !== generation || engineRef.current !== engine) {
-      engine.stop();
+    if (activationGenerationRef.current !== generation || coordinatorRef.current !== coordinator) {
+      coordinator.stop();
       return;
     }
     const preferred = await preferredSpaceId(activated, selectionScope);
-    if (activationGenerationRef.current !== generation || engineRef.current !== engine || selectionScopeRef.current !== selectionScope) {
-      engine.stop();
+    if (activationGenerationRef.current !== generation || coordinatorRef.current !== coordinator || selectionScopeRef.current !== selectionScope) {
+      coordinator.stop();
       return;
     }
     setSnapshot(activated);
     setSelectedSpace(preferred);
     setError("");
-    void engine.start();
+    void coordinator.start().catch((reason) => {
+      if (coordinatorRef.current === coordinator) setError(reason instanceof Error ? reason.message : "Could not refresh the synced workspace.");
+    });
   }
 
   async function beginWorkspaceSync(userId: string, localRepository: WorkspaceRepository, generation = ++activationGenerationRef.current) {
@@ -206,7 +225,7 @@ function ExtensionApp() {
         if (activationGenerationRef.current !== generation) return;
         await activateCanonical(userId, generation);
         if (activationGenerationRef.current !== generation) return;
-        setEngineState({ phase: "synced", revision, pending: 0, lastSyncedAt: new Date().toISOString() });
+        setCoordinatorState({ phase: "synced", revision, failed: 0, waiting: 0, lastSyncedAt: new Date().toISOString() });
       },
     });
     try {
@@ -254,9 +273,9 @@ function ExtensionApp() {
     return () => {
       active = false;
       activationGenerationRef.current += 1;
-      stopActiveEngine();
+      stopActiveCoordinator();
     };
-    // Bootstrap owns the initial repository and engine lifecycle; rerunning it would create duplicate listeners.
+    // Bootstrap owns the initial repository and coordinator lifecycle; rerunning it would create duplicate listeners.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -343,31 +362,37 @@ function ExtensionApp() {
     await beginWorkspaceSync(session.user.id, local, generation);
   }
 
-  async function switchAccount() {
+  async function logout() {
     const generation = ++activationGenerationRef.current;
     const local = localRepositoryRef.current;
-    if (!extensionSupabase || !local) return;
-    stopActiveEngine();
-    await extensionSupabase.auth.signOut();
+    const accountRepository = repository;
+    const userId = syncUserIdRef.current;
+    if (!extensionSupabase || !local || !accountRepository || !userId) return;
+    stopActiveCoordinator();
+    const [localSnapshot, accountSnapshot] = await Promise.all([
+      local.load(),
+      accountRepository.load(),
+    ]);
+    await cache.write(mergeAccountWorkspaceIntoLocal(localSnapshot, accountSnapshot));
+    const nextLocal = await createLocalWorkspaceRepository();
+    try {
+      const { error: signOutError } = await extensionSupabase.auth.signOut();
+      if (signOutError) throw signOutError;
+    } catch (reason) {
+      if (activationGenerationRef.current === generation) await activateCanonical(userId, generation);
+      throw reason;
+    }
     if (activationGenerationRef.current !== generation) return;
     syncUserIdRef.current = null;
+    localRepositoryRef.current = nextLocal;
     setBookmarkRepository(null);
     setWorkspaceSync(null);
     setSyncStatus("local");
-    setRepository(local);
+    setUser(null);
+    setRepository(nextLocal);
     selectionScopeRef.current = LOCAL_SPACE_SCOPE;
-    await load(local, LOCAL_SPACE_SCOPE);
-    try {
-      const session = await signInExtensionWithGoogle({ selectAccount: true });
-      if (activationGenerationRef.current !== generation) return;
-      setUser(session.user);
-      await beginWorkspaceSync(session.user.id, local, generation);
-    } catch (reason) {
-      if (activationGenerationRef.current !== generation) return;
-      setUser(null);
-      setError(reason instanceof Error ? reason.message : "Could not switch accounts.");
-      throw reason;
-    }
+    await load(nextLocal, LOCAL_SPACE_SCOPE);
+    setMessage("Logged out · workspace kept on this device");
   }
 
   async function confirmWorkspaceSync() {
@@ -454,7 +479,7 @@ function ExtensionApp() {
 
   return <main className={`ext-shell ${tabsExpanded ? "sheet-open" : "sheet-collapsed"}`}>
     {snapshot ? <SpaceSidebar activeSpaceId={activeSpace?.id ?? ""} brand={<Mark />} repository={repository} snapshot={snapshot} onError={setError} onMessage={setMessage} onReload={() => repository ? load(repository) : Promise.resolve()} onSelect={selectSpace} /> : <aside className="ext-sidebar collapsed"><div className="sidebar-top" /></aside>}
-    <section className="ext-main"><header><div><h1>{activeSpace?.name || "Your workspace"}</h1></div><div className="ext-header-tools">{repository && <CreateCollectionPrompt activeSpaceId={activeSpace?.origin === "saved" && !activeSpace.read_only ? activeSpace.id : undefined} repository={repository} onCreated={() => load(repository)} onError={setError} />}{user && !engineState && (syncStatus === "pending" || syncStatus === "error") && <button className="sync-login-trigger sync-retry-trigger" onClick={() => void retryWorkspaceSync()}>Retry sync</button>}{snapshot && <GlobalSearch listCurrentTabs={() => browserAdapter.tabs.listCurrentWindow()} onActivateCurrentTab={async (tabId) => { const result = await browserAdapter.tabs.activateExisting(tabId); if (result.cleanupError) setError(result.cleanupError); }} onError={setError} snapshot={snapshot} />}<SyncLoginPrompt callbackUrl={oauthCallbackUrl} configured={Boolean(extensionSupabase)} onSignIn={signIn} onSwitchAccount={switchAccount} onSyncNow={() => engineRef.current?.refresh() ?? Promise.resolve()} syncState={engineState ?? undefined} target={browserTarget} user={user} /></div></header>
+    <section className="ext-main"><header><div><h1>{activeSpace?.name || "Your workspace"}</h1></div><div className="ext-header-tools">{repository && <CreateCollectionPrompt activeSpaceId={activeSpace?.origin === "saved" && !activeSpace.read_only ? activeSpace.id : undefined} repository={repository} onCreated={() => load(repository)} onError={setError} />}{user && !coordinatorState && (syncStatus === "pending" || syncStatus === "error") && <button className="sync-login-trigger sync-retry-trigger" onClick={() => void retryWorkspaceSync()}>Retry sync</button>}{snapshot && <GlobalSearch listCurrentTabs={() => browserAdapter.tabs.listCurrentWindow()} onActivateCurrentTab={async (tabId) => { const result = await browserAdapter.tabs.activateExisting(tabId); if (result.cleanupError) setError(result.cleanupError); }} onError={setError} snapshot={snapshot} />}<SyncLoginPrompt callbackUrl={oauthCallbackUrl} configured={Boolean(extensionSupabase)} onSignIn={signIn} onLogout={logout} onRetrySync={() => coordinatorRef.current?.retryFailed() ?? Promise.resolve()} syncState={coordinatorState ?? undefined} target={browserTarget} user={user} /></div></header>
       {activeSpace?.id === BROWSER_BOOKMARKS_SPACE_ID && bookmarkRepository && repository && bookmarkWorkspace && browserAdapter.capabilities.bookmarks
         ? <BrowserBookmarksPanel repository={bookmarkRepository} workspace={bookmarkWorkspace} cache={bookmarkCache} onWorkspaceReload={() => load(repository)} />
         : null}
