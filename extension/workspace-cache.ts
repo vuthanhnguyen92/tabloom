@@ -125,9 +125,9 @@ export class BrowserWorkspaceCache implements WorkspaceCache {
       ...current,
       revision: state.revision,
       sync: {
-        phase: state.status === "synced" ? "synced" : state.status === "error" ? "offline" : "syncing",
+        phase: state.status === "synced" ? "synced" : state.status === "error" ? "offline" : "failed",
         ...(state.lastSyncedAt ? { lastSyncedAt: state.lastSyncedAt } : {}),
-        ...(state.error ? { error: state.error } : {}),
+        ...(state.error ? { error: state.error } : state.status === "pending" ? { error: "Workspace sync is pending." } : {}),
       },
     }, undefined]);
   }

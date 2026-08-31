@@ -303,7 +303,7 @@ export class LocalFirstStorage {
     } else if (raw.outbox === undefined) queueEnvelope = { version: 2, queue: [], nextSequence: 1 };
     else return null;
 
-    const normalized = normalizeQueue(queueEnvelope.queue);
+    const normalized = { queue: queueEnvelope.queue, interrupted: false };
     let sync: SyncEnvelope;
     let migratedLegacySync = false;
     if (isSyncEnvelope(raw.sync)) sync = raw.sync;
@@ -355,6 +355,19 @@ export class LocalFirstStorage {
     const value = await this.load();
     if (!value) throw new Error("Account workspace cache is unavailable.");
     return value;
+  }
+
+  async normalizeInterruptedAttempts(): Promise<AccountWorkspaceState> {
+    return this.update(async (current) => {
+      const normalized = normalizeQueue(current.queue);
+      if (!normalized.interrupted) return [current, current] as const;
+      const next: AccountWorkspaceState = {
+        ...current,
+        queue: normalized.queue,
+        sync: { ...current.sync, phase: "failed", error: INTERRUPTED_RETRY_MESSAGE },
+      };
+      return [next, next] as const;
+    });
   }
 
   async save(state: AccountWorkspaceState): Promise<void> {

@@ -3,6 +3,17 @@ import type { WorkspaceSnapshot } from "../shared/domain";
 import type { WorkspaceOperation } from "../shared/workspace-operations";
 import { LocalFirstStorage, type AccountWorkspaceState, type StorageArea } from "../extension/local-first-storage";
 import { WorkspaceSyncCoordinator, type WorkspaceSyncState } from "../extension/workspace-sync-coordinator";
+import {
+  WorkspaceAuthenticationError,
+  WorkspaceOfflineError,
+  WorkspaceWriteBlockedError,
+  WorkspaceWriteFailedError,
+} from "../extension/workspace-sync-errors";
+import { WorkspaceConflictActionRequiredError } from "../extension/workspace-sync-errors";
+import {
+  WorkspaceAuthenticationError as RemoteWorkspaceAuthenticationError,
+  WorkspaceRevisionConflictError,
+} from "../shared/workspace-sync-repository";
 import type { WorkspaceSyncExclusiveRunner } from "../extension/workspace-sync-lock";
 import type { WorkspaceSyncTransport } from "../extension/workspace-sync-transport";
 
@@ -42,6 +53,14 @@ function renameOperation(name = "Optimistic"): WorkspaceOperation {
     payload: { name },
     createdAt: NOW,
     baseRevision: 1,
+  };
+}
+
+function laterRenameOperation(name = "Later"): WorkspaceOperation {
+  return {
+    ...renameOperation(name),
+    operationId: "40000000-0000-4000-8000-000000000002",
+    sequence: 2,
   };
 }
 
@@ -264,5 +283,161 @@ describe("WorkspaceSyncCoordinator reads", () => {
     await Promise.all([starting, mutation]);
 
     expect(settledBeforeNetwork).toBe(true);
+  });
+});
+
+describe("WorkspaceSyncCoordinator writes", () => {
+  it("persists an optimistic mutation before its one immediate write settles", async () => {
+    let resolveApply!: (value: Awaited<ReturnType<WorkspaceSyncTransport["applyOperations"]>>) => void;
+    const pendingApply = new Promise<Awaited<ReturnType<WorkspaceSyncTransport["applyOperations"]>>>((resolve) => { resolveApply = resolve; });
+    const syncTransport = transport({ applyOperations: vi.fn(() => pendingApply) });
+    const { coordinator, storage } = await setup({ syncTransport });
+    const operation = renameOperation();
+
+    const submitting = coordinator.submit(operation);
+    await vi.waitFor(() => expect(syncTransport.applyOperations).toHaveBeenCalledOnce());
+    const optimistic = await storage.loadOrThrow();
+    expect(optimistic.snapshot.spaces[0].name).toBe("Optimistic");
+    expect(optimistic.queue).toEqual([expect.objectContaining({ operation, state: "waiting", attemptedAt: NEXT })]);
+
+    resolveApply({
+      revision: 2,
+      outcomes: [{ operationId: OPERATION_ID, status: "applied" }],
+      patches: { spaces: [], collections: [], links: [] },
+      tombstones: [],
+      conflicts: [],
+    });
+    await submitting;
+
+    expect((await storage.loadOrThrow()).queue).toEqual([]);
+    expect((await storage.loadOrThrow()).revision).toBe(2);
+    expect(syncTransport.applyOperations).toHaveBeenCalledWith([operation], 1);
+  });
+
+  it("keeps a failed optimistic mutation and blocks later operations in sequence", async () => {
+    const syncTransport = transport({ applyOperations: vi.fn(async () => { throw new Error("Network unavailable"); }) });
+    const { coordinator, storage } = await setup({ syncTransport });
+    const first = renameOperation();
+    const second = laterRenameOperation();
+
+    await expect(coordinator.submit(first)).rejects.toBeInstanceOf(WorkspaceWriteFailedError);
+    await expect(coordinator.submit(second)).rejects.toBeInstanceOf(WorkspaceWriteBlockedError);
+
+    const local = await storage.loadOrThrow();
+    expect(local.snapshot.spaces[0].name).toBe("Later");
+    expect(local.queue).toEqual([
+      expect.objectContaining({ operation: first, state: "failed", error: "Network unavailable" }),
+      expect.objectContaining({ operation: second, state: "waiting" }),
+    ]);
+    expect(syncTransport.applyOperations).toHaveBeenCalledOnce();
+  });
+
+  it("retries the failed operation then drains the finite waiting sequence in order", async () => {
+    const first = renameOperation();
+    const second = laterRenameOperation();
+    let revision = 1;
+    const syncTransport = transport({
+      applyOperations: vi.fn(async (operations: WorkspaceOperation[]) => ({
+        revision: ++revision,
+        outcomes: operations.map((operation) => ({ operationId: operation.operationId, status: "applied" as const })),
+        patches: { spaces: [], collections: [], links: [] },
+        tombstones: [],
+        conflicts: [],
+      })),
+    });
+    const { coordinator, storage } = await setup({
+      initial: state({
+        snapshot: workspace("Later"),
+        queue: [
+          { operation: first, state: "failed", error: "Network unavailable" },
+          { operation: second, state: "waiting" },
+        ],
+        nextSequence: 3,
+        sync: { phase: "failed", error: "Network unavailable" },
+      }),
+      syncTransport,
+    });
+
+    await coordinator.retryFailed();
+
+    expect(vi.mocked(syncTransport.applyOperations).mock.calls.map(([operations]) => operations.map((operation) => operation.operationId)))
+      .toEqual([[first.operationId], [second.operationId]]);
+    expect((await storage.loadOrThrow()).queue).toEqual([]);
+    expect((await storage.loadOrThrow()).sync.phase).toBe("synced");
+  });
+
+  it("performs one canonical rebase and one bounded retry after a revision conflict", async () => {
+    const operation = renameOperation();
+    const applyOperations = vi.fn()
+      .mockRejectedValueOnce(new WorkspaceRevisionConflictError())
+      .mockResolvedValueOnce({
+        revision: 3,
+        outcomes: [{ operationId: operation.operationId, status: "applied" as const }],
+        patches: { spaces: [], collections: [], links: [] },
+        tombstones: [],
+        conflicts: [],
+      });
+    const syncTransport = transport({
+      applyOperations,
+      loadCanonical: vi.fn(async () => ({ revision: 2, snapshot: workspace("Server"), tombstones: [] })),
+    });
+    const { coordinator, storage } = await setup({ syncTransport });
+
+    await coordinator.submit(operation);
+
+    expect(applyOperations).toHaveBeenCalledTimes(2);
+    expect(applyOperations.mock.calls[0][1]).toBe(1);
+    expect(applyOperations.mock.calls[1][1]).toBe(2);
+    expect(syncTransport.loadCanonical).toHaveBeenCalledOnce();
+    expect((await storage.loadOrThrow()).snapshot.spaces[0].name).toBe("Optimistic");
+    expect((await storage.loadOrThrow()).queue).toEqual([]);
+  });
+
+  it("stops after the bounded conflict retry fails", async () => {
+    const applyOperations = vi.fn(async () => { throw new WorkspaceRevisionConflictError(); });
+    const syncTransport = transport({
+      applyOperations,
+      loadCanonical: vi.fn(async () => ({ revision: 2, snapshot: workspace("Server"), tombstones: [] })),
+    });
+    const { coordinator, storage } = await setup({ syncTransport });
+
+    await expect(coordinator.submit(renameOperation())).rejects.toBeInstanceOf(WorkspaceWriteFailedError);
+
+    expect(applyOperations).toHaveBeenCalledTimes(2);
+    expect(syncTransport.loadCanonical).toHaveBeenCalledOnce();
+    expect((await storage.loadOrThrow()).queue[0]).toMatchObject({ state: "failed" });
+  });
+
+  it("removes an impossible operation and applies its remote tombstone as action required", async () => {
+    const operation = renameOperation();
+    const syncTransport = transport({
+      applyOperations: vi.fn(async () => ({
+        revision: 2,
+        outcomes: [{ operationId: operation.operationId, status: "rejected" as const, code: "missing_parent", message: "Space was deleted elsewhere" }],
+        patches: { spaces: [], collections: [], links: [] },
+        tombstones: [{ entity: "space" as const, entityId: SPACE_ID, deletedRevision: 2, deletedAt: NEXT }],
+        conflicts: [{ operationId: operation.operationId, code: "missing_parent", message: "Space was deleted elsewhere" }],
+      })),
+    });
+    const { coordinator, storage } = await setup({ syncTransport });
+
+    await expect(coordinator.submit(operation)).rejects.toBeInstanceOf(WorkspaceConflictActionRequiredError);
+
+    const local = await storage.loadOrThrow();
+    expect(local.queue).toEqual([]);
+    expect(local.snapshot.spaces).toEqual([]);
+    expect(local.sync).toMatchObject({ phase: "failed", error: "Space was deleted elsewhere" });
+  });
+
+  it.each([
+    [new RemoteWorkspaceAuthenticationError("Session expired"), WorkspaceAuthenticationError],
+    [new TypeError("Failed to fetch"), WorkspaceOfflineError],
+  ])("returns a typed UI error for %s", async (transportError, ExpectedError) => {
+    const syncTransport = transport({ applyOperations: vi.fn(async () => { throw transportError; }) });
+    const { coordinator, storage } = await setup({ syncTransport });
+
+    await expect(coordinator.submit(renameOperation())).rejects.toBeInstanceOf(ExpectedError);
+
+    expect((await storage.loadOrThrow()).queue[0]).toMatchObject({ state: "failed", error: transportError.message });
   });
 });

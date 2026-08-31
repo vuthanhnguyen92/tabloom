@@ -226,6 +226,7 @@ describe("LocalFirstStorage", () => {
       ...first,
       operationId: "40000000-0000-4000-8000-000000000002",
       sequence: 2,
+      action: "update",
       payload: { name: "Renamed again" },
     };
     const optimistic = snapshot();
@@ -248,7 +249,7 @@ describe("LocalFirstStorage", () => {
     });
   });
 
-  it("turns an interrupted waiting attempt into an explicit retry failure", async () => {
+  it("does not mistake another page's live write attempt for an interruption", async () => {
     const pending = operation();
     const attemptedAt = "2026-08-31T00:01:00.000Z";
     const { area } = memoryArea({
@@ -263,13 +264,17 @@ describe("LocalFirstStorage", () => {
 
     const loaded = await new LocalFirstStorage(area, USER_ID).loadOrThrow();
 
-    expect(loaded.queue).toEqual([{
+    expect(loaded.queue).toEqual([{ operation: pending, state: "waiting", attemptedAt }]);
+    expect(loaded.sync.phase).toBe("synced");
+
+    const recovered = await new LocalFirstStorage(area, USER_ID).normalizeInterruptedAttempts();
+    expect(recovered.queue).toEqual([{
       operation: pending,
       state: "failed",
       attemptedAt,
       error: expect.stringMatching(/interrupted.*retry/i),
     }]);
-    expect(loaded.sync).toMatchObject({ phase: "failed", error: expect.stringMatching(/interrupted.*retry/i) });
+    expect(recovered.sync).toMatchObject({ phase: "failed", error: expect.stringMatching(/interrupted.*retry/i) });
   });
 
   it("observes only this account's workspace keys and unsubscribes cleanly", async () => {
