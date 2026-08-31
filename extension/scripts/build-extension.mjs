@@ -2,12 +2,14 @@ import { copyFileSync, mkdirSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { writeAuthReport } from "./extension-identity.mjs";
+import { generateExtensionIcons } from "./generate-extension-icons.mjs";
 
 const root = resolve(import.meta.dirname, "../..");
 const authCallbacks = JSON.parse(readFileSync(resolve(root, "extension/manifests/auth-callbacks.json"), "utf8"));
 const supportedTargets = ["chromium", "firefox", "safari"];
 const targetArg = process.argv.find((argument) => argument.startsWith("--target="))?.split("=")[1];
 const targets = targetArg ? [targetArg] : supportedTargets;
+const markSource = resolve(root, "shared/assets/tabloom-mark.svg");
 
 if (targets.some((target) => !supportedTargets.includes(target))) {
   throw new Error(`Unknown browser target. Use one of: ${supportedTargets.join(", ")}.`);
@@ -26,6 +28,7 @@ for (const target of targets) {
   const manifestSource = resolve(root, "extension/manifests", `${target}.json`);
   copyFileSync(manifestSource, resolve(output, "manifest.json"));
   copyFileSync(resolve(root, "extension/auth-callback.html"), resolve(output, "auth-callback.html"));
+  await generateExtensionIcons(output, markSource);
   const manifest = JSON.parse(readFileSync(manifestSource, "utf8"));
   writeAuthReport(resolve(root, "dist-extension/reports"), target, manifest, authCallbacks);
 }

@@ -3,6 +3,12 @@ import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
 const targets = ["chromium", "firefox", "safari"] as const;
+const icons = {
+  "16": "icons/icon-16.png",
+  "32": "icons/icon-32.png",
+  "48": "icons/icon-48.png",
+  "128": "icons/icon-128.png",
+};
 
 describe("browser manifests", () => {
   it.each(targets)("defines a new-tab MV3 build for %s", (target) => {
@@ -10,6 +16,7 @@ describe("browser manifests", () => {
     expect(manifest.manifest_version).toBe(3);
     expect(manifest.chrome_url_overrides).toEqual({ newtab: "index.html" });
     expect(manifest.permissions).toEqual(expect.arrayContaining(["tabs", "storage"]));
+    expect(manifest.icons).toEqual(icons);
     if (target !== "safari") expect(manifest.permissions).toContain("identity");
     expect(manifest.host_permissions).toContain("https://*.supabase.co/*");
   });
