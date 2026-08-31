@@ -55,7 +55,7 @@ describe("BrowserWorkspaceCache", () => {
     expect(state[LOCAL_WORKSPACE_KEY]).toMatchObject({ snapshot });
     expect(state[cloudWorkspaceKey("user-a")]).toMatchObject({ version: 2, snapshot: userACloud, revision: 2 });
     expect(state[cloudWorkspaceKey("user-b")]).toMatchObject({ revision: 5 });
-    expect(state[syncStateKey("user-a")]).toMatchObject({ version: 2, phase: "synced", revision: 2 });
+    expect(state[syncStateKey("user-a")]).toMatchObject({ version: 3, phase: "synced", revision: 2 });
   });
 
   it("migrates user-created content from the legacy key once", async () => {

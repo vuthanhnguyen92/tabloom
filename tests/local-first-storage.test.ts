@@ -223,11 +223,15 @@ describe("LocalFirstStorage", () => {
   it("migrates a legacy outbox into a blocked queue without losing optimistic data", async () => {
     const first = operation();
     const second: WorkspaceOperation = {
-      ...first,
       operationId: "40000000-0000-4000-8000-000000000002",
+      deviceId: DEVICE_ID,
       sequence: 2,
+      entity: "space",
+      entityId: "10000000-0000-4000-8000-000000000001",
       action: "update",
       payload: { name: "Renamed again" },
+      createdAt: NOW,
+      baseRevision: 2,
     };
     const optimistic = snapshot();
     optimistic.spaces[0] = { ...optimistic.spaces[0], name: "Renamed again" };

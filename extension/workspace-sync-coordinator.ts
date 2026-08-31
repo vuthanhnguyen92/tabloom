@@ -400,8 +400,7 @@ export class WorkspaceSyncCoordinator implements WorkspaceSyncCoordinatorContrac
               return { ...entry, state: "failed" as const, attemptedAt, error: message };
             }
             if (eligibleIds.has(entry.operation.operationId)) {
-              const { attemptedAt: _attemptedAt, error: _error, ...waiting } = entry;
-              return { ...waiting, state: "waiting" as const };
+              return { operation: entry.operation, state: "waiting" as const };
             }
             return entry;
           });

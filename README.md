@@ -19,6 +19,8 @@ npm run dev -- --port 4173
 
 The extension is local-first: without Supabase it creates a persistent browser workspace and keeps every space, collection, and saved link in extension storage. Supabase is required only for account sign-in and cross-device synchronization.
 
+Signed-in synchronization is event-driven. Tabloom reads remote changes once on first open and when its tab genuinely regains focus; it does not poll or continuously sync in the background. Local edits are saved optimistically and sent immediately in order. If a write fails, the local edit remains available, later writes wait behind it, and the account menu shows **Failed to sync** with an explicit **Retry sync** action.
+
 Useful commands:
 
 ```bash
@@ -43,7 +45,7 @@ Row-level security ensures every user can read and change only rows whose `user_
 ## Remote MCP authorization
 
 The remote MCP service uses a dedicated authorization facade at
-`https://tabloom-mcp.vercel.app`; direct Supabase OAuth access tokens are not
+`https://tabloom-mcp.nickvu.dev`; direct Supabase OAuth access tokens are not
 accepted by `/api/mcp`. The facade issues ES256 tokens bound to the exact MCP
 resource and the single `tabloom:workspace` scope, while its encrypted inner
 Supabase credential preserves request-local RLS enforcement.
@@ -52,7 +54,7 @@ Supabase Google login for the web app and browser extensions remains unchanged.
 The additional upstream callback for the facade is exactly:
 
 ```text
-https://tabloom-mcp.vercel.app/oauth/callback/supabase
+https://tabloom-mcp.nickvu.dev/oauth/callback/supabase
 ```
 
 Keep the existing web and exact extension callbacks when adding it. Private
