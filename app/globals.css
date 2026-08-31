@@ -25,11 +25,7 @@ button { color: inherit; }
 
 .brand { display: inline-flex; align-items: center; gap: 10px; font-weight: 800; letter-spacing: -0.05em; }
 .brand-name { font-size: 22px; }
-.brand-mark { position: relative; width: 31px; height: 31px; display: inline-block; transform: rotate(-8deg); }
-.brand-mark span { position: absolute; width: 16px; height: 19px; border-radius: 50% 50% 50% 10%; transform-origin: bottom right; background: var(--coral); }
-.brand-mark span:nth-child(1) { left: 0; top: 7px; transform: rotate(-42deg); }
-.brand-mark span:nth-child(2) { left: 8px; top: 1px; background: #fa9c70; transform: rotate(1deg); }
-.brand-mark span:nth-child(3) { right: 0; top: 7px; background: var(--violet); transform: rotate(42deg); }
+.brand-mark { width: 31px; height: 31px; display: block; flex: none; }
 .brand-link { display: inline-flex; }
 
 .marketing-header { height: 78px; padding: 0 clamp(24px, 6vw, 96px); display: flex; align-items: center; justify-content: space-between; position: sticky; top: 0; z-index: 50; background: color-mix(in srgb, var(--paper) 88%, transparent); backdrop-filter: blur(18px); border-bottom: 1px solid rgba(233,229,223,.72); }
