@@ -4,6 +4,7 @@ export type ExtensionOAuthErrorCode =
   | "cancelled"
   | "timeout"
   | "redirect_not_allowed"
+  | "interaction_required"
   | "provider_error"
   | "platform_unavailable"
   | "invalid_callback";
@@ -20,6 +21,11 @@ export class ExtensionOAuthError extends Error {
 }
 
 type OAuthIdentity = Pick<BrowserAdapter["identity"], "getRedirectURL" | "launchWebAuthFlow">;
+
+export interface ExtensionOAuthOptions {
+  interactive?: boolean;
+  selectAccount?: boolean;
+}
 
 export type ExtensionOAuthSession = {
   user: {
@@ -41,7 +47,7 @@ export type ExtensionOAuthClient = {
       options: {
         redirectTo: string;
         skipBrowserRedirect: true;
-        queryParams?: { prompt: "select_account" };
+        queryParams?: { prompt: "none" | "select_account" };
       };
     }): Promise<{ data: { url: string | null }; error: Error | null }>;
     exchangeCodeForSession(code: string): Promise<{
@@ -85,6 +91,10 @@ export function parseOAuthCallback(responseUrl: string, expectedRedirectUrl: str
 
   const parameters = callbackParameters(response);
   if (parameters.has("error")) {
+    const error = parameters.get("error");
+    if (error === "login_required" || error === "interaction_required" || error === "consent_required") {
+      throw new ExtensionOAuthError("interaction_required", "Reconnect to restore your workspace.");
+    }
     throw new ExtensionOAuthError("provider_error", "Google sign-in was not completed.");
   }
 
@@ -93,9 +103,16 @@ export function parseOAuthCallback(responseUrl: string, expectedRedirectUrl: str
   return code;
 }
 
-function normalizeLaunchError(reason: unknown, expectedRedirectUrl: string): ExtensionOAuthError {
+function normalizeLaunchError(
+  reason: unknown,
+  expectedRedirectUrl: string,
+  interactive: boolean,
+): ExtensionOAuthError {
   const message = reason instanceof Error ? reason.message.toLowerCase() : "";
   if (message.includes("could not be loaded")) {
+    if (!interactive) {
+      return new ExtensionOAuthError("interaction_required", "Reconnect to restore your workspace.");
+    }
     return new ExtensionOAuthError(
       "redirect_not_allowed",
       `Authentication could not return to Tabloom. Add ${expectedRedirectUrl} to Supabase Auth redirect URLs.`,
@@ -111,19 +128,30 @@ function normalizeLaunchError(reason: unknown, expectedRedirectUrl: string): Ext
   return new ExtensionOAuthError("platform_unavailable", "This browser could not start Google sign-in.");
 }
 
+export function isSilentOAuthMiss(reason: unknown): boolean {
+  return reason instanceof ExtensionOAuthError && [
+    "interaction_required",
+    "cancelled",
+    "platform_unavailable",
+    "timeout",
+  ].includes(reason.code);
+}
+
 export async function runExtensionGoogleOAuth(
   client: ExtensionOAuthClient,
   identity: OAuthIdentity,
   target: BrowserTarget,
-  options: { selectAccount?: boolean } = {},
+  options: ExtensionOAuthOptions = {},
 ) {
   const redirectTo = callbackForTarget(target, identity);
+  const interactive = options.interactive ?? true;
+  const prompt = options.selectAccount ? "select_account" : interactive ? undefined : "none";
   const started = await client.auth.signInWithOAuth({
     provider: "google",
     options: {
       redirectTo,
       skipBrowserRedirect: true,
-      ...(options.selectAccount ? { queryParams: { prompt: "select_account" as const } } : {}),
+      ...(prompt ? { queryParams: { prompt } } : {}),
     },
   });
   if (started.error || !started.data.url) {
@@ -132,9 +160,9 @@ export async function runExtensionGoogleOAuth(
 
   let responseUrl: string | undefined;
   try {
-    responseUrl = await identity.launchWebAuthFlow({ url: started.data.url, interactive: true });
+    responseUrl = await identity.launchWebAuthFlow({ url: started.data.url, interactive });
   } catch (reason) {
-    throw normalizeLaunchError(reason, redirectTo);
+    throw normalizeLaunchError(reason, redirectTo, interactive);
   }
   if (!responseUrl) throw new ExtensionOAuthError("cancelled", "Google sign-in was cancelled.");
 

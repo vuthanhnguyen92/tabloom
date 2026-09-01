@@ -12,5 +12,10 @@ export const extensionSupabase = url && key && !url.includes("your-project")
 
 export async function signInExtensionWithGoogle(options: { selectAccount?: boolean } = {}) {
   if (!extensionSupabase) throw new Error("Supabase is not configured.");
-  return runExtensionGoogleOAuth(extensionSupabase, browserAdapter.identity, browserTarget, options);
+  return runExtensionGoogleOAuth(extensionSupabase, browserAdapter.identity, browserTarget, { ...options, interactive: true });
+}
+
+export async function recoverExtensionSessionSilently() {
+  if (!extensionSupabase) throw new Error("Supabase is not configured.");
+  return runExtensionGoogleOAuth(extensionSupabase, browserAdapter.identity, browserTarget, { interactive: false });
 }

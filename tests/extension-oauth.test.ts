@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   ExtensionOAuthError,
   callbackForTarget,
+  isSilentOAuthMiss,
   parseOAuthCallback,
   runExtensionGoogleOAuth,
 } from "../extension/auth/oauth";
@@ -105,5 +106,42 @@ describe("extension OAuth", () => {
         skipBrowserRedirect: true,
       },
     });
+  });
+
+  it("uses prompt none and a hidden browser flow for silent recovery", async () => {
+    const expected = "https://stable-id.chromiumapp.org/auth-callback";
+    const supabase = client();
+    const identity = {
+      getRedirectURL: () => expected,
+      launchWebAuthFlow: vi.fn(async () => `${expected}?code=silent-code`),
+    };
+
+    await runExtensionGoogleOAuth(supabase, identity, "chromium", {
+      interactive: false,
+    });
+
+    expect(supabase.auth.signInWithOAuth).toHaveBeenCalledWith({
+      provider: "google",
+      options: {
+        queryParams: { prompt: "none" },
+        redirectTo: expected,
+        skipBrowserRedirect: true,
+      },
+    });
+    expect(identity.launchWebAuthFlow).toHaveBeenCalledWith({
+      url: "https://accounts.example/authorize",
+      interactive: false,
+    });
+  });
+
+  it("classifies a provider login requirement as a silent recovery miss", () => {
+    const expected = "https://stable-id.chromiumapp.org/auth-callback";
+
+    try {
+      parseOAuthCallback(`${expected}?error=login_required`, expected);
+      throw new Error("Expected the callback to fail.");
+    } catch (reason) {
+      expect(isSilentOAuthMiss(reason)).toBe(true);
+    }
   });
 });
