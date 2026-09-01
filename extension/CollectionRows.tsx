@@ -1,5 +1,5 @@
-import { ArrowDown, ArrowUp, ChevronRight, GripVertical, Trash2, X } from "lucide-react";
-import { Fragment, useEffect, useState, type DragEvent } from "react";
+import { ArrowDown, ArrowUp, ChevronRight, GripVertical, Pencil, Trash2, X } from "lucide-react";
+import { Fragment, useEffect, useRef, useState, type DragEvent } from "react";
 import type { Collection, SavedLink } from "../shared/domain";
 import { findDuplicateLink, hostnameFor } from "../shared/domain";
 import type { WorkspaceRepository } from "../shared/repository";
@@ -54,11 +54,21 @@ export function CollectionRows({ collections, links, allLinks = links, bookmarkD
   const [pendingDeleteLink, setPendingDeleteLink] = useState<SavedLink | null>(null);
   const [removingCollectionId, setRemovingCollectionId] = useState<string | null>(null);
   const [removingLinkId, setRemovingLinkId] = useState<string | null>(null);
+  const [editingCollection, setEditingCollection] = useState<{ id: string; originalName: string; value: string; error?: string } | null>(null);
+  const [optimisticCollectionNames, setOptimisticCollectionNames] = useState<Record<string, string>>({});
+  const collectionNameInputRef = useRef<HTMLInputElement>(null);
   const [collapsedState, setCollapsedState] = useState<{ scope: string; ids: Set<string>; ready: boolean }>(() => ({ scope: collapseScope, ids: new Set(), ready: !collapsePreference }));
   const [deleting, setDeleting] = useState(false);
   const orderedCollections = [...collections].sort((a, b) => a.position - b.position);
   const canMutateCollection = (collection: Collection) => collection.origin === "saved" && !collection.read_only;
   const collectionIdsKey = orderedCollections.map((collection) => collection.id).join("\0");
+  const editingCollectionId = editingCollection?.id;
+
+  useEffect(() => {
+    if (!editingCollectionId) return;
+    collectionNameInputRef.current?.focus();
+    collectionNameInputRef.current?.select();
+  }, [editingCollectionId]);
 
   useEffect(() => {
     let active = true;
@@ -91,6 +101,42 @@ export function CollectionRows({ collections, links, allLinks = links, bookmarkD
     setLinkDropPreview(null);
     setCollectionDropPreview(null);
     setBrowserDropTarget(null);
+  }
+
+  function startRenamingCollection(collection: Collection, displayName: string) {
+    if (!canMutateCollection(collection)) return;
+    clearDrag();
+    setEditingCollection({ id: collection.id, originalName: displayName, value: displayName });
+  }
+
+  function cancelRenamingCollection() {
+    setEditingCollection(null);
+  }
+
+  async function saveCollectionName(collection: Collection) {
+    if (editingCollection?.id !== collection.id) return;
+    const name = editingCollection.value.trim();
+    if (!name) {
+      setEditingCollection((current) => current?.id === collection.id ? { ...current, error: "Collection name is required" } : current);
+      return;
+    }
+    if (name === editingCollection.originalName) {
+      setEditingCollection(null);
+      return;
+    }
+    setOptimisticCollectionNames((current) => ({ ...current, [collection.id]: name }));
+    setEditingCollection(null);
+    try {
+      await repository.updateCollection(collection.id, { name });
+      await onReload();
+      setOptimisticCollectionNames((current) => {
+        const next = { ...current };
+        delete next[collection.id];
+        return next;
+      });
+    } catch (reason) {
+      onError?.(reason instanceof Error ? reason.message : `Could not rename ${editingCollection.originalName}.`);
+    }
   }
 
   function collectionOrderForPreview(targetId: string, edge: "before" | "after") {
@@ -276,6 +322,9 @@ export function CollectionRows({ collections, links, allLinks = links, bookmarkD
       const canMutate = canMutateCollection(collection);
       const isBookmarkDropTarget = showsPreview && dragged?.kind === "browser-bookmark";
       const isRemovingCollection = removingCollectionId === collection.id;
+      const displayName = optimisticCollectionNames[collection.id] ?? collection.name;
+      const displayCollection = displayName === collection.name ? collection : { ...collection, name: displayName };
+      const isEditingCollection = editingCollection?.id === collection.id;
       const isCollapsed = collapsedState.scope === collapseScope && collapsedState.ids.has(collection.id);
       const isDraggedCollection = dragged?.kind === "collection" && dragged.id === collection.id;
       const canonicalIndex = orderedCollections.findIndex((item) => item.id === collection.id);
@@ -284,19 +333,32 @@ export function CollectionRows({ collections, links, allLinks = links, bookmarkD
       return <Fragment key={collection.id}>
       {isDraggedCollection && collectionDropPreview && <div aria-hidden="true" className="collection-drop-preview"><span>Drop collection here</span></div>}
       <article
-        aria-label={`${collection.name} collection`}
+        aria-label={`${displayName} collection`}
         aria-busy={isRemovingCollection || undefined}
         className={[showsPreview || isBrowserDropTarget ? "drop-target" : "", isBookmarkDropTarget ? "bookmark-drop-target" : "", canMutate ? "" : "read-only", isDraggedCollection ? "collection-dragging" : "", isCollapsed ? "is-collapsed" : "", isRemovingCollection ? "is-removing" : ""].filter(Boolean).join(" ") || undefined}
-        draggable={canMutate && !isRemovingCollection}
+        draggable={canMutate && !isRemovingCollection && !isEditingCollection}
         key={collection.id}
-        onDragStart={(event) => { if (!canMutate || isRemovingCollection) return event.preventDefault(); event.dataTransfer.effectAllowed = "move"; setLinkDropPreview(null); setBrowserDropTarget(null); setDragged({ kind: "collection", id: collection.id }); }}
+        onDragStart={(event) => { if (!canMutate || isRemovingCollection || isEditingCollection) return event.preventDefault(); event.dataTransfer.effectAllowed = "move"; setLinkDropPreview(null); setBrowserDropTarget(null); setDragged({ kind: "collection", id: collection.id }); }}
         onDragEnd={clearDrag}
         onDragOver={(event) => { if (!canMutate) return; allowDrop(event); if (dragged?.kind === "collection") return previewCollectionMove(event, collection.id); if (!previewBrowserTabDrop(event, collection)) previewLinkDrop(collection); }}
         onDrop={(event) => { event.preventDefault(); if (!canMutate) return clearDrag(); if (acceptBrowserTab(event, collection)) return; if (dragged?.kind === "collection") void moveCollection(collection.id); else if (dragged?.kind === "browser-bookmark") void copyBookmark(collection); else void moveLink(collection.id); }}
         role="group"
       >
         <div className="collection-content">
-        <div className="ext-col-head"><button aria-controls={`collection-body-${collection.id}`} aria-expanded={!isCollapsed} aria-label={`${isCollapsed ? "Expand" : "Collapse"} ${collection.name}`} className="collection-collapse-toggle" draggable={false} onClick={(event) => { event.stopPropagation(); toggleCollection(collection.id); }}><ChevronRight aria-hidden="true" size={17} /><b>{collection.name}</b></button>{canMutate && <div className="collection-reorder-actions"><button aria-label={`Move ${collection.name} up`} disabled={!canMoveUp} draggable={false} onClick={(event) => { event.stopPropagation(); void moveCollectionByStep(collection.id, -1); }}><ArrowUp size={14} /></button><button aria-label={`Move ${collection.name} down`} disabled={!canMoveDown} draggable={false} onClick={(event) => { event.stopPropagation(); void moveCollectionByStep(collection.id, 1); }}><ArrowDown size={14} /></button></div>}<div className="ext-col-meta"><span>{collectionLinks.length} links</span>{canMutate && <button aria-label={`Delete ${collection.name}`} className="collection-delete" draggable={false} title={`Delete ${collection.name}`} onClick={(event) => { event.stopPropagation(); setPendingDelete(collection); }}><Trash2 size={15} /></button>}</div></div>
+        <div className="ext-col-head"><div className="collection-title-group"><button aria-controls={`collection-body-${collection.id}`} aria-expanded={!isCollapsed} aria-label={`${isCollapsed ? "Expand" : "Collapse"} ${displayName}`} className="collection-collapse-toggle" draggable={false} onClick={(event) => { event.stopPropagation(); toggleCollection(collection.id); }}><ChevronRight aria-hidden="true" size={17} /></button>{isEditingCollection ? <div className="collection-name-editor"><input
+          aria-invalid={Boolean(editingCollection.error)}
+          aria-label={`Collection name for ${editingCollection.originalName}`}
+          draggable={false}
+          onBlur={() => void saveCollectionName(collection)}
+          onChange={(event) => setEditingCollection((current) => current?.id === collection.id ? { ...current, value: event.target.value, error: undefined } : current)}
+          onClick={(event) => event.stopPropagation()}
+          onKeyDown={(event) => {
+            if (event.key === "Escape") { event.preventDefault(); cancelRenamingCollection(); }
+            if (event.key === "Enter") { event.preventDefault(); void saveCollectionName(collection); }
+          }}
+          ref={collectionNameInputRef}
+          value={editingCollection.value}
+        />{editingCollection.error && <small role="alert">{editingCollection.error}</small>}</div> : canMutate ? <button aria-label={`Rename ${displayName}`} className="collection-name-edit" draggable={false} title={`Rename ${displayName}`} onClick={(event) => { event.stopPropagation(); startRenamingCollection(collection, displayName); }}><b>{displayName}</b><Pencil aria-hidden="true" size={13} /></button> : <b className="collection-name-readonly">{displayName}</b>}</div>{canMutate && !isEditingCollection && <div className="collection-reorder-actions"><button aria-label={`Move ${displayName} up`} disabled={!canMoveUp} draggable={false} onClick={(event) => { event.stopPropagation(); void moveCollectionByStep(collection.id, -1); }}><ArrowUp size={14} /></button><button aria-label={`Move ${displayName} down`} disabled={!canMoveDown} draggable={false} onClick={(event) => { event.stopPropagation(); void moveCollectionByStep(collection.id, 1); }}><ArrowDown size={14} /></button></div>}<div className="ext-col-meta"><span>{collectionLinks.length} links</span>{canMutate && !isEditingCollection && <button aria-label={`Delete ${displayName}`} className="collection-delete" draggable={false} title={`Delete ${displayName}`} onClick={(event) => { event.stopPropagation(); setPendingDelete(displayCollection); }}><Trash2 size={15} /></button>}</div></div>
         <div aria-hidden={isCollapsed} className="collection-body" id={`collection-body-${collection.id}`} inert={isCollapsed}>
         <div className="collection-body-inner">
         <div className="ext-link-grid">
@@ -320,7 +382,7 @@ export function CollectionRows({ collections, links, allLinks = links, bookmarkD
           </Fragment>; })}
           {showsPreview && !linkDropPreview.targetLinkId && <div aria-hidden="true" className="ext-link-drop-preview"><span>Drop here</span></div>}
         </div>
-        <button className="open-links" onClick={() => void onOpenCollection(collection, collectionLinks)}>Open all</button>
+        <button className="open-links" onClick={() => void onOpenCollection(displayCollection, collectionLinks)}>Open all</button>
         </div>
         </div>
         </div>

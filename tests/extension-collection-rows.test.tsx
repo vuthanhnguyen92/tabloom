@@ -118,6 +118,84 @@ describe("CollectionRows", () => {
     expect(collapsePreference.setCollapsed).toHaveBeenCalledWith("account:user-1", "collection-plan", false);
   });
 
+  it("renames an editable collection inline and persists the trimmed label", async () => {
+    const { repository, onReload } = setup();
+
+    await userEvent.click(screen.getByRole("button", { name: "Rename Plan" }));
+    const input = screen.getByRole("textbox", { name: "Collection name for Plan" });
+    await userEvent.clear(input);
+    await userEvent.type(input, "  Product planning  {Enter}");
+
+    await waitFor(() => expect(onReload).toHaveBeenCalledOnce());
+    expect((await repository.load()).collections.find((item) => item.id === "collection-plan")?.name).toBe("Product planning");
+  });
+
+  it("updates the visible collection label optimistically while persistence is pending", async () => {
+    const snapshot = createDemoSnapshot();
+    const repository = new MemoryWorkspaceRepository("demo-user", snapshot);
+    let releaseUpdate: () => void = () => undefined;
+    repository.updateCollection = vi.fn(() => new Promise<void>((resolve) => { releaseUpdate = resolve; }));
+    render(<CollectionRows collections={snapshot.collections} links={snapshot.links} repository={repository} onReload={vi.fn(async () => undefined)} />);
+
+    await userEvent.click(screen.getByRole("button", { name: "Rename Plan" }));
+    const input = screen.getByRole("textbox", { name: "Collection name for Plan" });
+    await userEvent.clear(input);
+    await userEvent.type(input, "Product planning{Enter}");
+
+    expect(screen.getByRole("group", { name: "Product planning collection" })).toBeInTheDocument();
+    releaseUpdate();
+  });
+
+  it("cancels collection renaming with Escape and rejects an empty label", async () => {
+    const { repository, onReload } = setup();
+
+    await userEvent.click(screen.getByRole("button", { name: "Rename Plan" }));
+    let input = screen.getByRole("textbox", { name: "Collection name for Plan" });
+    await userEvent.clear(input);
+    await userEvent.keyboard("{Escape}");
+    expect(screen.queryByRole("textbox", { name: "Collection name for Plan" })).not.toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "Rename Plan" }));
+    input = screen.getByRole("textbox", { name: "Collection name for Plan" });
+    await userEvent.clear(input);
+    await userEvent.keyboard("{Enter}");
+
+    expect(input).toHaveAttribute("aria-invalid", "true");
+    expect(screen.getByText("Collection name is required")).toBeVisible();
+    expect(onReload).not.toHaveBeenCalled();
+    expect((await repository.load()).collections.find((item) => item.id === "collection-plan")?.name).toBe("Plan");
+  });
+
+  it("keeps bookmark collections read-only instead of offering rename", () => {
+    const normal = createDemoSnapshot();
+    const bookmark = toBookmarkWorkspace("demo-user", mergeBookmarkEntries(
+      [{ id: "mac", device_name: "Work Mac", last_synced_at: null }],
+      [{ id: "entry", source_id: "mac", chrome_bookmark_id: "one", url: "https://example.com", normalized_url: "https://example.com/", title: "Browser example", folder_path: "Imported", syncing: false, position: 0 }],
+    ));
+    render(<CollectionRows collections={[normal.collections[0], bookmark.collections[0]]} links={[...normal.links, ...bookmark.links]} repository={new MemoryWorkspaceRepository("demo-user", normal)} onReload={vi.fn(async () => undefined)} />);
+
+    expect(screen.getByRole("button", { name: "Rename Plan" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Rename Imported" })).not.toBeInTheDocument();
+  });
+
+  it("keeps the optimistic collection label and reports a failed rename", async () => {
+    const snapshot = createDemoSnapshot();
+    const repository = new MemoryWorkspaceRepository("demo-user", snapshot);
+    repository.updateCollection = vi.fn(async () => { throw new Error("Failed to sync"); });
+    const onError = vi.fn();
+    const onReload = vi.fn(async () => undefined);
+    render(<CollectionRows collections={snapshot.collections} links={snapshot.links} repository={repository} onError={onError} onReload={onReload} />);
+
+    await userEvent.click(screen.getByRole("button", { name: "Rename Plan" }));
+    const input = screen.getByRole("textbox", { name: "Collection name for Plan" });
+    await userEvent.clear(input);
+    await userEvent.type(input, "Product planning{Enter}");
+
+    await waitFor(() => expect(onError).toHaveBeenCalledWith("Failed to sync"));
+    expect(screen.getByRole("group", { name: "Product planning collection" })).toBeInTheDocument();
+    expect(onReload).not.toHaveBeenCalled();
+  });
+
   it("keeps the hidden collection delete action out of the header layout", () => {
     setup();
 
