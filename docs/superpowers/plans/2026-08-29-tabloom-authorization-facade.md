@@ -695,7 +695,7 @@ Generate one ES256 private JWK and one 32-byte encryption root with versioned ra
 
 Update `.env.example` with template-only facade variables and document that enabled production requires private key-ring values in Vercel. Replace direct-Supabase OAuth instructions with the fixed upstream redirect:
 
-`https://tabloom-mcp.vercel.app/oauth/callback/supabase`
+`https://tabloom-mcp.nickvu.dev/oauth/callback/supabase`
 
 - [ ] **Step 3: Verify probe and documentation changes locally**
 
@@ -778,7 +778,7 @@ After Task 11 passes, resume `docs/superpowers/plans/2026-08-29-tabloom-remote-m
 - `createWorkspaceContext` consumes `VerifiedFacadeAuthInfo.extra.requestContext` instead of treating `authInfo.token` as a Supabase token.
 - Every workspace repository uses the request-local Supabase client already validated by the facade.
 - Original OAuth-shaped SQL test claims use the Supabase inner user identity only; MCP outer claims are tested at the Vercel boundary.
-- Original deployment metadata expects issuer `https://tabloom-mcp.vercel.app`, scope `tabloom:workspace`, and the facade's registration/revocation endpoints.
+- Production deployment metadata expects issuer `https://tabloom-mcp.nickvu.dev`, scope `tabloom:workspace`, and the facade's registration/revocation endpoints.
 - The original final acceptance adds refresh rotation, revocation, and nested-subject checks from this plan.
 
 Do not re-enable or reuse the failed direct-Supabase audience path.

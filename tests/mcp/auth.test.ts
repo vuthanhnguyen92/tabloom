@@ -20,7 +20,7 @@ import { createTokenVerifier } from "../../services/tabloom-mcp/src/auth/verify-
 import type { OAuthPersistence } from "../../services/tabloom-mcp/src/oauth/persistence";
 
 const NOW = 1_788_000_000;
-const ORIGIN = "https://tabloom-mcp.vercel.app";
+const ORIGIN = "https://tabloom-mcp.nickvu.dev";
 const SUPABASE_URL = "https://exact-project.supabase.co";
 const SUPABASE_ISSUER = `${SUPABASE_URL}/auth/v1`;
 const INNER_TOKEN = "configured-project-inner-access-token";

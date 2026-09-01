@@ -40,6 +40,26 @@ export interface WorkspaceSyncTransport {
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const INVALID_RESPONSE = "invalid workspace sync response";
+const DEFAULT_TIMEOUT_MS = 15_000;
+
+function withTimeout<T>(operation: PromiseLike<T>, timeoutMs: number): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(
+      () => reject(new Error("Workspace sync timed out. Your changes are still queued.")),
+      timeoutMs,
+    );
+    Promise.resolve(operation).then(
+      (value) => {
+        clearTimeout(timeout);
+        resolve(value);
+      },
+      (error) => {
+        clearTimeout(timeout);
+        reject(error);
+      },
+    );
+  });
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -128,10 +148,17 @@ function parseTombstones(value: unknown): WorkspaceTombstone[] {
 }
 
 export class SupabaseWorkspaceSyncTransport implements WorkspaceSyncTransport {
-  constructor(private readonly client: SupabaseClient) {}
+  private readonly timeoutMs: number;
+
+  constructor(
+    private readonly client: SupabaseClient,
+    { timeoutMs = DEFAULT_TIMEOUT_MS }: { timeoutMs?: number } = {},
+  ) {
+    this.timeoutMs = timeoutMs;
+  }
 
   async getRevision(): Promise<WorkspaceRevision> {
-    const result = await this.client.rpc("get_workspace_revision");
+    const result = await withTimeout(this.client.rpc("get_workspace_revision"), this.timeoutMs);
     throwWorkspaceSyncError(result.error);
     if (!isRecord(result.data)
       || !isRevision(result.data.revision)
@@ -146,10 +173,10 @@ export class SupabaseWorkspaceSyncTransport implements WorkspaceSyncTransport {
     operations: WorkspaceOperation[],
     expectedRevision: number,
   ): Promise<ApplyOperationsResult> {
-    const result = await this.client.rpc("apply_workspace_operations", {
+    const result = await withTimeout(this.client.rpc("apply_workspace_operations", {
       operations,
       expected_revision: expectedRevision,
-    });
+    }), this.timeoutMs);
     throwWorkspaceSyncError(result.error);
     if (!isRecord(result.data)
       || !isRevision(result.data.revision)
@@ -172,7 +199,7 @@ export class SupabaseWorkspaceSyncTransport implements WorkspaceSyncTransport {
   }
 
   async loadCanonical(): Promise<CanonicalWorkspaceState> {
-    const result = await this.client.rpc("load_workspace_snapshot");
+    const result = await withTimeout(this.client.rpc("load_workspace_snapshot"), this.timeoutMs);
     throwWorkspaceSyncError(result.error);
     if (!isRecord(result.data) || !isRevision(result.data.revision)) {
       throw new Error(INVALID_RESPONSE);

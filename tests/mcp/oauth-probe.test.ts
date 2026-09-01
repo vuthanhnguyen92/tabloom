@@ -1206,7 +1206,7 @@ describe("live MCP facade acceptance fixture schema", () => {
   function validFixture(directory: string) {
     return {
       version: 1,
-      resource: "https://tabloom-mcp.vercel.app",
+      resource: "https://tabloom-mcp.nickvu.dev",
       supabaseUrl: "https://tctjlsvfufzxhauhywsm.supabase.co",
       supabaseAnonKey: "public-anon-key",
       quiescentAcceptanceAccounts: true,

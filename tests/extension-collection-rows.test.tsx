@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, createEvent, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { readFileSync } from "node:fs";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
@@ -27,6 +27,30 @@ function setup() {
 const createDataTransfer = (types: string[] = []) => ({ effectAllowed: "none", dropEffect: "none", types, getData: () => "" });
 
 describe("CollectionRows", () => {
+  it("does not paint expanded collections before stored collapse state is ready", async () => {
+    const snapshot = createDemoSnapshot();
+    let restore: (value: Set<string>) => void = () => undefined;
+    const collapsePreference = {
+      reconcile: vi.fn(() => new Promise<Set<string>>((resolve) => { restore = resolve; })),
+      setCollapsed: vi.fn(async () => undefined),
+    };
+    render(<CollectionRows
+      collapsePreference={collapsePreference}
+      collapseScope="account:user-1"
+      collections={snapshot.collections}
+      links={snapshot.links}
+      repository={new MemoryWorkspaceRepository("demo-user", snapshot)}
+      onReload={vi.fn(async () => undefined)}
+    />);
+
+    expect(screen.queryByRole("group", { name: "Plan collection" })).not.toBeInTheDocument();
+    expect(screen.getByRole("status", { name: "Restoring collection layout" })).toBeInTheDocument();
+
+    restore(new Set(["collection-plan"]));
+
+    expect(await screen.findByRole("button", { name: "Expand Plan" })).toBeVisible();
+  });
+
   it("shows a saved-card favicon and falls back to its first letter when loading fails", () => {
     const snapshot = createDemoSnapshot();
     snapshot.links[0].favicon_url = "https://linear.app/favicon.ico";
@@ -38,6 +62,117 @@ describe("CollectionRows", () => {
     fireEvent.error(favicon!);
     expect(card.querySelector("img")).not.toBeInTheDocument();
     expect(within(card).getByText("P", { exact: true })).toBeVisible();
+  });
+
+  it("keeps saved-link cards click-first while showing a compact drag affordance", () => {
+    setup();
+
+    const card = screen.getByRole("link", { name: /Product roadmap/i });
+    const indicator = card.querySelector(".card-drag-indicator");
+    expect(getComputedStyle(card).cursor).toBe("pointer");
+    expect(indicator).toBeInTheDocument();
+    expect(getComputedStyle(indicator!).pointerEvents).toBe("none");
+  });
+
+  it("shows the grabbing cursor after a saved-link drag starts", () => {
+    setup();
+    const card = screen.getByRole("link", { name: /Product roadmap/i });
+
+    expect(getComputedStyle(card).cursor).toBe("pointer");
+    fireEvent.dragStart(card, { dataTransfer: createDataTransfer() });
+
+    expect(card).toHaveClass("dragging");
+    expect(getComputedStyle(card).cursor).toBe("grabbing");
+  });
+
+  it("restores and toggles a collection's locally remembered collapsed state", async () => {
+    const snapshot = createDemoSnapshot();
+    const collapsePreference = {
+      reconcile: vi.fn(async () => new Set(["collection-plan"])),
+      setCollapsed: vi.fn(async () => undefined),
+    };
+    render(<CollectionRows
+      collapsePreference={collapsePreference}
+      collapseScope="account:user-1"
+      collections={snapshot.collections}
+      links={snapshot.links}
+      repository={new MemoryWorkspaceRepository("demo-user", snapshot)}
+      onReload={vi.fn(async () => undefined)}
+    />);
+
+    const toggle = await screen.findByRole("button", { name: "Expand Plan" });
+    const collection = screen.getByRole("group", { name: "Plan collection" });
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    expect(toggle.querySelector("svg")).toBeInTheDocument();
+    expect(collection).toHaveClass("is-collapsed");
+    expect(getComputedStyle(collection.querySelector(".collection-body")!).gridTemplateRows).toBe("0fr");
+
+    await userEvent.click(toggle);
+
+    expect(screen.getByRole("button", { name: "Collapse Plan" })).toHaveAttribute("aria-expanded", "true");
+    expect(collection).not.toHaveClass("is-collapsed");
+    expect(getComputedStyle(collection.querySelector(".collection-body")!).gridTemplateRows).toBe("1fr");
+    expect(collapsePreference.setCollapsed).toHaveBeenCalledWith("account:user-1", "collection-plan", false);
+  });
+
+  it("keeps the hidden collection delete action out of the header layout", () => {
+    setup();
+
+    const deleteButton = screen.getByRole("button", { name: "Delete Plan" });
+    const metadata = deleteButton.closest(".ext-col-meta");
+
+    expect(getComputedStyle(metadata!).position).toBe("relative");
+    expect(getComputedStyle(deleteButton).position).toBe("absolute");
+    expect(getComputedStyle(deleteButton).right).toBe("0px");
+  });
+
+  it("asks for confirmation before deleting a saved-link card", async () => {
+    const { repository } = setup();
+
+    fireEvent.click(screen.getByRole("button", { name: "Delete Product roadmap" }));
+    const dialog = screen.getByRole("dialog", { name: "Delete Product roadmap link" });
+    expect(dialog).toHaveTextContent("The saved link will be permanently removed");
+
+    await userEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    expect(screen.queryByRole("dialog", { name: "Delete Product roadmap link" })).not.toBeInTheDocument();
+    expect((await repository.load()).links.some((item) => item.title === "Product roadmap")).toBe(true);
+  });
+
+  it("deletes a saved-link card after confirmation", async () => {
+    const snapshot = createDemoSnapshot();
+    const repository = new MemoryWorkspaceRepository("demo-user", snapshot);
+    const onReload = vi.fn(async () => undefined);
+    const onMessage = vi.fn();
+    render(<CollectionRows collections={snapshot.collections} links={snapshot.links} repository={repository} onReload={onReload} onMessage={onMessage} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Delete Product roadmap" }));
+    await userEvent.click(screen.getByRole("button", { name: "Delete link permanently" }));
+
+    await waitFor(() => expect(onReload).toHaveBeenCalledOnce());
+    expect((await repository.load()).links.some((item) => item.title === "Product roadmap")).toBe(false);
+    expect(onMessage).toHaveBeenCalledWith("Product roadmap deleted");
+  });
+
+  it("animates a saved-link card out before reloading its collection", async () => {
+    vi.useFakeTimers();
+    try {
+      const snapshot = createDemoSnapshot();
+      const repository = new MemoryWorkspaceRepository("demo-user", snapshot);
+      const onReload = vi.fn(async () => undefined);
+      render(<CollectionRows collections={snapshot.collections} links={snapshot.links} repository={repository} onReload={onReload} />);
+
+      fireEvent.click(screen.getByRole("button", { name: "Delete Product roadmap" }));
+      fireEvent.click(screen.getByRole("button", { name: "Delete link permanently" }));
+
+      expect(screen.queryByRole("dialog", { name: "Delete Product roadmap link" })).not.toBeInTheDocument();
+      expect(screen.getByRole("link", { name: /Product roadmap/i }).closest(".ext-link-card")).toHaveClass("is-removing");
+      expect(onReload).not.toHaveBeenCalled();
+
+      await act(async () => { await vi.advanceTimersByTimeAsync(200); });
+      expect(onReload).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("renders bookmark collections as locked and bookmark cards as copy drag sources", () => {
@@ -106,6 +241,28 @@ describe("CollectionRows", () => {
     expect(remaining.collections.some((item) => item.id === "collection-plan")).toBe(false);
     expect(remaining.links.some((item) => item.collection_id === "collection-plan")).toBe(false);
     expect(onMessage).toHaveBeenCalledWith("Plan deleted");
+  });
+
+  it("collapses a collection before reloading the workspace", async () => {
+    vi.useFakeTimers();
+    try {
+      const snapshot = createDemoSnapshot();
+      const repository = new MemoryWorkspaceRepository("demo-user", snapshot);
+      const onReload = vi.fn(async () => undefined);
+      render(<CollectionRows collections={snapshot.collections} links={snapshot.links} repository={repository} onReload={onReload} />);
+
+      fireEvent.click(screen.getByRole("button", { name: "Delete Plan" }));
+      fireEvent.click(screen.getByRole("button", { name: "Delete collection permanently" }));
+
+      expect(screen.queryByRole("dialog", { name: "Delete Plan" })).not.toBeInTheDocument();
+      expect(screen.getByRole("group", { name: "Plan collection" })).toHaveClass("is-removing");
+      expect(onReload).not.toHaveBeenCalled();
+
+      await act(async () => { await vi.advanceTimersByTimeAsync(200); });
+      expect(onReload).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("keeps the confirmation open when collection deletion fails", async () => {
@@ -184,7 +341,7 @@ describe("CollectionRows", () => {
   it("renders saved-link card titles at font weight 500", () => {
     setup();
     const rules = Array.from(styleElement.sheet!.cssRules) as CSSStyleRule[];
-    const rule = rules.find((item) => item.selectorText?.split(", ").includes(".ext-link-grid > a b") && item.style.fontWeight);
+    const rule = rules.find((item) => item.selectorText?.split(", ").includes(".ext-link-card > a b") && item.style.fontWeight);
     expect(rule?.style.fontWeight).toBe("500");
   });
 
@@ -254,7 +411,7 @@ describe("CollectionRows", () => {
 
     const grid = screen.getByRole("group", { name: "Design collection" }).querySelector(".ext-link-grid")!;
     expect(grid.children[0]).toHaveClass("ext-link-drop-preview");
-    expect(grid.children[1]).toBe(target);
+    expect(grid.children[1]).toBe(target.closest(".ext-link-card"));
     expect(onReload).not.toHaveBeenCalled();
     expect((await repository.load()).links.find((link) => link.title === "Product roadmap")?.collection_id).toBe("collection-plan");
   });
@@ -284,6 +441,73 @@ describe("CollectionRows", () => {
     await waitFor(() => expect(onReload).toHaveBeenCalledOnce());
     const snapshot = await repository.load();
     expect(snapshot.collections.sort((a, b) => a.position - b.position).map((item) => item.name)).toEqual(["Learn", "Plan", "Design"]);
+  });
+
+  it("shows an insertion marker and shifts collection rows before drop", () => {
+    const { container, onReload } = setup();
+    const source = screen.getByRole("group", { name: "Learn collection" });
+    const target = screen.getByRole("group", { name: "Plan collection" });
+    vi.spyOn(target, "getBoundingClientRect").mockReturnValue({ top: 100, height: 100, bottom: 200, left: 0, right: 600, width: 600, x: 0, y: 100, toJSON: () => ({}) });
+    const dataTransfer = createDataTransfer();
+
+    fireEvent.dragStart(source, { dataTransfer });
+    fireEvent.dragOver(target, { clientY: 120, dataTransfer });
+
+    const preview = container.querySelector(".collection-drop-preview");
+    expect(preview).toBeInTheDocument();
+    expect(source).toHaveClass("collection-dragging");
+    expect(getComputedStyle(source).opacity).toBe("0.38");
+    expect(getComputedStyle(preview!).height).toBe("28px");
+    expect(screen.getAllByRole("group", { name: /collection$/i }).map((row) => row.getAttribute("aria-label"))).toEqual([
+      "Learn collection",
+      "Plan collection",
+      "Design collection",
+    ]);
+    expect(onReload).not.toHaveBeenCalled();
+
+    fireEvent.dragEnd(source, { dataTransfer });
+    expect(container.querySelector(".collection-drop-preview")).not.toBeInTheDocument();
+    expect(screen.getAllByRole("group", { name: /collection$/i }).map((row) => row.getAttribute("aria-label"))).toEqual([
+      "Plan collection",
+      "Design collection",
+      "Learn collection",
+    ]);
+  });
+
+  it("uses the pointer midpoint to preview and persist an after-target collection drop", async () => {
+    const { repository, onReload } = setup();
+    const source = screen.getByRole("group", { name: "Plan collection" });
+    const target = screen.getByRole("group", { name: "Design collection" });
+    vi.spyOn(target, "getBoundingClientRect").mockReturnValue({ top: 100, height: 100, bottom: 200, left: 0, right: 600, width: 600, x: 0, y: 100, toJSON: () => ({}) });
+    const dataTransfer = createDataTransfer();
+
+    fireEvent.dragStart(source, { dataTransfer });
+    const dragOver = createEvent.dragOver(target, { dataTransfer });
+    Object.defineProperty(dragOver, "clientY", { value: 180 });
+    fireEvent(target, dragOver);
+
+    expect(screen.getAllByRole("group", { name: /collection$/i }).map((row) => row.getAttribute("aria-label"))).toEqual([
+      "Design collection",
+      "Plan collection",
+      "Learn collection",
+    ]);
+
+    fireEvent.drop(target, { clientY: 180, dataTransfer });
+    await waitFor(() => expect(onReload).toHaveBeenCalledOnce());
+    expect((await repository.load()).collections.sort((a, b) => a.position - b.position).map((item) => item.name)).toEqual(["Design", "Plan", "Learn"]);
+  });
+
+  it("supports keyboard collection reordering with move actions", async () => {
+    const { repository, onReload } = setup();
+    const design = screen.getByRole("group", { name: "Design collection" });
+    const moveUp = within(design).getByRole("button", { name: "Move Design up" });
+    expect(getComputedStyle(moveUp.closest(".collection-reorder-actions")!).top).toBe("15px");
+
+    moveUp.focus();
+    await userEvent.keyboard("{Enter}");
+
+    await waitFor(() => expect(onReload).toHaveBeenCalledOnce());
+    expect((await repository.load()).collections.sort((a, b) => a.position - b.position).map((item) => item.name)).toEqual(["Design", "Plan", "Learn"]);
   });
 
   it("persists link position and collection when a tile is dragged", async () => {

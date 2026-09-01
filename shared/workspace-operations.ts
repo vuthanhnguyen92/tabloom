@@ -281,6 +281,12 @@ function parentDeleted(snapshot: WorkspaceSnapshot, tombstones: WorkspaceTombsto
   return false;
 }
 
+function entityExists(snapshot: WorkspaceSnapshot, entity: WorkspaceEntity, entityId: string): boolean {
+  if (entity === "space") return snapshot.spaces.some((item) => item.id === entityId);
+  if (entity === "collection") return snapshot.collections.some((item) => item.id === entityId);
+  return snapshot.links.some((item) => item.id === entityId);
+}
+
 function applyOperation(snapshot: WorkspaceSnapshot, operation: WorkspaceOperation, userId: string): WorkspaceSnapshot {
   const next = clone(snapshot);
   if (operation.action === "create") {
@@ -323,6 +329,9 @@ export function rebaseWorkspaceOperations(
   const surviving: WorkspaceOperation[] = [];
   const rejected: WorkspaceRebaseResult["rejected"] = [];
   for (const operation of [...pending].sort((left, right) => left.sequence - right.sequence)) {
+    if (operation.action === "delete" && !entityExists(snapshot, operation.entity, operation.entityId)) {
+      continue;
+    }
     if (isTombstoned(tombstones, operation.entity, operation.entityId)) {
       rejected.push({ operationId: operation.operationId, code: "deleted" });
       continue;

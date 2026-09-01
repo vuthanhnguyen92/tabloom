@@ -64,6 +64,34 @@ describe("CurrentTabsSheet", () => {
     expect(within(card).getByText("R", { exact: true })).toBeVisible();
   });
 
+  it("opens existing tabs on click and only marks saveable tabs as draggable", async () => {
+    const snapshot = createDemoSnapshot();
+    const onOpenTab = vi.fn(async () => undefined);
+    render(<CurrentTabsSheet
+      activeSpaceId="space-launch"
+      collections={snapshot.collections}
+      expanded
+      repository={new MemoryWorkspaceRepository("demo-user", snapshot)}
+      onError={vi.fn()}
+      onExpandedChange={vi.fn()}
+      onMessage={vi.fn()}
+      onOpenTab={onOpenTab}
+      onWorkspaceReload={vi.fn(async () => undefined)}
+      listTabs={vi.fn(async () => browserTabs)}
+    />);
+
+    const saveable = await screen.findByRole("button", { name: "Open Roadmap" });
+    const unsupported = screen.getByRole("button", { name: "Open Settings" });
+    expect(getComputedStyle(saveable).cursor).toBe("pointer");
+    expect(saveable.querySelector(".card-drag-indicator")).toBeInTheDocument();
+    expect(unsupported.querySelector(".card-drag-indicator")).not.toBeInTheDocument();
+
+    await userEvent.click(saveable);
+    await userEvent.click(unsupported);
+    expect(onOpenTab).toHaveBeenNthCalledWith(1, 41);
+    expect(onOpenTab).toHaveBeenNthCalledWith(2, 42);
+  });
+
   it("loads current tabs expanded and exposes drag-only controls", async () => {
     const { onExpandedChange } = setup();
     expect(await screen.findByText("Roadmap")).toBeInTheDocument();

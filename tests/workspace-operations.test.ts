@@ -172,4 +172,28 @@ describe("workspace operations", () => {
     expect(result.pending).toEqual([]);
     expect(result.rejected).toEqual([{ operationId: create.operationId, code: "deleted_parent" }]);
   });
+
+  it("completes a stale delete when the canonical entity is already absent", () => {
+    const canonical: WorkspaceSnapshot = { spaces: workspace().spaces, collections: [], links: [] };
+    const remove = operation({
+      entity: "collection",
+      entityId: COLLECTION_ID,
+      action: "delete",
+      payload: {},
+    });
+    const rename = operation({
+      operationId: "40000000-0000-4000-8000-000000000002",
+      sequence: 2,
+      entity: "space",
+      entityId: SPACE_ID,
+      action: "update",
+      payload: { name: "Still pending" },
+    });
+
+    const result = rebaseWorkspaceOperations(canonical, [], [remove, rename], USER_ID);
+
+    expect(result.pending).toEqual([rename]);
+    expect(result.rejected).toEqual([]);
+    expect(result.snapshot.spaces[0].name).toBe("Still pending");
+  });
 });

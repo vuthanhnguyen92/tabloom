@@ -1,7 +1,7 @@
 # Tabloom authorization facade operator guide
 
 The remote MCP service is a separate Vercel project at the canonical origin
-`https://tabloom-mcp.vercel.app`. That exact origin is both the OAuth issuer
+`https://tabloom-mcp.nickvu.dev`. That exact origin is both the OAuth issuer
 and protected-resource identifier. Supabase remains the upstream Google
 identity provider; it is not the MCP token issuer.
 
@@ -19,8 +19,8 @@ The Vercel service requires these public values:
   `https://tctjlsvfufzxhauhywsm.supabase.co` for the approved production
   project.
 - `SUPABASE_ANON_KEY`: the public anonymous key; never use a service-role key.
-- `TABLOOM_MCP_RESOURCE_URL`: `https://tabloom-mcp.vercel.app`.
-- `TABLOOM_OAUTH_ISSUER_URL`: `https://tabloom-mcp.vercel.app`.
+- `TABLOOM_MCP_RESOURCE_URL`: `https://tabloom-mcp.nickvu.dev`.
+- `TABLOOM_OAUTH_ISSUER_URL`: `https://tabloom-mcp.nickvu.dev`.
 - `TABLOOM_OAUTH_ENABLED`: exactly `false` for the first deployment.
 
 The private `TABLOOM_OAUTH_SIGNING_KEYS` and
@@ -155,7 +155,7 @@ After an approved disabled deployment, add this one upstream callback to
 Supabase **Authentication → URL Configuration → Redirect URLs**:
 
 ```text
-https://tabloom-mcp.vercel.app/oauth/callback/supabase
+https://tabloom-mcp.nickvu.dev/oauth/callback/supabase
 ```
 
 Keep all existing web `/app` and exact browser-extension callbacks. Do not
@@ -202,7 +202,7 @@ JWKS, refreshes once, replays the original refresh token and requires exact
 requires the same access token to receive `401` from `/api/mcp`.
 
 ```bash
-TABLOOM_MCP_RESOURCE_URL=https://tabloom-mcp.vercel.app \
+TABLOOM_MCP_RESOURCE_URL=https://tabloom-mcp.nickvu.dev \
   node scripts/probe-mcp-oauth.mjs
 ```
 
@@ -240,7 +240,7 @@ fixture shape is:
 ```json
 {
   "version": 1,
-  "resource": "https://tabloom-mcp.vercel.app",
+  "resource": "https://tabloom-mcp.nickvu.dev",
   "supabaseUrl": "https://tctjlsvfufzxhauhywsm.supabase.co",
   "supabaseAnonKey": "SUPABASE_PUBLIC_ANON_KEY_VALUE",
   "quiescentAcceptanceAccounts": true,
@@ -358,7 +358,7 @@ Run it only after explicit approval and complete fixture preparation:
 
 ```bash
 TABLOOM_E2E_MCP_LIVE=1 \
-TABLOOM_E2E_MCP_RESOURCE_URL=https://tabloom-mcp.vercel.app \
+TABLOOM_E2E_MCP_RESOURCE_URL=https://tabloom-mcp.nickvu.dev \
 TABLOOM_E2E_MCP_FIXTURE_PATH=/absolute/external/mcp-live-fixture.json \
 TABLOOM_E2E_MCP_SIGNING_KEY_PATH=/absolute/external/mcp-live-active-signing-key.json \
   npx playwright test tests/e2e/mcp-facade-live.spec.ts --project=chromium

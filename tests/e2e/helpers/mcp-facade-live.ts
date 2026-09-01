@@ -20,7 +20,7 @@ import {
 } from "jose";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 
-const LIVE_RESOURCE = "https://tabloom-mcp.vercel.app";
+const LIVE_RESOURCE = "https://tabloom-mcp.nickvu.dev";
 const LIVE_SUPABASE_ORIGIN = "https://tctjlsvfufzxhauhywsm.supabase.co";
 const MAX_FIXTURE_BYTES = 64 * 1024;
 const MAX_STORAGE_STATE_BYTES = 1024 * 1024;

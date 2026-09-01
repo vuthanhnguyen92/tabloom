@@ -35,7 +35,7 @@ vi.mock("../../services/tabloom-mcp/src/oauth/persistence", async () => {
 });
 
 const NOW = 1_788_000_000;
-const ORIGIN = "https://tabloom-mcp.vercel.app";
+const ORIGIN = "https://tabloom-mcp.nickvu.dev";
 const SUPABASE_URL = "https://exact-project.supabase.co";
 const CLIENT_ID = "5c177e69-8954-4c57-a777-07c732513bea";
 const REDIRECT_URI = "https://client.example/callback";

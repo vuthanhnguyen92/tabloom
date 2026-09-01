@@ -825,7 +825,7 @@ set local role authenticated;
 select set_config('request.jwt.claims', jsonb_build_object(
   'sub', :'user_a',
   'role', 'authenticated',
-  'aud', jsonb_build_array('authenticated', 'https://tabloom-mcp.vercel.app'),
+  'aud', jsonb_build_array('authenticated', 'https://tabloom-mcp.nickvu.dev'),
   'client_id', 'cccccccc-cccc-4ccc-8ccc-cccccccccccc'
 )::text, true);
 

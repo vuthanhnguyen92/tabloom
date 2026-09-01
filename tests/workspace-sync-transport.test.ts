@@ -46,6 +46,18 @@ function clientWith(response: {
 }
 
 describe("SupabaseWorkspaceSyncTransport", () => {
+  it("times out a stalled workspace request", async () => {
+    vi.useFakeTimers();
+    const rpc = vi.fn(() => new Promise<never>(() => undefined));
+    const client = { rpc } as unknown as SupabaseClient;
+    const result = expect(new SupabaseWorkspaceSyncTransport(client, { timeoutMs: 1_000 }).getRevision())
+      .rejects.toThrow("Workspace sync timed out");
+
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    await result;
+  });
+
   it("uses the exact revision RPC contract", async () => {
     const { client, rpc } = clientWith({
       data: { revision: 7, serverTime: timestamp },

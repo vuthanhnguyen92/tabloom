@@ -43,7 +43,7 @@ vi.mock("../../services/tabloom-mcp/src/oauth/upstream-supabase", async () => {
   return { ...actual, createUpstreamSupabaseAuth: vi.fn() };
 });
 
-const ORIGIN = "https://tabloom-mcp.vercel.app";
+const ORIGIN = "https://tabloom-mcp.nickvu.dev";
 const DCR_CLIENT_ID = "5c177e69-8954-4c57-a777-07c732513bea";
 const CIMD_CLIENT_ID = "https://client.example/oauth/metadata.json";
 const REDIRECT_URI = "https://client.example/callback";

@@ -12,7 +12,7 @@ import {
 import { openAuthorizationCode } from "../../services/tabloom-mcp/src/oauth/consent";
 
 const NOW = 1_788_000_000;
-const ORIGIN = "https://tabloom-mcp.vercel.app";
+const ORIGIN = "https://tabloom-mcp.nickvu.dev";
 const REDIRECT_URI = "https://client.example/callback?existing=kept&display=%22quoted%22";
 const USER_ID = "4f6f8607-9439-4ce3-a19e-f5a302ef3e68";
 const CHALLENGE = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM";

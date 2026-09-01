@@ -15,7 +15,7 @@ import {
 } from "../../services/tabloom-mcp/src/oauth/cimd-errors";
 import { OAuthPersistenceUnavailableError } from "../../services/tabloom-mcp/src/oauth/persistence";
 
-const RESOURCE = "https://tabloom-mcp.vercel.app";
+const RESOURCE = "https://tabloom-mcp.nickvu.dev";
 const CLIENT_ID = "5c177e69-8954-4c57-a777-07c732513bea";
 const REDIRECT_URI = "https://client.example/callback";
 const CHALLENGE = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM";

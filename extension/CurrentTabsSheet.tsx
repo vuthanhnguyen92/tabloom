@@ -1,4 +1,4 @@
-import { ChevronLeft, ChevronRight, CopyMinus, Layers3, Plus, RefreshCw, X } from "lucide-react";
+import { ChevronLeft, ChevronRight, CopyMinus, GripVertical, Layers3, Plus, RefreshCw, X } from "lucide-react";
 import { type DragEvent, type FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import { normalizeUrlForDuplicate, type Collection } from "../shared/domain";
 import type { WorkspaceRepository } from "../shared/repository";
@@ -17,13 +17,14 @@ export type CurrentTabsSheetProps = {
   onError: (message: string) => void;
   onExpandedChange: (expanded: boolean) => void;
   onMessage: (message: string) => void;
+  onOpenTab?: (tabId: number) => Promise<void>;
   onTabDragChange?: (dragging: boolean) => void;
   onWorkspaceReload: () => Promise<void>;
   listTabs?: () => Promise<CaptureTab[]>;
   closeTabs?: (tabIds: number[]) => Promise<void>;
 };
 
-export function CurrentTabsSheet({ activeSpaceId, expanded, repository, refreshVersion = 0, onError, onExpandedChange, onMessage, onTabDragChange, onWorkspaceReload, listTabs = listCurrentWindowTabs, closeTabs = (tabIds) => browserAdapter.tabs.close(tabIds) }: CurrentTabsSheetProps) {
+export function CurrentTabsSheet({ activeSpaceId, expanded, repository, refreshVersion = 0, onError, onExpandedChange, onMessage, onOpenTab, onTabDragChange, onWorkspaceReload, listTabs = listCurrentWindowTabs, closeTabs = (tabIds) => browserAdapter.tabs.close(tabIds) }: CurrentTabsSheetProps) {
   const [tabs, setTabs] = useState<CaptureTab[]>([]);
   const [loading, setLoading] = useState(true);
   const [naming, setNaming] = useState(false);
@@ -31,6 +32,7 @@ export function CurrentTabsSheet({ activeSpaceId, expanded, repository, refreshV
   const [savingAll, setSavingAll] = useState(false);
   const [confirmingDuplicates, setConfirmingDuplicates] = useState(false);
   const [closingDuplicates, setClosingDuplicates] = useState(false);
+  const [draggingTabId, setDraggingTabId] = useState<number | null>(null);
   const savingAllRef = useRef(false);
   const closingDuplicatesRef = useRef(false);
   const duplicateTabIds = findDuplicateTabIds(tabs);
@@ -51,7 +53,21 @@ export function CurrentTabsSheet({ activeSpaceId, expanded, repository, refreshV
     if (!tab.saveable) return;
     event.dataTransfer.effectAllowed = "copy";
     event.dataTransfer.setData(BROWSER_TAB_MIME, JSON.stringify(tab));
+    setDraggingTabId(tab.id ?? null);
     onTabDragChange?.(true);
+  }
+
+  async function openTab(tab: CaptureTab) {
+    if (tab.id == null) return;
+    try {
+      if (onOpenTab) await onOpenTab(tab.id);
+      else {
+        const result = await browserAdapter.tabs.activateExisting(tab.id);
+        if (result.cleanupError) onError(result.cleanupError);
+      }
+    } catch (reason) {
+      onError(reason instanceof Error ? reason.message : "Could not open this browser tab.");
+    }
   }
 
   async function confirmDuplicateCleanup() {
@@ -116,7 +132,18 @@ export function CurrentTabsSheet({ activeSpaceId, expanded, repository, refreshV
   return <aside className="current-tabs-sheet">
     <header><div><small>CURRENT WINDOW</small><h2>Current tabs</h2></div><div><button aria-label="Close duplicate tabs" disabled={loading || closingDuplicates || !duplicateTabIds.length} onClick={() => setConfirmingDuplicates(true)}><CopyMinus size={16} /></button><button aria-label="Refresh current tabs" disabled={closingDuplicates} onClick={() => void refresh()}><RefreshCw size={16} /></button><button aria-label="Collapse current tabs" disabled={closingDuplicates} onClick={() => onExpandedChange(false)}><ChevronRight size={18} /></button></div></header>
     <p className="current-tabs-hint">Drag a tab into any collection to save it.</p>
-    <div className="current-tab-list">{loading ? <p>Reading this window…</p> : tabs.map((tab, index) => <div className={!tab.saveable ? "disabled" : ""} draggable={tab.saveable} key={tab.id ?? index} onDragEnd={() => { if (tab.saveable) onTabDragChange?.(false); }} onDragStart={(event) => startDrag(event, tab)}><FaviconTile src={tab.favIconUrl} title={tab.title} /><span><b>{tab.title || "Untitled tab"}</b><small>{tab.saveable ? new URL(tab.url!).hostname : "Unsupported browser page"}</small></span></div>)}</div>
+    <div className="current-tab-list">{loading ? <p>Reading this window…</p> : tabs.map((tab, index) => <div
+      aria-label={`Open ${tab.title || "Untitled tab"}`}
+      className={[!tab.saveable ? "disabled" : "", draggingTabId != null && draggingTabId === tab.id ? "dragging" : ""].filter(Boolean).join(" ")}
+      draggable={tab.saveable}
+      key={tab.id ?? index}
+      onClick={() => void openTab(tab)}
+      onDragEnd={() => { setDraggingTabId(null); if (tab.saveable) onTabDragChange?.(false); }}
+      onDragStart={(event) => startDrag(event, tab)}
+      onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); void openTab(tab); } }}
+      role="button"
+      tabIndex={0}
+    ><FaviconTile src={tab.favIconUrl} title={tab.title} /><span><b>{tab.title || "Untitled tab"}</b><small>{tab.saveable ? new URL(tab.url!).hostname : "Unsupported browser page"}</small></span>{tab.saveable && <GripVertical aria-hidden="true" className="card-drag-indicator" size={14} />}</div>)}</div>
     <div className="save-window">{naming ? <form onSubmit={(event) => void saveAll(event)}><label>Collection name<input aria-label="Collection name" disabled={savingAll} maxLength={80} value={collectionName} onChange={(event) => setCollectionName(event.target.value)} /></label><div><button type="button" aria-label="Cancel new collection" disabled={savingAll} onClick={() => setNaming(false)}><X size={15} /></button><button className="create-collection" disabled={savingAll} type="submit">{savingAll ? "Saving…" : "Create and save"}</button></div></form> : <button disabled={!repository || !activeSpaceId || savingAll} onClick={() => setNaming(true)}><Layers3 size={16} /> Save all as collection <Plus size={14} /></button>}</div>
     {confirmingDuplicates && <div className="drop-confirm-backdrop"><section className="drop-confirm" role="dialog" aria-modal="true" aria-label="Close duplicate tabs"><small>DUPLICATE TABS</small><h2>Close {duplicateTabIds.length} duplicate tab{duplicateTabIds.length === 1 ? "" : "s"}?</h2><p>Tabloom will keep the active copy when possible, otherwise the leftmost copy. Chrome and extension pages are not included.</p><div><button aria-label="Cancel duplicate cleanup" disabled={closingDuplicates} onClick={() => setConfirmingDuplicates(false)}>Cancel</button><button className="close-after-save" disabled={closingDuplicates} onClick={() => void confirmDuplicateCleanup()}>{closingDuplicates ? "Closing…" : "Close duplicates"}</button></div></section></div>}
   </aside>;

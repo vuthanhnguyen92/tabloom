@@ -35,7 +35,7 @@ vi.mock("../../services/tabloom-mcp/src/oauth/upstream-supabase", async () => {
   return { ...actual, createUpstreamSupabaseAuth: vi.fn() };
 });
 
-const ORIGIN = "https://tabloom-mcp.vercel.app";
+const ORIGIN = "https://tabloom-mcp.nickvu.dev";
 let privateJwk: JWK;
 
 beforeAll(async () => {

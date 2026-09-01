@@ -1,0 +1,40 @@
+import { describe, expect, it } from "vitest";
+import { CollectionCollapsePreference } from "../extension/collection-collapse-preference";
+
+function createStorage() {
+  const values: Record<string, unknown> = {};
+  return {
+    async get(keys: string | string[]) {
+      const requested = Array.isArray(keys) ? keys : [keys];
+      return Object.fromEntries(requested.filter((key) => key in values).map((key) => [key, values[key]]));
+    },
+    async set(next: Record<string, unknown>) { Object.assign(values, next); },
+    async remove(key: string) { delete values[key]; },
+  };
+}
+
+describe("CollectionCollapsePreference", () => {
+  it("remembers collapsed collections separately for local and signed-in workspaces", async () => {
+    const storage = createStorage();
+    const preference = new CollectionCollapsePreference(storage);
+
+    await preference.setCollapsed("local", "collection-one", true);
+    await preference.setCollapsed("account:user-1", "collection-two", true);
+
+    const restored = new CollectionCollapsePreference(storage);
+    expect(await restored.reconcile("local", ["collection-one", "collection-two"])).toEqual(new Set(["collection-one"]));
+    expect(await restored.reconcile("account:user-1", ["collection-one", "collection-two"])).toEqual(new Set(["collection-two"]));
+  });
+
+  it("forgets stored collapse states after collections are deleted", async () => {
+    const storage = createStorage();
+    const preference = new CollectionCollapsePreference(storage);
+    await preference.setCollapsed("local", "collection-deleted", true);
+    await preference.setCollapsed("local", "collection-kept", true);
+
+    expect(await preference.reconcile("local", ["collection-kept"])).toEqual(new Set(["collection-kept"]));
+
+    const restored = new CollectionCollapsePreference(storage);
+    expect(await restored.reconcile("local", ["collection-deleted", "collection-kept"])).toEqual(new Set(["collection-kept"]));
+  });
+});
