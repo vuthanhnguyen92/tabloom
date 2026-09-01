@@ -5,6 +5,8 @@ import { join } from "node:path";
 import {
   createAuthReport,
   deriveChromiumExtensionId,
+  SAFARI_APP_BUNDLE_ID,
+  SAFARI_EXTENSION_ID,
   writeAuthReport,
 } from "../extension/scripts/extension-identity.mjs";
 
@@ -53,9 +55,11 @@ describe("extension identity reports", () => {
   });
 
   it("reports Safari's fixed native callback", () => {
+    expect(SAFARI_APP_BUNDLE_ID).toBe("app.tabloom.extension");
+    expect(SAFARI_EXTENSION_ID).toBe("app.tabloom.mac.extension");
     expect(createAuthReport("safari", {})).toEqual({
       target: "safari",
-      extensionId: "app.tabloom.mac.extension",
+      extensionId: SAFARI_EXTENSION_ID,
       callbackUrl: "tabloom://auth-callback",
       requiresRuntime: false,
     });

@@ -2,6 +2,9 @@ import { createHash } from "node:crypto";
 import { mkdirSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
+export const SAFARI_APP_BUNDLE_ID = "app.tabloom.extension";
+export const SAFARI_EXTENSION_ID = "app.tabloom.mac.extension";
+
 export function deriveChromiumExtensionId(publicKeyBase64) {
   if (typeof publicKeyBase64 !== "string" || !publicKeyBase64.length) {
     throw new Error("The Chromium manifest requires a public key.");
@@ -38,7 +41,7 @@ export function createAuthReport(target, manifest, callbacks = {}) {
   if (target === "safari") {
     return {
       target,
-      extensionId: "app.tabloom.mac.extension",
+      extensionId: SAFARI_EXTENSION_ID,
       callbackUrl: "tabloom://auth-callback",
       requiresRuntime: false,
     };

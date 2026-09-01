@@ -1,7 +1,7 @@
 import { copyFileSync, mkdirSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { spawnSync } from "node:child_process";
-import { writeAuthReport } from "./extension-identity.mjs";
+import { SAFARI_APP_BUNDLE_ID, writeAuthReport } from "./extension-identity.mjs";
 import { generateExtensionIcons } from "./generate-extension-icons.mjs";
 
 const root = resolve(import.meta.dirname, "../..");
@@ -45,7 +45,7 @@ if (process.argv.includes("--safari-project")) {
     resolve(root, "dist-extension/safari"),
     "--project-location", resolve(root, "dist-extension/safari-xcode"),
     "--app-name", "Tabloom",
-    "--bundle-identifier", "app.tabloom.extension",
+    "--bundle-identifier", SAFARI_APP_BUNDLE_ID,
     "--swift",
     "--macos-only",
     "--copy-resources",
