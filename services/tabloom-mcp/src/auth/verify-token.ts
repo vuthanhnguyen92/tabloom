@@ -48,7 +48,7 @@ export function createTokenVerifier(
   const createRequestContext = dependencies.createRequestContext ??
     createTabloomRequestContext;
   const currentTime = dependencies.now ?? (() => Math.floor(Date.now() / 1000));
-  const resource = new URL(config.resourceUrl.origin);
+  const resource = new URL(config.resourceUrl.href);
 
   return async function verifyToken(
     _request: Request,

@@ -1,8 +1,9 @@
 # Tabloom authorization facade operator guide
 
-The remote MCP service is a separate Vercel project at the canonical origin
-`https://tabloom-mcp.nickvu.dev`. That exact origin is both the OAuth issuer
-and protected-resource identifier. Supabase remains the upstream Google
+The remote MCP service runs behind the canonical public origin
+`https://tabloom.nickvu.dev`. The OAuth issuer is that pathless origin and the
+protected-resource identifier is exactly `https://tabloom.nickvu.dev/mcp`.
+Supabase remains the upstream Google
 identity provider; it is not the MCP token issuer.
 
 Every production mutation in this guide requires explicit operator approval.
@@ -19,8 +20,8 @@ The Vercel service requires these public values:
   `https://tctjlsvfufzxhauhywsm.supabase.co` for the approved production
   project.
 - `SUPABASE_ANON_KEY`: the public anonymous key; never use a service-role key.
-- `TABLOOM_MCP_RESOURCE_URL`: `https://tabloom-mcp.nickvu.dev`.
-- `TABLOOM_OAUTH_ISSUER_URL`: `https://tabloom-mcp.nickvu.dev`.
+- `TABLOOM_MCP_RESOURCE_URL`: `https://tabloom.nickvu.dev/mcp`.
+- `TABLOOM_OAUTH_ISSUER_URL`: `https://tabloom.nickvu.dev`.
 - `TABLOOM_OAUTH_ENABLED`: exactly `false` for the first deployment.
 
 The private `TABLOOM_OAUTH_SIGNING_KEYS` and
@@ -155,7 +156,7 @@ After an approved disabled deployment, add this one upstream callback to
 Supabase **Authentication → URL Configuration → Redirect URLs**:
 
 ```text
-https://tabloom-mcp.nickvu.dev/oauth/callback/supabase
+https://tabloom.nickvu.dev/oauth/callback/supabase
 ```
 
 Keep all existing web `/app` and exact browser-extension callbacks. Do not
@@ -199,10 +200,10 @@ protected resource, reads issuer metadata, performs public DCR, requests exact
 S256/resource/scope bindings, verifies both access tokens through the published
 JWKS, refreshes once, replays the original refresh token and requires exact
 `invalid_grant`, calls `get_service_status`, revokes the rotated grant, and
-requires the same access token to receive `401` from `/api/mcp`.
+requires the same access token to receive `401` from `/mcp`.
 
 ```bash
-TABLOOM_MCP_RESOURCE_URL=https://tabloom-mcp.nickvu.dev \
+TABLOOM_MCP_RESOURCE_URL=https://tabloom.nickvu.dev/mcp \
   node scripts/probe-mcp-oauth.mjs
 ```
 
@@ -240,7 +241,7 @@ fixture shape is:
 ```json
 {
   "version": 1,
-  "resource": "https://tabloom-mcp.nickvu.dev",
+  "resource": "https://tabloom.nickvu.dev/mcp",
   "supabaseUrl": "https://tctjlsvfufzxhauhywsm.supabase.co",
   "supabaseAnonKey": "SUPABASE_PUBLIC_ANON_KEY_VALUE",
   "quiescentAcceptanceAccounts": true,
@@ -358,7 +359,7 @@ Run it only after explicit approval and complete fixture preparation:
 
 ```bash
 TABLOOM_E2E_MCP_LIVE=1 \
-TABLOOM_E2E_MCP_RESOURCE_URL=https://tabloom-mcp.nickvu.dev \
+TABLOOM_E2E_MCP_RESOURCE_URL=https://tabloom.nickvu.dev/mcp \
 TABLOOM_E2E_MCP_FIXTURE_PATH=/absolute/external/mcp-live-fixture.json \
 TABLOOM_E2E_MCP_SIGNING_KEY_PATH=/absolute/external/mcp-live-active-signing-key.json \
   npx playwright test tests/e2e/mcp-facade-live.spec.ts --project=chromium

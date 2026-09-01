@@ -30,7 +30,7 @@ const request: ValidatedAuthorizationRequest = {
   redirectUri: "https://client.example/callback",
   state: "original-client-state",
   codeChallenge: "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM",
-  resource: "https://tabloom-mcp.nickvu.dev",
+  resource: "https://tabloom.nickvu.dev/mcp",
   scope: "tabloom:workspace",
 };
 const upstream: UpstreamLoginState = {
@@ -65,14 +65,14 @@ function boundaryRequest(...extraRedirectUriLengths: number[]): ValidatedAuthori
     redirectUri,
     state: "s",
     codeChallenge: "x".repeat(43),
-    resource: "https://tabloom-mcp.nickvu.dev",
+    resource: "https://tabloom.nickvu.dev/mcp",
     scope: "tabloom:workspace",
   };
 }
 
 function requestWithCookie(name: string, cookie: string): Request {
   const value = cookie.slice(`${name}=`.length).split(";", 1)[0]!;
-  return new Request("https://tabloom-mcp.nickvu.dev/oauth/callback/supabase", {
+  return new Request("https://tabloom.nickvu.dev/oauth/callback/supabase", {
     headers: { Cookie: `${name}=${value}` },
   });
 }

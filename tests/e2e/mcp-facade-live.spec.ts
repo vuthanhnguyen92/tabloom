@@ -19,7 +19,7 @@ test("two-user live facade acceptance remains an explicit human-auth opt-in", as
   );
   test.setTimeout(30 * 60 * 1000);
 
-  expect(resource).toBe("https://tabloom-mcp.nickvu.dev");
+  expect(resource).toBe("https://tabloom.nickvu.dev/mcp");
   const fixture = await loadLiveAcceptanceFixture(fixturePath!, {
     repositoryRoot: resolve("."),
   });

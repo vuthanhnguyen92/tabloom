@@ -2,7 +2,8 @@ import { generateKeyPair, exportJWK } from "jose";
 import { describe, expect, it } from "vitest";
 import { loadFacadeAuthConfig } from "../../services/tabloom-mcp/src/auth/config";
 
-const RESOURCE = "https://mcp.tabloom.app";
+const ISSUER = "https://tabloom.nickvu.dev";
+const RESOURCE = `${ISSUER}/mcp`;
 const DATABASE_SECRET = Buffer.alloc(32, 9).toString("base64url");
 const NONCANONICAL_DATABASE_SECRET = "QkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJ";
 
@@ -29,7 +30,7 @@ function env(overrides: Partial<NodeJS.ProcessEnv> = {}): NodeJS.ProcessEnv {
     SUPABASE_URL: "https://example.supabase.co",
     SUPABASE_ANON_KEY: "test-anon-key",
     TABLOOM_MCP_RESOURCE_URL: RESOURCE,
-    TABLOOM_OAUTH_ISSUER_URL: RESOURCE,
+    TABLOOM_OAUTH_ISSUER_URL: ISSUER,
     TABLOOM_OAUTH_ENABLED: "false",
     ...overrides,
   };
@@ -42,7 +43,8 @@ describe("authorization facade configuration", () => {
     }));
 
     expect(config.oauthEnabled).toBe(false);
-    expect(config.issuerUrl.href).toBe(`${RESOURCE}/`);
+    expect(config.resourceUrl.href).toBe(RESOURCE);
+    expect(config.issuerUrl.href).toBe(`${ISSUER}/`);
     expect(config.signingKeys.active).toBeUndefined();
     expect(config.encryptionKeys.active).toBeUndefined();
     expect(config.databaseProofKey).toBeUndefined();
@@ -129,8 +131,11 @@ describe("authorization facade configuration", () => {
     ["missing enabled switch", { TABLOOM_OAUTH_ENABLED: undefined }],
     ["template issuer", { TABLOOM_OAUTH_ISSUER_URL: "${ISSUER}" }],
     ["issuer mismatch", { TABLOOM_OAUTH_ISSUER_URL: "https://other.tabloom.app" }],
-    ["issuer path", { TABLOOM_OAUTH_ISSUER_URL: `${RESOURCE}/oauth` }],
-    ["issuer query", { TABLOOM_OAUTH_ISSUER_URL: `${RESOURCE}?x=1` }],
+    ["issuer path", { TABLOOM_OAUTH_ISSUER_URL: `${ISSUER}/oauth` }],
+    ["issuer query", { TABLOOM_OAUTH_ISSUER_URL: `${ISSUER}?x=1` }],
+    ["resource root", { TABLOOM_MCP_RESOURCE_URL: ISSUER }],
+    ["resource path", { TABLOOM_MCP_RESOURCE_URL: `${ISSUER}/other` }],
+    ["resource query", { TABLOOM_MCP_RESOURCE_URL: `${RESOURCE}?x=1` }],
     ["invalid enabled switch", { TABLOOM_OAUTH_ENABLED: "TRUE" }],
   ])("rejects %s", (_name, overrides) => {
     expect(() => loadFacadeAuthConfig(env(overrides))).toThrow();

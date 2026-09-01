@@ -54,8 +54,8 @@ import {
   withLiveCleanupCategory,
 } from "../e2e/helpers/mcp-facade-live";
 
-const RESOURCE = "https://tabloom-mcp.example.com";
-const ISSUER = RESOURCE;
+const ISSUER = "https://tabloom-mcp.example.com";
+const RESOURCE = `${ISSUER}/mcp`;
 const SCOPE = "tabloom:workspace";
 const CALLBACK_URL = "http://127.0.0.1:54321/callback";
 
@@ -185,7 +185,7 @@ function successfulProbeHarness(options: {
   let revokeCalls = 0;
   const revokedTokens: string[] = [];
   const request = async (url: string, init?: RequestInit) => {
-    if (url.endsWith("/.well-known/oauth-protected-resource")) {
+    if (url.endsWith("/.well-known/oauth-protected-resource/mcp")) {
       return jsonResponse(200, PROTECTED_RESOURCE);
     }
     if (url.endsWith("/.well-known/oauth-authorization-server")) {
@@ -236,7 +236,7 @@ function successfulProbeHarness(options: {
       revokedTokens.push(String(new URLSearchParams(String(init?.body)).get("token")));
       return jsonResponse(options.cleanupReject ? 503 : 200);
     }
-    if (url.endsWith("/api/mcp")) {
+    if (url === RESOURCE) {
       mcpCalls += 1;
       if (revokeCalls > 0) return jsonResponse(401);
       return jsonResponse(200, options.invalidReadiness
@@ -383,7 +383,7 @@ describe("MCP OAuth readiness probe", () => {
       env: { NODE_ENV: "test", TABLOOM_MCP_RESOURCE_URL: RESOURCE },
       request: async (url) => {
         requests.push(url);
-        if (url.endsWith("/.well-known/oauth-protected-resource")) {
+        if (url.endsWith("/.well-known/oauth-protected-resource/mcp")) {
           return jsonResponse(200, protectedResource);
         }
         if (url.endsWith("/.well-known/oauth-authorization-server")) {
@@ -405,10 +405,10 @@ describe("MCP OAuth readiness probe", () => {
     );
 
     expect(requests).toEqual(source === PROTECTED_RESOURCE
-      ? [`${RESOURCE}/.well-known/oauth-protected-resource`]
+      ? [`${ISSUER}/.well-known/oauth-protected-resource/mcp`]
       : [
-        `${RESOURCE}/.well-known/oauth-protected-resource`,
-        `${RESOURCE}/.well-known/oauth-authorization-server`,
+        `${ISSUER}/.well-known/oauth-protected-resource/mcp`,
+        `${ISSUER}/.well-known/oauth-authorization-server`,
       ]);
     expect(listenerCalls).toBe(0);
     expect(handoffCalls).toBe(0);
@@ -452,7 +452,7 @@ describe("MCP OAuth readiness probe", () => {
       log: () => undefined,
     })).rejects.toThrow("unexpected issuer");
 
-    expect(requests).toEqual([`${RESOURCE}/.well-known/oauth-protected-resource`]);
+    expect(requests).toEqual([`${ISSUER}/.well-known/oauth-protected-resource/mcp`]);
     expect(listenerCalls).toBe(0);
     expect(handoffCalls).toBe(0);
   });
@@ -644,7 +644,7 @@ describe("MCP OAuth readiness probe", () => {
 
     const request = async (url: string, init?: RequestInit) => {
       requests.push({ url, init });
-      if (url.endsWith("/.well-known/oauth-protected-resource")) {
+      if (url.endsWith("/.well-known/oauth-protected-resource/mcp")) {
         return jsonResponse(200, PROTECTED_RESOURCE);
       }
       if (url.endsWith("/.well-known/oauth-authorization-server")) {
@@ -673,9 +673,9 @@ describe("MCP OAuth readiness probe", () => {
           : jsonResponse(400, { error: "invalid_grant" });
       }
       if (url.endsWith("/oauth/revoke")) return jsonResponse(200);
-      if (url.endsWith("/api/mcp")) {
+      if (url === RESOURCE) {
         const callCount = requests.filter(
-          (entry) => entry.url.endsWith("/api/mcp"),
+          (entry) => entry.url === RESOURCE,
         ).length;
         return callCount === 1
           ? jsonResponse(200, serviceStatusResponse(1))
@@ -716,7 +716,7 @@ describe("MCP OAuth readiness probe", () => {
 
     expect(requests.some((entry) => entry.url.endsWith("/oauth/revoke")))
       .toBe(false);
-    expect(requests.filter((entry) => entry.url.endsWith("/api/mcp")))
+    expect(requests.filter((entry) => entry.url === RESOURCE))
       .toHaveLength(1);
     expect(reports.at(-1)).toMatchObject({
       refreshRotated: true,
@@ -834,7 +834,7 @@ describe("MCP OAuth readiness probe", () => {
     let mcpCalls = 0;
     let refreshCalls = 0;
     const request = async (url: string, init?: RequestInit) => {
-      if (url.endsWith("/.well-known/oauth-protected-resource")) return jsonResponse(200, PROTECTED_RESOURCE);
+      if (url.endsWith("/.well-known/oauth-protected-resource/mcp")) return jsonResponse(200, PROTECTED_RESOURCE);
       if (url.endsWith("/.well-known/oauth-authorization-server")) return jsonResponse(200, AUTHORIZATION_SERVER);
       if (url.endsWith("/.well-known/jwks.json")) return jsonResponse(200, PUBLIC_JWKS);
       if (url.endsWith("/oauth/register")) return jsonResponse(201, DCR_RESPONSE);
@@ -849,7 +849,7 @@ describe("MCP OAuth readiness probe", () => {
         });
       }
       if (url.endsWith("/oauth/revoke")) return jsonResponse(200);
-      if (url.endsWith("/api/mcp")) {
+      if (url === RESOURCE) {
         mcpCalls += 1;
         return jsonResponse(200, serviceStatusResponse(mcpCalls));
       }
@@ -1206,7 +1206,7 @@ describe("live MCP facade acceptance fixture schema", () => {
   function validFixture(directory: string) {
     return {
       version: 1,
-      resource: "https://tabloom-mcp.nickvu.dev",
+      resource: "https://tabloom.nickvu.dev/mcp",
       supabaseUrl: "https://tctjlsvfufzxhauhywsm.supabase.co",
       supabaseAnonKey: "public-anon-key",
       quiescentAcceptanceAccounts: true,
@@ -1309,7 +1309,7 @@ describe("live MCP facade acceptance fixture schema", () => {
       supabase_token: claims.inner,
     })
       .setProtectedHeader({ alg: "ES256", kid: publicJwk.kid, typ: "at+jwt" })
-      .setIssuer(RESOURCE)
+      .setIssuer(ISSUER)
       .setAudience(RESOURCE)
       .setIssuedAt(claims.issuedAt ?? now)
       .setNotBefore(claims.issuedAt ?? now)

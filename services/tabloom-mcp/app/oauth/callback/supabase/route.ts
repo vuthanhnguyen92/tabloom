@@ -79,7 +79,7 @@ export async function GET(request: Request): Promise<Response> {
   let state: UpstreamLoginState;
   try {
     state = await readUpstreamLoginState(request, config.encryptionKeys);
-    if (state.request.resource !== config.resourceUrl.origin) throw new Error();
+    if (state.request.resource !== config.resourceUrl.href) throw new Error();
   } catch {
     return respond(terminalError("invalid_request", 400), "client_error");
   }

@@ -73,7 +73,7 @@ export async function GET(request: Request): Promise<Response> {
   try {
     const persistence = createOAuthPersistence(config);
     authorization = await validateAuthorizationRequest(new URL(request.url).searchParams, {
-      resource: config.resourceUrl.origin,
+      resource: config.resourceUrl.href,
       resolveClient: (clientId) => resolveClient(clientId, persistence),
     });
   } catch (error) {

@@ -10,6 +10,7 @@ import {
 
 const NOW = 1_750_000_000;
 const ISSUER = "https://mcp.tabloom.app";
+const RESOURCE = `${ISSUER}/mcp`;
 const USER_ID = "2f1c5393-46b8-4d79-a12b-b4624b1bc54c";
 
 async function signing(kid: string, active: true) {
@@ -29,7 +30,7 @@ async function config() {
     anonKey: "test-anon-key",
     oauthEnabled: true,
     issuerUrl: new URL(ISSUER),
-    resourceUrl: new URL(ISSUER),
+    resourceUrl: new URL(RESOURCE),
     signingKeys: await createSigningKeyRing([await signing("current", true)]),
     encryptionKeys: createEncryptionKeyRing([encryption("current", true)]),
   };
@@ -112,7 +113,7 @@ describe("resource-bound Tabloom access tokens", () => {
     const { payload, protectedHeader } = await verifyAccessToken(token, facade, NOW);
 
     expect(protectedHeader).toMatchObject({ alg: "ES256", kid: "current", typ: "at+jwt" });
-    expect(payload).toMatchObject({ iss: ISSUER, aud: ISSUER, sub: USER_ID, client_id: "https://client.example/metadata.json", scope: "tabloom:workspace", iat: NOW, nbf: NOW, exp: NOW + 600, grant_id: "grant-family" });
+    expect(payload).toMatchObject({ iss: ISSUER, aud: RESOURCE, sub: USER_ID, client_id: "https://client.example/metadata.json", scope: "tabloom:workspace", iat: NOW, nbf: NOW, exp: NOW + 600, grant_id: "grant-family" });
     expect(payload.jti).toEqual(expect.any(String));
     expect(payload.supabase_token).not.toBe("inner-supabase-token");
     const inner = await jwtDecrypt(payload.supabase_token, facade.encryptionKeys.active!.derived("inner_access_token"), { currentDate: new Date(NOW * 1000) });

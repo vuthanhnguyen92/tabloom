@@ -55,7 +55,8 @@ vi.mock("../../services/tabloom-mcp/src/oauth/upstream-supabase", async () => {
 });
 
 const NOW = 1_788_000_000;
-const ORIGIN = "https://tabloom-mcp.nickvu.dev";
+const ORIGIN = "https://tabloom.nickvu.dev";
+const RESOURCE = `${ORIGIN}/mcp`;
 const REDIRECT_URI = "https://client.example/callback";
 const DCR_CLIENT_ID = "5c177e69-8954-4c57-a777-07c732513bea";
 const CIMD_CLIENT_ID = "https://client.example/oauth/metadata.json";
@@ -74,7 +75,7 @@ beforeAll(async () => {
 function useFacadeEnvironment(): void {
   vi.stubEnv("SUPABASE_URL", "https://exact-project.supabase.co");
   vi.stubEnv("SUPABASE_ANON_KEY", "test-anon-key");
-  vi.stubEnv("TABLOOM_MCP_RESOURCE_URL", ORIGIN);
+  vi.stubEnv("TABLOOM_MCP_RESOURCE_URL", RESOURCE);
   vi.stubEnv("TABLOOM_OAUTH_ISSUER_URL", ORIGIN);
   vi.stubEnv("TABLOOM_OAUTH_ENABLED", "true");
   vi.stubEnv("TABLOOM_OAUTH_SIGNING_KEYS", JSON.stringify([
@@ -186,7 +187,7 @@ function authorizationUrl(clientId: string, state: string): URL {
     state,
     code_challenge: CHALLENGE,
     code_challenge_method: "S256",
-    resource: ORIGIN,
+    resource: RESOURCE,
     scope: "tabloom:workspace",
   }).forEach(([key, value]) => url.searchParams.set(key, value));
   return url;
@@ -246,7 +247,7 @@ async function exchangeCode(clientId: string, code: string) {
       code,
       client_id: clientId,
       redirect_uri: REDIRECT_URI,
-      resource: ORIGIN,
+      resource: RESOURCE,
       code_verifier: VERIFIER,
     }),
   }));
@@ -261,7 +262,7 @@ async function refresh(clientId: string, refreshToken: string) {
       grant_type: "refresh_token",
       refresh_token: refreshToken,
       client_id: clientId,
-      resource: ORIGIN,
+      resource: RESOURCE,
       scope: "tabloom:workspace",
     }),
   }));
@@ -320,10 +321,10 @@ describe("in-process authorization facade", () => {
     const verifier = createTokenVerifier(loadFacadeAuthConfig(process.env), {
       persistence: store.persistence,
     });
-    await expect(verifier(new Request(`${ORIGIN}/api/mcp`), first.access_token))
+    await expect(verifier(new Request(RESOURCE), first.access_token))
       .resolves.toMatchObject({ extra: { userId: USER_A, clientId } });
     const mcp = await import("../../services/tabloom-mcp/app/api/mcp/route");
-    const mcpResponse = await mcp.POST(new Request(`${ORIGIN}/api/mcp`, {
+    const mcpResponse = await mcp.POST(new Request(RESOURCE, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${first.access_token}`,
@@ -364,9 +365,9 @@ describe("in-process authorization facade", () => {
       body: new URLSearchParams({ token: rotated.access_token }),
     }));
     expect(revoked.status).toBe(200);
-    await expect(verifier(new Request(`${ORIGIN}/api/mcp`), rotated.access_token))
+    await expect(verifier(new Request(RESOURCE), rotated.access_token))
       .resolves.toBeUndefined();
-    const revokedMcpResponse = await mcp.POST(new Request(`${ORIGIN}/api/mcp`, {
+    const revokedMcpResponse = await mcp.POST(new Request(RESOURCE, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${rotated.access_token}`,
@@ -394,7 +395,7 @@ describe("in-process authorization facade", () => {
     const verifier = createTokenVerifier(loadFacadeAuthConfig(process.env), {
       persistence: store.persistence,
     });
-    await expect(verifier(new Request(`${ORIGIN}/api/mcp`), token))
+    await expect(verifier(new Request(RESOURCE), token))
       .resolves.toMatchObject({ clientId: CIMD_CLIENT_ID, extra: { userId: USER_A } });
   });
 
@@ -416,7 +417,7 @@ describe("in-process authorization facade", () => {
       .sign(await importJWK({ ...privateJwk, alg: "ES256" }, "ES256"));
     const verifier = createTokenVerifier(config, { persistence: store.persistence });
 
-    await expect(verifier(new Request(`${ORIGIN}/api/mcp`), substituted))
+    await expect(verifier(new Request(RESOURCE), substituted))
       .resolves.toBeUndefined();
   });
 });

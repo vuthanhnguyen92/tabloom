@@ -12,7 +12,8 @@ import {
 import { openAuthorizationCode } from "../../services/tabloom-mcp/src/oauth/consent";
 
 const NOW = 1_788_000_000;
-const ORIGIN = "https://tabloom-mcp.nickvu.dev";
+const ORIGIN = "https://tabloom.nickvu.dev";
+const RESOURCE = `${ORIGIN}/mcp`;
 const REDIRECT_URI = "https://client.example/callback?existing=kept&display=%22quoted%22";
 const USER_ID = "4f6f8607-9439-4ce3-a19e-f5a302ef3e68";
 const CHALLENGE = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM";
@@ -29,7 +30,7 @@ const authorizationRequest: ValidatedAuthorizationRequest = {
   redirectUri: REDIRECT_URI,
   state: "original-client-state",
   codeChallenge: CHALLENGE,
-  resource: ORIGIN,
+  resource: RESOURCE,
   scope: "tabloom:workspace",
 };
 
@@ -52,7 +53,7 @@ beforeAll(async () => {
 function useFacadeEnvironment(enabled = true, origin = ORIGIN) {
   vi.stubEnv("SUPABASE_URL", "https://example.supabase.co");
   vi.stubEnv("SUPABASE_ANON_KEY", "test-anon-key");
-  vi.stubEnv("TABLOOM_MCP_RESOURCE_URL", origin);
+  vi.stubEnv("TABLOOM_MCP_RESOURCE_URL", `${origin}/mcp`);
   vi.stubEnv("TABLOOM_OAUTH_ISSUER_URL", origin);
   vi.stubEnv("TABLOOM_OAUTH_ENABLED", String(enabled));
   vi.stubEnv("TABLOOM_OAUTH_SIGNING_KEYS", JSON.stringify([

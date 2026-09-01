@@ -65,9 +65,35 @@ function requiredHttpsOrigin(value: string | undefined, name: string): URL {
   return url;
 }
 
+function requiredMcpResource(value: string | undefined, name: string): URL {
+  const normalized = requiredValue(value, name);
+  let url: URL;
+
+  try {
+    url = new URL(normalized);
+  } catch {
+    throw new Error(`${name} must be a valid HTTPS URL`);
+  }
+
+  if (url.protocol !== "https:") {
+    throw new Error(`${name} must use HTTPS`);
+  }
+  if (
+    url.username ||
+    url.password ||
+    url.pathname !== "/mcp" ||
+    url.search ||
+    url.hash
+  ) {
+    throw new Error(`${name} must be an HTTPS URL with the exact /mcp path and no credentials, query, or fragment`);
+  }
+
+  return url;
+}
+
 export function loadMcpAuthConfig(env: NodeJS.ProcessEnv): McpAuthConfig {
   const supabaseUrl = requiredHttpsOrigin(env.SUPABASE_URL, "SUPABASE_URL");
-  const resourceUrl = requiredHttpsOrigin(
+  const resourceUrl = requiredMcpResource(
     env.TABLOOM_MCP_RESOURCE_URL,
     "TABLOOM_MCP_RESOURCE_URL",
   );
@@ -118,7 +144,7 @@ export function loadFacadeAuthConfig(env: NodeJS.ProcessEnv): FacadeAuthConfig {
     "TABLOOM_OAUTH_ISSUER_URL",
   );
   if (issuerUrl.origin !== base.resourceUrl.origin) {
-    throw new Error("TABLOOM_OAUTH_ISSUER_URL must equal TABLOOM_MCP_RESOURCE_URL");
+    throw new Error("TABLOOM_OAUTH_ISSUER_URL and TABLOOM_MCP_RESOURCE_URL must share an origin");
   }
 
   const signingKeys = createSigningKeyRing(

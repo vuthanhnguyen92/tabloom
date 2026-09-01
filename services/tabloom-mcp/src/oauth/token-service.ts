@@ -320,7 +320,7 @@ export async function exchangeAuthorizationCode(
     code.clientId !== request.clientId ||
     code.redirectUri !== request.redirectUri ||
     code.resource !== request.resource ||
-    code.resource !== config.resourceUrl.origin ||
+    code.resource !== config.resourceUrl.href ||
     !verifyS256(request.codeVerifier, code.codeChallenge)
   ) {
     throw invalidGrant();
@@ -367,7 +367,7 @@ export async function exchangeRefreshToken(
     request.grantType !== "refresh_token" ||
     request.clientId !== refresh.clientId ||
     request.resource !== refresh.resource ||
-    request.resource !== config.resourceUrl.origin
+    request.resource !== config.resourceUrl.href
   ) {
     throw invalidGrant();
   }

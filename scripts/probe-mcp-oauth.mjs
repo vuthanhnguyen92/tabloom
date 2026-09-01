@@ -163,6 +163,22 @@ function requiredHttpsOrigin(value, name) {
   return url.origin;
 }
 
+function requiredMcpResource(value, name) {
+  if (!value?.trim()) throw new Error(`${name} is required`);
+  const url = new URL(value);
+  if (
+    url.protocol !== "https:" ||
+    url.username ||
+    url.password ||
+    url.pathname !== "/mcp" ||
+    url.search ||
+    url.hash
+  ) {
+    throw new Error(`${name} must be an HTTPS URL with the exact /mcp path`);
+  }
+  return url.href;
+}
+
 async function readResponseText(response) {
   const declared = response.headers.get("content-length");
   if (declared && /^\d+$/.test(declared) &&
@@ -666,10 +682,11 @@ export async function beginProbeAcceptance({
   privateResultChannel = Object.freeze({}),
   log = console.log,
 } = {}) {
-  const expectedResource = requiredHttpsOrigin(
+  const expectedResource = requiredMcpResource(
     env.TABLOOM_MCP_RESOURCE_URL,
     "TABLOOM_MCP_RESOURCE_URL",
   );
+  const expectedIssuer = new URL(expectedResource).origin;
   let latestReport = emptyReport({ resource: expectedResource });
   const safeRequest = (url, init) =>
     noRedirectRequest(requestFn, url, init);
@@ -686,7 +703,7 @@ export async function beginProbeAcceptance({
   try {
     const protectedResource = successfulJson(
       await safeRequest(
-        `${expectedResource}/.well-known/oauth-protected-resource`,
+        `${expectedIssuer}/.well-known/oauth-protected-resource/mcp`,
       ),
       "Protected-resource discovery",
     );
@@ -700,7 +717,7 @@ export async function beginProbeAcceptance({
       discoveredIssuers[0],
       "Discovered OAuth issuer",
     );
-    if (discoveredIssuer !== expectedResource) {
+    if (discoveredIssuer !== expectedIssuer) {
       throw new Error("Protected-resource discovery returned an unexpected issuer");
     }
     const metadata = successfulJson(
@@ -801,7 +818,7 @@ export async function beginProbeAcceptance({
         }
         try {
           const afterRevocation = await safeRequest(
-            `${expectedResource}/api/mcp`,
+            expectedResource,
             mcpRequest(currentAccessToken, 2),
           );
           mcpAfterRevocationResult = classifyHttpStatus(
@@ -896,7 +913,7 @@ export async function beginProbeAcceptance({
       isRecord(replay.body) && replay.body.error === "invalid_grant";
 
     const beforeRevocation = await safeRequest(
-        `${expectedResource}/api/mcp`,
+        expectedResource,
         mcpRequest(rotated.accessToken, 1),
       );
     mcpBeforeRevocationResult = classifyHttpStatus(beforeRevocation.status);

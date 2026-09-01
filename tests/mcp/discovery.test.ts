@@ -1,7 +1,8 @@
 import { exportJWK, generateKeyPair } from "jose";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-const ORIGIN = "https://mcp.tabloom.app";
+const ORIGIN = "https://tabloom.nickvu.dev";
+const RESOURCE = `${ORIGIN}/mcp`;
 
 async function signingKey(kid: string, active: boolean) {
   const { privateKey, publicKey } = await generateKeyPair("ES256", { extractable: true });
@@ -21,7 +22,7 @@ async function signingKey(kid: string, active: boolean) {
 async function useFacadeEnvironment() {
   vi.stubEnv("SUPABASE_URL", "https://example.supabase.co");
   vi.stubEnv("SUPABASE_ANON_KEY", "test-anon-key");
-  vi.stubEnv("TABLOOM_MCP_RESOURCE_URL", ORIGIN);
+  vi.stubEnv("TABLOOM_MCP_RESOURCE_URL", RESOURCE);
   vi.stubEnv("TABLOOM_OAUTH_ISSUER_URL", ORIGIN);
   vi.stubEnv("TABLOOM_OAUTH_ENABLED", "false");
   vi.stubEnv("TABLOOM_OAUTH_ENCRYPTION_KEYS", "[]");
@@ -43,7 +44,7 @@ describe("OAuth facade discovery", () => {
       "../../services/tabloom-mcp/app/api/mcp/route"
     );
 
-    const response = await route.GET(new Request(`${ORIGIN}/api/mcp`));
+    const response = await route.GET(new Request(RESOURCE));
 
     expect(response.status).toBe(503);
     expect(response.headers.get("Cache-Control")).toBe("no-store");
@@ -86,10 +87,13 @@ describe("OAuth facade discovery", () => {
       "../../services/tabloom-mcp/app/api/mcp/route"
     );
 
-    const response = await route.GET(new Request(`${ORIGIN}/api/mcp`));
+    const response = await route.GET(new Request(RESOURCE));
 
     expect(response.status).toBe(401);
-    expect(response.headers.get("WWW-Authenticate")).toContain("scope=\"tabloom:workspace\"");
+    expect(response.headers.get("WWW-Authenticate")).toContain('scope="tabloom:workspace"');
+    expect(response.headers.get("WWW-Authenticate")).toContain(
+      `resource_metadata="${ORIGIN}/.well-known/oauth-protected-resource/mcp"`,
+    );
     expect(await response.text()).not.toContain("SUPABASE");
   });
 
@@ -101,7 +105,7 @@ describe("OAuth facade discovery", () => {
       "../../services/tabloom-mcp/app/api/mcp/route"
     );
 
-    const response = await route.GET(new Request(`${ORIGIN}/api/mcp`, {
+    const response = await route.GET(new Request(RESOURCE, {
       headers: { Authorization: "Bearer sensitive-outer-token" },
     }));
 
@@ -160,7 +164,23 @@ describe("OAuth facade discovery", () => {
     expect(response.status).toBe(200);
     expect(response.headers.get("Access-Control-Allow-Origin")).toBe("*");
     await expect(response.json()).resolves.toEqual({
-      resource: ORIGIN,
+      resource: RESOURCE,
+      authorization_servers: [ORIGIN],
+    });
+    expect(route.OPTIONS().headers.get("Access-Control-Allow-Methods")).toBe("GET, OPTIONS");
+  });
+
+  it("publishes the path-aware protected-resource metadata route", async () => {
+    await useFacadeEnvironment();
+    const route = await import(
+      "../../services/tabloom-mcp/app/.well-known/oauth-protected-resource/mcp/route"
+    );
+
+    const response = route.GET();
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({
+      resource: RESOURCE,
       authorization_servers: [ORIGIN],
     });
     expect(route.OPTIONS().headers.get("Access-Control-Allow-Methods")).toBe("GET, OPTIONS");

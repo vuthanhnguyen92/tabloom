@@ -45,8 +45,9 @@ Row-level security ensures every user can read and change only rows whose `user_
 ## Remote MCP authorization
 
 The remote MCP service uses a dedicated authorization facade at
-`https://tabloom-mcp.nickvu.dev`; direct Supabase OAuth access tokens are not
-accepted by `/api/mcp`. The facade issues ES256 tokens bound to the exact MCP
+`https://tabloom.nickvu.dev`; clients connect to the canonical endpoint
+`https://tabloom.nickvu.dev/mcp`. Direct Supabase OAuth access tokens are not
+accepted by `/mcp`. The facade issues ES256 tokens bound to the exact MCP
 resource and the single `tabloom:workspace` scope, while its encrypted inner
 Supabase credential preserves request-local RLS enforcement.
 
@@ -54,7 +55,7 @@ Supabase Google login for the web app and browser extensions remains unchanged.
 The additional upstream callback for the facade is exactly:
 
 ```text
-https://tabloom-mcp.nickvu.dev/oauth/callback/supabase
+https://tabloom.nickvu.dev/oauth/callback/supabase
 ```
 
 Keep the existing web and exact extension callbacks when adding it. Private
@@ -123,4 +124,4 @@ See [Manual bookmark synchronization](docs/bookmark-sync-setup.md) for local Sup
 
 ## Deployment
 
-The web build targets OpenAI Sites through the Vinext/Cloudflare Worker runtime. Configure the same public Supabase variables in the hosted environment before enabling synchronized sign-in. The extension is delivered as an unpacked build in v1; Chrome Web Store submission is intentionally out of scope.
+`https://tabloom.nickvu.dev` is the canonical Vercel front door for the landing page, `/app`, `/privacy`, `/mcp`, `/oauth/*`, and `/.well-known/*`. Set `TABLOOM_MCP_UPSTREAM_ORIGIN` to the MCP service's stable private `.vercel.app` origin; clients must use only `https://tabloom.nickvu.dev/mcp`. Configure the public Supabase variables in Vercel before enabling synchronized sign-in. The extension is delivered as an unpacked build in v1; Chrome Web Store submission is intentionally out of scope.

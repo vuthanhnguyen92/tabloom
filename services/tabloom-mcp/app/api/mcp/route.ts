@@ -52,7 +52,9 @@ function getAuthenticatedHandler(): AuthenticatedHandler | undefined {
   const authenticatedHandler = withMcpAuth(handler, verifier, {
     required: true,
     requiredScopes: ["tabloom:workspace"],
-    resourceMetadataPath: "/.well-known/oauth-protected-resource",
+    resourceMetadataPath: "/.well-known/oauth-protected-resource/mcp",
+    // mcp-handler prefixes resourceMetadataPath with this value; the verifier
+    // still binds tokens to config.resourceUrl.href (the exact /mcp audience).
     resourceUrl: config.resourceUrl.origin,
   });
 

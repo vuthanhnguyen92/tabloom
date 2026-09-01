@@ -13,7 +13,7 @@
 ## Global Constraints
 
 - Keep the facade behind `TABLOOM_OAUTH_ENABLED`; public metadata and JWKS may be deployed while disabled, but authorization, registration, token, revocation, and MCP requests return safe unavailable responses until enabled.
-- The exact issuer and exact resource are the same canonical HTTPS origin. `/api/mcp` is a transport path, never an audience.
+- The exact issuer is `https://tabloom.nickvu.dev`; the exact resource and audience are `https://tabloom.nickvu.dev/mcp`.
 - Support only public clients, Authorization Code with PKCE S256, refresh tokens, exact redirect matching, DCR, HTTPS Client ID Metadata Documents, and scope `tabloom:workspace`.
 - Never accept a direct Supabase token at `/api/mcp`, never accept `aud: authenticated` as the MCP audience, and never use a Supabase service-role key.
 - Never put Supabase access or refresh tokens in browser JavaScript, HTML, form fields, logs, reports, query strings, or MCP responses.
@@ -92,7 +92,7 @@ npx vitest run tests/mcp/facade-config.test.ts tests/mcp/crypto.test.ts
 Parse these environment variables:
 
 - `TABLOOM_OAUTH_ENABLED`: exact `true` or `false`.
-- `TABLOOM_OAUTH_ISSUER_URL`: canonical HTTPS origin, equal to `TABLOOM_MCP_RESOURCE_URL` in enabled mode.
+- `TABLOOM_OAUTH_ISSUER_URL`: canonical pathless HTTPS origin sharing the resource URL's origin.
 - `TABLOOM_OAUTH_SIGNING_KEYS`: JSON array of `{ kid, active, privateJwk }`; ES256 only.
 - `TABLOOM_OAUTH_ENCRYPTION_KEYS`: JSON array of `{ kid, active, rootKey }`; `rootKey` is 32-byte base64url.
 
@@ -695,7 +695,7 @@ Generate one ES256 private JWK and one 32-byte encryption root with versioned ra
 
 Update `.env.example` with template-only facade variables and document that enabled production requires private key-ring values in Vercel. Replace direct-Supabase OAuth instructions with the fixed upstream redirect:
 
-`https://tabloom-mcp.nickvu.dev/oauth/callback/supabase`
+`https://tabloom.nickvu.dev/oauth/callback/supabase`
 
 - [ ] **Step 3: Verify probe and documentation changes locally**
 
@@ -778,7 +778,7 @@ After Task 11 passes, resume `docs/superpowers/plans/2026-08-29-tabloom-remote-m
 - `createWorkspaceContext` consumes `VerifiedFacadeAuthInfo.extra.requestContext` instead of treating `authInfo.token` as a Supabase token.
 - Every workspace repository uses the request-local Supabase client already validated by the facade.
 - Original OAuth-shaped SQL test claims use the Supabase inner user identity only; MCP outer claims are tested at the Vercel boundary.
-- Production deployment metadata expects issuer `https://tabloom-mcp.nickvu.dev`, scope `tabloom:workspace`, and the facade's registration/revocation endpoints.
+- Production deployment metadata expects issuer `https://tabloom.nickvu.dev`, scope `tabloom:workspace`, and the facade's registration/revocation endpoints.
 - The original final acceptance adds refresh rotation, revocation, and nested-subject checks from this plan.
 
 Do not re-enable or reuse the failed direct-Supabase audience path.

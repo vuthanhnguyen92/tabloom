@@ -16,7 +16,8 @@ vi.mock("../../services/tabloom-mcp/src/oauth/persistence", async () => {
   return { ...actual, createOAuthPersistence: vi.fn() };
 });
 
-const ORIGIN = "https://mcp.tabloom.app";
+const ORIGIN = "https://tabloom.nickvu.dev";
+const RESOURCE = `${ORIGIN}/mcp`;
 const registration = {
   client_name: "Example MCP Client",
   redirect_uris: ["https://client.example/callback"],
@@ -30,7 +31,7 @@ async function useFacadeEnvironment(enabled: boolean) {
   const privateJwk = await exportJWK(privateKey);
   vi.stubEnv("SUPABASE_URL", "https://example.supabase.co");
   vi.stubEnv("SUPABASE_ANON_KEY", "test-anon-key");
-  vi.stubEnv("TABLOOM_MCP_RESOURCE_URL", ORIGIN);
+  vi.stubEnv("TABLOOM_MCP_RESOURCE_URL", RESOURCE);
   vi.stubEnv("TABLOOM_OAUTH_ISSUER_URL", ORIGIN);
   vi.stubEnv("TABLOOM_OAUTH_ENABLED", String(enabled));
   vi.stubEnv("TABLOOM_OAUTH_SIGNING_KEYS", JSON.stringify([

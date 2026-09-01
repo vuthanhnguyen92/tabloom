@@ -20,7 +20,7 @@ import {
 } from "jose";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 
-const LIVE_RESOURCE = "https://tabloom-mcp.nickvu.dev";
+const LIVE_RESOURCE = "https://tabloom.nickvu.dev/mcp";
 const LIVE_SUPABASE_ORIGIN = "https://tctjlsvfufzxhauhywsm.supabase.co";
 const MAX_FIXTURE_BYTES = 64 * 1024;
 const MAX_STORAGE_STATE_BYTES = 1024 * 1024;
@@ -101,7 +101,7 @@ const DCR_CLIENT_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[
 
 function validFacadePayload(payload: JWTPayload, resource: string, now: number) {
   if (!hasExactKeys(payload as JsonRecord, ACCESS_TOKEN_CLAIMS) ||
-      payload.iss !== resource || payload.aud !== resource ||
+      payload.iss !== new URL(resource).origin || payload.aud !== resource ||
       payload.scope !== "tabloom:workspace" || typeof payload.sub !== "string" ||
       !UUID.test(payload.sub) || typeof payload.client_id !== "string" ||
       !DCR_CLIENT_ID.test(payload.client_id) || typeof payload.grant_id !== "string" ||
@@ -124,7 +124,7 @@ async function verifyFacadeBearer(
 ) {
   const result = await jwtVerify(token, createLocalJWKSet(jwks), {
     algorithms: ["ES256"],
-    issuer: resource,
+    issuer: new URL(resource).origin,
     audience: resource,
     currentDate: new Date(now * 1000),
     requiredClaims: [...ACCESS_TOKEN_CLAIMS],

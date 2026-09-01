@@ -48,7 +48,7 @@ function isAllowedRedirectUri(value: string): boolean {
 
 async function validSession(request: Request, config: FacadeAuthConfig): Promise<ConsentSession> {
   const session = await readConsentSession(request, config.encryptionKeys);
-  if (session.request.resource !== config.resourceUrl.origin ||
+  if (session.request.resource !== config.resourceUrl.href ||
       !session.request.client.redirectUris.includes(session.request.redirectUri) ||
       !isAllowedRedirectUri(session.request.redirectUri)) {
     throw new Error("Invalid consent session");

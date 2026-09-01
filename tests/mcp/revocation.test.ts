@@ -31,7 +31,8 @@ vi.mock("../../services/tabloom-mcp/src/oauth/persistence", async () => {
 });
 
 const NOW = 1_788_000_000;
-const ORIGIN = "https://tabloom-mcp.nickvu.dev";
+const ORIGIN = "https://tabloom.nickvu.dev";
+const RESOURCE = `${ORIGIN}/mcp`;
 const SUPABASE_URL = "https://exact-project.supabase.co";
 const CLIENT_ID = "5c177e69-8954-4c57-a777-07c732513bea";
 const USER_ID = "4f6f8607-9439-4ce3-a19e-f5a302ef3e68";
@@ -51,7 +52,7 @@ beforeAll(async () => {
 function useFacadeEnvironment(enabled = true, signingJwk = privateJwk, encryptionByte = 7): void {
   vi.stubEnv("SUPABASE_URL", SUPABASE_URL);
   vi.stubEnv("SUPABASE_ANON_KEY", "test-anon-key");
-  vi.stubEnv("TABLOOM_MCP_RESOURCE_URL", ORIGIN);
+  vi.stubEnv("TABLOOM_MCP_RESOURCE_URL", RESOURCE);
   vi.stubEnv("TABLOOM_OAUTH_ISSUER_URL", ORIGIN);
   vi.stubEnv("TABLOOM_OAUTH_ENABLED", String(enabled));
   vi.stubEnv("TABLOOM_OAUTH_SIGNING_KEYS", JSON.stringify([
@@ -120,7 +121,7 @@ function refreshPayload(overrides: Partial<RefreshTokenPayload> = {}): RefreshTo
     supabaseRefreshToken: "upstream-refresh-token",
     userId: USER_ID,
     clientId: CLIENT_ID,
-    resource: ORIGIN,
+    resource: RESOURCE,
     scope: "tabloom:workspace",
     grantId: GRANT_ID,
     jti: REFRESH_JTI,

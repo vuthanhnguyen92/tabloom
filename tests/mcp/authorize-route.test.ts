@@ -43,7 +43,8 @@ vi.mock("../../services/tabloom-mcp/src/oauth/upstream-supabase", async () => {
   return { ...actual, createUpstreamSupabaseAuth: vi.fn() };
 });
 
-const ORIGIN = "https://tabloom-mcp.nickvu.dev";
+const ORIGIN = "https://tabloom.nickvu.dev";
+const RESOURCE = `${ORIGIN}/mcp`;
 const DCR_CLIENT_ID = "5c177e69-8954-4c57-a777-07c732513bea";
 const CIMD_CLIENT_ID = "https://client.example/oauth/metadata.json";
 const REDIRECT_URI = "https://client.example/callback";
@@ -75,7 +76,7 @@ beforeEach(async () => {
 function useFacadeEnvironment(enabled: boolean) {
   vi.stubEnv("SUPABASE_URL", "https://example.supabase.co");
   vi.stubEnv("SUPABASE_ANON_KEY", "test-anon-key");
-  vi.stubEnv("TABLOOM_MCP_RESOURCE_URL", ORIGIN);
+  vi.stubEnv("TABLOOM_MCP_RESOURCE_URL", RESOURCE);
   vi.stubEnv("TABLOOM_OAUTH_ISSUER_URL", ORIGIN);
   vi.stubEnv("TABLOOM_OAUTH_ENABLED", String(enabled));
   vi.stubEnv("TABLOOM_OAUTH_SIGNING_KEYS", JSON.stringify([
@@ -130,7 +131,7 @@ function authorizationUrl(clientId = DCR_CLIENT_ID, overrides: Record<string, st
     state: "original-client-state",
     code_challenge: CHALLENGE,
     code_challenge_method: "S256",
-    resource: ORIGIN,
+    resource: RESOURCE,
     scope: "tabloom:workspace",
     ...overrides,
   })) url.searchParams.set(key, value);
@@ -490,7 +491,7 @@ describe("GET /oauth/callback/supabase", () => {
       redirectUri: REDIRECT_URI,
       state: "original-client-state",
       codeChallenge: CHALLENGE,
-      resource: ORIGIN,
+      resource: RESOURCE,
       scope: "tabloom:workspace",
     };
     return createUpstreamStateCookie(

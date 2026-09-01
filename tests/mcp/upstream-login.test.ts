@@ -8,7 +8,7 @@ import {
 } from "../../services/tabloom-mcp/src/oauth/upstream-supabase";
 
 const SUPABASE_URL = "https://example.supabase.co";
-const CALLBACK = "https://tabloom-mcp.nickvu.dev/oauth/callback/supabase";
+const CALLBACK = "https://tabloom.nickvu.dev/oauth/callback/supabase";
 const USER_ID = "4f6f8607-9439-4ce3-a19e-f5a302ef3e68";
 const VERIFIER = "v".repeat(64);
 const NOW = 1_788_000_000;

@@ -396,12 +396,12 @@ Wrap a temporary `get_service_status` read-only tool with:
 ```ts
 withMcpAuth(handler, verifier, {
   required: true,
-  resourceMetadataPath: "/.well-known/oauth-protected-resource",
+  resourceMetadataPath: "/.well-known/oauth-protected-resource/mcp",
   resourceUrl: config.resourceUrl.origin,
 });
 ```
 
-Export GET and POST; do not enable DELETE because the service is stateless. The protected-resource identifier is the canonical production origin, while the transport endpoint is `${config.resourceUrl.origin}/api/mcp`.
+Export GET and POST; do not enable DELETE because the service is stateless. `mcp-handler` joins the origin and metadata path above; token verification independently uses `config.resourceUrl.href`, the exact path-aware `https://tabloom.nickvu.dev/mcp` audience.
 
 - [ ] **Step 6: Verify discovery, JWT tests, types, and build**
 
@@ -825,7 +825,7 @@ set local role authenticated;
 select set_config('request.jwt.claims', jsonb_build_object(
   'sub', :'user_a',
   'role', 'authenticated',
-  'aud', jsonb_build_array('authenticated', 'https://tabloom-mcp.nickvu.dev'),
+  'aud', jsonb_build_array('authenticated', 'https://tabloom.nickvu.dev/mcp'),
   'client_id', 'cccccccc-cccc-4ccc-8ccc-cccccccccccc'
 )::text, true);
 

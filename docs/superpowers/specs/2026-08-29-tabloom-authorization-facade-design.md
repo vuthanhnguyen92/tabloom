@@ -6,7 +6,7 @@ Approved in conversation on 2026-08-29. This design replaces the failed direct-S
 
 ## Problem
 
-The live Supabase OAuth 2.1 flow completed successfully with public dynamic client registration and PKCE, but the issued ES256 access token contained only `aud: ["authenticated"]`. It did not contain the requested Tabloom MCP resource, `https://tabloom-mcp.nickvu.dev`.
+The live Supabase OAuth 2.1 flow completed successfully with public dynamic client registration and PKCE, but the issued ES256 access token contained only `aud: ["authenticated"]`. It did not contain the requested Tabloom MCP resource, `https://tabloom.nickvu.dev/mcp`.
 
 Tabloom must not accept that token at the MCP resource server because it is not cryptographically bound to the MCP resource. The original plan therefore stopped before exposing any workspace tools.
 
@@ -42,7 +42,7 @@ The fallback must:
 
 ## Architecture
 
-The production origin `https://tabloom-mcp.nickvu.dev` serves two isolated subsystems.
+The production origin `https://tabloom.nickvu.dev` serves two isolated subsystems.
 
 ### Authorization facade
 
@@ -93,7 +93,7 @@ The resource server continues to expose:
 - `GET /.well-known/oauth-protected-resource`
 - `GET|POST /api/mcp`
 
-The authorization server issuer and protected resource identifier are both the exact origin `https://tabloom-mcp.nickvu.dev`. Endpoint paths do not become token audiences.
+The authorization server issuer is the exact origin `https://tabloom.nickvu.dev`. The protected-resource identifier and token audience are the exact path-aware URL `https://tabloom.nickvu.dev/mcp`.
 
 The facade does not advertise OpenID Connect or issue ID tokens. It publishes OAuth Authorization Server Metadata only; Supabase remains the upstream OpenID identity provider used internally for user login.
 
@@ -124,7 +124,7 @@ Plain PKCE, wildcard redirects, URL fragments, userinfo, unsupported scopes, and
 
 The facade initiates Supabase Google OAuth with a fixed redirect URL:
 
-`https://tabloom-mcp.nickvu.dev/oauth/callback/supabase`
+`https://tabloom.nickvu.dev/oauth/callback/supabase`
 
 The upstream PKCE verifier and original authorization request are encrypted in host-only, `HttpOnly`, `Secure`, `SameSite=Lax` cookies. Supabase continues to use its existing Google provider and its own `/auth/v1/callback` provider callback.
 

@@ -35,7 +35,8 @@ vi.mock("../../services/tabloom-mcp/src/oauth/persistence", async () => {
 });
 
 const NOW = 1_788_000_000;
-const ORIGIN = "https://tabloom-mcp.nickvu.dev";
+const ORIGIN = "https://tabloom.nickvu.dev";
+const RESOURCE = `${ORIGIN}/mcp`;
 const SUPABASE_URL = "https://exact-project.supabase.co";
 const CLIENT_ID = "5c177e69-8954-4c57-a777-07c732513bea";
 const REDIRECT_URI = "https://client.example/callback";
@@ -64,7 +65,7 @@ const authorizationRequest: ValidatedAuthorizationRequest = {
   redirectUri: REDIRECT_URI,
   state: "client-state",
   codeChallenge: CODE_CHALLENGE,
-  resource: ORIGIN,
+  resource: RESOURCE,
   scope: "tabloom:workspace",
 };
 
@@ -87,7 +88,7 @@ beforeAll(async () => {
 function useFacadeEnvironment(enabled = true): void {
   vi.stubEnv("SUPABASE_URL", SUPABASE_URL);
   vi.stubEnv("SUPABASE_ANON_KEY", "test-anon-key");
-  vi.stubEnv("TABLOOM_MCP_RESOURCE_URL", ORIGIN);
+  vi.stubEnv("TABLOOM_MCP_RESOURCE_URL", RESOURCE);
   vi.stubEnv("TABLOOM_OAUTH_ISSUER_URL", ORIGIN);
   vi.stubEnv("TABLOOM_OAUTH_ENABLED", String(enabled));
   vi.stubEnv("TABLOOM_OAUTH_SIGNING_KEYS", JSON.stringify([
@@ -153,7 +154,7 @@ async function tokenRequest(
     code,
     client_id: CLIENT_ID,
     redirect_uri: REDIRECT_URI,
-    resource: ORIGIN,
+    resource: RESOURCE,
     code_verifier: CODE_VERIFIER,
     ...overrides,
   });
@@ -190,7 +191,7 @@ function authorizationCodeForm(code: string): URLSearchParams {
     code,
     client_id: CLIENT_ID,
     redirect_uri: REDIRECT_URI,
-    resource: ORIGIN,
+    resource: RESOURCE,
     code_verifier: CODE_VERIFIER,
   });
 }
@@ -200,7 +201,7 @@ function refreshPayload(overrides: Partial<RefreshTokenPayload> = {}): RefreshTo
     supabaseRefreshToken: REFRESH_TOKEN,
     userId: USER_ID,
     clientId: CLIENT_ID,
-    resource: ORIGIN,
+    resource: RESOURCE,
     scope: "tabloom:workspace",
     grantId: consentSession.grantId,
     jti: "r".repeat(43),
@@ -233,7 +234,7 @@ async function refreshTokenRequest(
     grant_type: "refresh_token",
     refresh_token: refreshToken,
     client_id: CLIENT_ID,
-    resource: ORIGIN,
+    resource: RESOURCE,
     scope: "tabloom:workspace",
     ...overrides,
   });
@@ -314,14 +315,14 @@ describe("POST /oauth/token authorization_code", () => {
       {
         algorithms: ["ES256"],
         issuer: ORIGIN,
-        audience: ORIGIN,
+        audience: RESOURCE,
         currentDate: new Date(NOW * 1000),
       },
     );
     expect(access.protectedHeader).toEqual({ alg: "ES256", kid: "signing-key", typ: "at+jwt" });
     expect(access.payload).toMatchObject({
       iss: ORIGIN,
-      aud: ORIGIN,
+      aud: RESOURCE,
       sub: USER_ID,
       client_id: CLIENT_ID,
       scope: "tabloom:workspace",
@@ -357,7 +358,7 @@ describe("POST /oauth/token authorization_code", () => {
       supabaseRefreshToken: REFRESH_TOKEN,
       userId: USER_ID,
       clientId: CLIENT_ID,
-      resource: ORIGIN,
+      resource: RESOURCE,
       scope: "tabloom:workspace",
       grantId: consentSession.grantId,
       issuedAt: NOW,
@@ -398,7 +399,7 @@ describe("POST /oauth/token authorization_code", () => {
       {
         algorithms: ["ES256"],
         issuer: ORIGIN,
-        audience: ORIGIN,
+        audience: RESOURCE,
         currentDate: new Date(NOW * 1000),
       },
     );
@@ -452,7 +453,7 @@ describe("POST /oauth/token authorization_code", () => {
 
     const prefix = "grant_type=authorization_code&code=";
     const suffix = `&client_id=${CLIENT_ID}&redirect_uri=${encodeURIComponent(REDIRECT_URI)}` +
-      `&resource=${encodeURIComponent(ORIGIN)}&code_verifier=${CODE_VERIFIER}`;
+      `&resource=${encodeURIComponent(RESOURCE)}&code_verifier=${CODE_VERIFIER}`;
     const boundaryBody = `${prefix}${"x".repeat(32 * 1024 - prefix.length - suffix.length)}${suffix}`;
     expect(Buffer.byteLength(boundaryBody, "utf8")).toBe(32 * 1024);
     await expectError(await rawTokenRequest(boundaryBody), "invalid_grant");
@@ -607,7 +608,7 @@ describe("POST /oauth/token refresh_token", () => {
     const initialAccess = await jwtVerify(
       initialBody.access_token as string,
       signingPublicKey(config.signingKeys, "signing-key"),
-      { issuer: ORIGIN, audience: ORIGIN, currentDate: new Date(NOW * 1000) },
+      { issuer: ORIGIN, audience: RESOURCE, currentDate: new Date(NOW * 1000) },
     );
     const initialRefresh = await openArtifact<RefreshTokenPayload>(
       "refresh_token",
@@ -635,7 +636,7 @@ describe("POST /oauth/token refresh_token", () => {
     const rotatedAccess = await jwtVerify(
       body.access_token as string,
       signingPublicKey(config.signingKeys, "signing-key"),
-      { issuer: ORIGIN, audience: ORIGIN, currentDate: new Date(NOW * 1000) },
+      { issuer: ORIGIN, audience: RESOURCE, currentDate: new Date(NOW * 1000) },
     );
     expect(rotatedAccess.payload).toMatchObject({
       sub: USER_ID,
@@ -666,7 +667,7 @@ describe("POST /oauth/token refresh_token", () => {
       supabaseRefreshToken: ROTATED_REFRESH_TOKEN,
       userId: USER_ID,
       clientId: CLIENT_ID,
-      resource: ORIGIN,
+      resource: RESOURCE,
       scope: "tabloom:workspace",
       grantId: consentSession.grantId,
       issuedAt: NOW,
@@ -709,7 +710,7 @@ describe("POST /oauth/token refresh_token", () => {
       grant_type: "refresh_token",
       refresh_token: omittedToken,
       client_id: CLIENT_ID,
-      resource: ORIGIN,
+      resource: RESOURCE,
     });
     const inherited = await rawTokenRequest(omitted.toString());
     expect(inherited.status).toBe(200);

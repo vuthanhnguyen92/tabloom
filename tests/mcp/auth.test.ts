@@ -20,7 +20,8 @@ import { createTokenVerifier } from "../../services/tabloom-mcp/src/auth/verify-
 import type { OAuthPersistence } from "../../services/tabloom-mcp/src/oauth/persistence";
 
 const NOW = 1_788_000_000;
-const ORIGIN = "https://tabloom-mcp.nickvu.dev";
+const ORIGIN = "https://tabloom.nickvu.dev";
+const RESOURCE = `${ORIGIN}/mcp`;
 const SUPABASE_URL = "https://exact-project.supabase.co";
 const SUPABASE_ISSUER = `${SUPABASE_URL}/auth/v1`;
 const INNER_TOKEN = "configured-project-inner-access-token";
@@ -41,7 +42,7 @@ beforeAll(async () => {
 function useFacadeEnvironment(): void {
   vi.stubEnv("SUPABASE_URL", SUPABASE_URL);
   vi.stubEnv("SUPABASE_ANON_KEY", "test-anon-key");
-  vi.stubEnv("TABLOOM_MCP_RESOURCE_URL", ORIGIN);
+  vi.stubEnv("TABLOOM_MCP_RESOURCE_URL", RESOURCE);
   vi.stubEnv("TABLOOM_OAUTH_ISSUER_URL", ORIGIN);
   vi.stubEnv("TABLOOM_OAUTH_ENABLED", "true");
   vi.stubEnv("TABLOOM_OAUTH_SIGNING_KEYS", JSON.stringify([
@@ -178,12 +179,12 @@ describe("Tabloom facade bearer verification", () => {
     const { events, verifier } = harness();
     const token = await validToken();
 
-    await expect(verifier(new Request(`${ORIGIN}/api/mcp`), token)).resolves.toMatchObject({
+    await expect(verifier(new Request(RESOURCE), token)).resolves.toMatchObject({
       token,
       clientId: CLIENT_ID,
       scopes: ["tabloom:workspace"],
       expiresAt: NOW + 600,
-      resource: new URL(ORIGIN),
+      resource: new URL(RESOURCE),
       extra: {
         userId: USER_ID,
         clientId: CLIENT_ID,
@@ -209,7 +210,7 @@ describe("Tabloom facade bearer verification", () => {
     const { events, verifier } = harness();
 
     await expect(
-      verifier(new Request(`${ORIGIN}/api/mcp`), token),
+      verifier(new Request(RESOURCE), token),
     ).resolves.toBeUndefined();
     expect(events).toEqual([]);
   });
@@ -218,7 +219,7 @@ describe("Tabloom facade bearer verification", () => {
     const { events, verifier } = harness();
     const directToken = await handSignedToken({
       iss: SUPABASE_ISSUER,
-      aud: ["authenticated", ORIGIN],
+      aud: ["authenticated", RESOURCE],
       scope: "openid email",
       grant_id: undefined,
       supabase_token: undefined,
@@ -227,14 +228,14 @@ describe("Tabloom facade bearer verification", () => {
     });
 
     await expect(
-      verifier(new Request(`${ORIGIN}/api/mcp`), directToken),
+      verifier(new Request(RESOURCE), directToken),
     ).resolves.toBeUndefined();
     expect(events).toEqual([]);
   });
 
   it.each([
     ["generic Supabase audience", { aud: "authenticated" }],
-    ["array resource audience", { aud: [ORIGIN] }],
+    ["array resource audience", { aud: [RESOURCE] }],
     ["different resource", { aud: "https://other.example" }],
     ["wrong issuer", { iss: "https://attacker.example" }],
     ["missing subject", { sub: undefined }],
@@ -270,7 +271,7 @@ describe("Tabloom facade bearer verification", () => {
     const { events, verifier } = harness();
 
     await expect(
-      verifier(new Request(`${ORIGIN}/api/mcp`), await handSignedToken(overrides)),
+      verifier(new Request(RESOURCE), await handSignedToken(overrides)),
     ).resolves.toBeUndefined();
     expect(events).toEqual([]);
   });
@@ -285,7 +286,7 @@ describe("Tabloom facade bearer verification", () => {
 
     await expect(
       verifier(
-        new Request(`${ORIGIN}/api/mcp`),
+        new Request(RESOURCE),
         await handSignedToken({}, headerOverrides as Partial<JWSHeaderParameters>),
       ),
     ).resolves.toBeUndefined();
@@ -296,7 +297,7 @@ describe("Tabloom facade bearer verification", () => {
     const { events, verifier } = harness();
 
     await expect(
-      verifier(new Request(`${ORIGIN}/api/mcp`), await handSignedToken({}, {}, otherPrivateJwk)),
+      verifier(new Request(RESOURCE), await handSignedToken({}, {}, otherPrivateJwk)),
     ).resolves.toBeUndefined();
     expect(events).toEqual([]);
   });
@@ -309,7 +310,7 @@ describe("Tabloom facade bearer verification", () => {
       .sign(secret);
 
     await expect(
-      verifier(new Request(`${ORIGIN}/api/mcp`), token),
+      verifier(new Request(RESOURCE), token),
     ).resolves.toBeUndefined();
     expect(events).toEqual([]);
   });
@@ -319,7 +320,7 @@ describe("Tabloom facade bearer verification", () => {
     revoked.value = true;
 
     await expect(
-      verifier(new Request(`${ORIGIN}/api/mcp`), await validToken()),
+      verifier(new Request(RESOURCE), await validToken()),
     ).resolves.toBeUndefined();
     expect(events).toEqual([`revocation:${GRANT_ID}`]);
   });
@@ -329,7 +330,7 @@ describe("Tabloom facade bearer verification", () => {
 
     await expect(
       verifier(
-        new Request(`${ORIGIN}/api/mcp`),
+        new Request(RESOURCE),
         await handSignedToken({ supabase_token: "not-a-compact-jwe" }),
       ),
     ).resolves.toBeUndefined();
@@ -359,7 +360,7 @@ describe("Tabloom facade bearer verification", () => {
 
     await expect(
       verifier(
-        new Request(`${ORIGIN}/api/mcp`),
+        new Request(RESOURCE),
         await handSignedToken({ supabase_token: nested }),
       ),
     ).resolves.toBeUndefined();
@@ -384,7 +385,7 @@ describe("Tabloom facade bearer verification", () => {
 
     await expect(
       verifier(
-        new Request(`${ORIGIN}/api/mcp`),
+        new Request(RESOURCE),
         await handSignedToken({ supabase_token: nested }),
       ),
     ).resolves.toBeUndefined();
@@ -407,7 +408,7 @@ describe("Tabloom facade bearer verification", () => {
 
     await expect(
       verifier(
-        new Request(`${ORIGIN}/api/mcp`),
+        new Request(RESOURCE),
         await handSignedToken({ supabase_token: nested }),
       ),
     ).resolves.toBeUndefined();
@@ -423,7 +424,7 @@ describe("Tabloom facade bearer verification", () => {
     const token = await handSignedToken({ client_id: clientId });
 
     await expect(
-      verifier(new Request(`${ORIGIN}/api/mcp`), token),
+      verifier(new Request(RESOURCE), token),
     ).resolves.toMatchObject({ clientId, extra: { clientId } });
     expect(events).toEqual([
       `revocation:${GRANT_ID}`,
@@ -437,7 +438,7 @@ describe("Tabloom facade bearer verification", () => {
     providerUser.value = undefined;
 
     await expect(
-      verifier(new Request(`${ORIGIN}/api/mcp`), await validToken()),
+      verifier(new Request(RESOURCE), await validToken()),
     ).resolves.toBeUndefined();
     expect(events).toEqual([
       `revocation:${GRANT_ID}`,
@@ -450,7 +451,7 @@ describe("Tabloom facade bearer verification", () => {
     providerUser.value = OTHER_USER_ID;
 
     await expect(
-      verifier(new Request(`${ORIGIN}/api/mcp`), await validToken()),
+      verifier(new Request(RESOURCE), await validToken()),
     ).resolves.toBeUndefined();
     expect(events).toEqual([
       `revocation:${GRANT_ID}`,
@@ -478,7 +479,7 @@ describe("Tabloom facade bearer verification", () => {
     providerUser.value = OTHER_USER_ID;
 
     await expect(
-      verifier(new Request(`${ORIGIN}/api/mcp`), mismatchToken),
+      verifier(new Request(RESOURCE), mismatchToken),
     ).resolves.toBeUndefined();
     expect(events).toEqual([
       `revocation:${GRANT_ID}`,
@@ -501,7 +502,7 @@ describe("Tabloom facade bearer verification", () => {
     });
 
     await expect(
-      verifier(new Request(`${ORIGIN}/api/mcp`), token),
+      verifier(new Request(RESOURCE), token),
     ).resolves.toBeUndefined();
     expect(consoleError).not.toHaveBeenCalled();
     expect(consoleWarn).not.toHaveBeenCalled();

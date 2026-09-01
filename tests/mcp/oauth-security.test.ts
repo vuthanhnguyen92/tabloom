@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 
 import { exportJWK, generateKeyPair, type JWK } from "jose";
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   InMemoryOAuthRateLimitStorage,
@@ -35,7 +35,8 @@ vi.mock("../../services/tabloom-mcp/src/oauth/upstream-supabase", async () => {
   return { ...actual, createUpstreamSupabaseAuth: vi.fn() };
 });
 
-const ORIGIN = "https://tabloom-mcp.nickvu.dev";
+const ORIGIN = "https://tabloom.nickvu.dev";
+const RESOURCE = `${ORIGIN}/mcp`;
 let privateJwk: JWK;
 
 beforeAll(async () => {
@@ -44,6 +45,7 @@ beforeAll(async () => {
 });
 
 afterEach(() => {
+  vi.useRealTimers();
   vi.unstubAllEnvs();
   vi.clearAllMocks();
   vi.restoreAllMocks();
@@ -55,7 +57,7 @@ function useFacadeEnvironment(): void {
   vi.stubEnv("VERCEL", "1");
   vi.stubEnv("SUPABASE_URL", "https://example.supabase.co");
   vi.stubEnv("SUPABASE_ANON_KEY", "test-anon-key");
-  vi.stubEnv("TABLOOM_MCP_RESOURCE_URL", ORIGIN);
+  vi.stubEnv("TABLOOM_MCP_RESOURCE_URL", RESOURCE);
   vi.stubEnv("TABLOOM_OAUTH_ISSUER_URL", ORIGIN);
   vi.stubEnv("TABLOOM_OAUTH_ENABLED", "true");
   vi.stubEnv("TABLOOM_OAUTH_SIGNING_KEYS", JSON.stringify([
@@ -375,6 +377,11 @@ describe("allowlisted OAuth audit events and response headers", () => {
 });
 
 describe("OAuth route security integration", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-29T01:02:03.000Z"));
+  });
+
   it("enforces 20 registration attempts per forwarded IP per minute", async () => {
     useFacadeEnvironment();
     vi.mocked(createOAuthPersistence).mockReturnValue(persistence());
@@ -416,7 +423,7 @@ describe("OAuth route security integration", () => {
         state: "state",
         code_challenge: "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM",
         code_challenge_method: "S256",
-        resource: ORIGIN,
+        resource: RESOURCE,
         scope: "tabloom:workspace",
       }).forEach(([key, value]) => url.searchParams.set(key, value));
       return new Request(url, { headers: { "x-forwarded-for": "203.0.113.30" } });
@@ -444,7 +451,7 @@ describe("OAuth route security integration", () => {
         code: "invalid-code",
         client_id: "rate-limit-token-client",
         redirect_uri: "https://client.example/callback",
-        resource: ORIGIN,
+        resource: RESOURCE,
         code_verifier: "v".repeat(64),
       }),
     });

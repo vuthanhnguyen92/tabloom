@@ -101,7 +101,7 @@ export async function issueAccessToken(
   })
     .setProtectedHeader({ alg: "ES256", kid: signingKey.kid, typ: "at+jwt" })
     .setIssuer(issuer(config))
-    .setAudience(config.resourceUrl.origin)
+    .setAudience(config.resourceUrl.href)
     .setIssuedAt(now)
     .setNotBefore(now)
     .setExpirationTime(exp)
@@ -130,13 +130,13 @@ export async function verifyAccessToken(
     {
       algorithms: ["ES256"],
       issuer: issuer(config),
-      audience: config.resourceUrl.origin,
+      audience: config.resourceUrl.href,
       currentDate: new Date(now * 1000),
     },
   );
   const { payload } = result;
   if (
-    payload.aud !== config.resourceUrl.origin ||
+    payload.aud !== config.resourceUrl.href ||
     typeof payload.sub !== "string" ||
     typeof payload.client_id !== "string" ||
     payload.scope !== "tabloom:workspace" ||
