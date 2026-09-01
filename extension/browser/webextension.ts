@@ -38,6 +38,9 @@ export function createWebExtensionAdapter(target: BrowserTarget, api: WebExtensi
         return api.bookmarks.getTree();
       },
     },
+    favicons: {
+      resolve: ({ capturedUrl }) => capturedUrl ?? null,
+    },
     permissions: {
       request: (permission) => api.permissions.request({ permissions: [permission] }),
     },

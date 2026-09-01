@@ -5,6 +5,9 @@ import type { WorkspaceRepository } from "../shared/repository";
 import { findDuplicateTabIds, listCurrentWindowTabs, type CaptureTab } from "./chrome-api";
 import { FaviconTile } from "./FaviconTile";
 import { browserAdapter } from "./browser";
+import type { FaviconResolver } from "./browser/types";
+
+const capturedFavicon: FaviconResolver = ({ capturedUrl }) => capturedUrl ?? null;
 
 export const BROWSER_TAB_MIME = "application/x-tabloom-tab";
 
@@ -22,9 +25,10 @@ export type CurrentTabsSheetProps = {
   onWorkspaceReload: () => Promise<void>;
   listTabs?: () => Promise<CaptureTab[]>;
   closeTabs?: (tabIds: number[]) => Promise<void>;
+  resolveFavicon?: FaviconResolver;
 };
 
-export function CurrentTabsSheet({ activeSpaceId, expanded, repository, refreshVersion = 0, onError, onExpandedChange, onMessage, onOpenTab, onTabDragChange, onWorkspaceReload, listTabs = listCurrentWindowTabs, closeTabs = (tabIds) => browserAdapter.tabs.close(tabIds) }: CurrentTabsSheetProps) {
+export function CurrentTabsSheet({ activeSpaceId, expanded, repository, refreshVersion = 0, onError, onExpandedChange, onMessage, onOpenTab, onTabDragChange, onWorkspaceReload, listTabs = listCurrentWindowTabs, closeTabs = (tabIds) => browserAdapter.tabs.close(tabIds), resolveFavicon = capturedFavicon }: CurrentTabsSheetProps) {
   const [tabs, setTabs] = useState<CaptureTab[]>([]);
   const [loading, setLoading] = useState(true);
   const [naming, setNaming] = useState(false);
@@ -143,7 +147,7 @@ export function CurrentTabsSheet({ activeSpaceId, expanded, repository, refreshV
       onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); void openTab(tab); } }}
       role="button"
       tabIndex={0}
-    ><FaviconTile src={tab.favIconUrl} title={tab.title} /><span><b>{tab.title || "Untitled tab"}</b><small>{tab.saveable ? new URL(tab.url!).hostname : "Unsupported browser page"}</small></span>{tab.saveable && <GripVertical aria-hidden="true" className="card-drag-indicator" size={14} />}</div>)}</div>
+    ><FaviconTile src={resolveFavicon({ pageUrl: tab.url, capturedUrl: tab.favIconUrl, size: 32 })} title={tab.title} /><span><b>{tab.title || "Untitled tab"}</b><small>{tab.saveable ? new URL(tab.url!).hostname : "Unsupported browser page"}</small></span>{tab.saveable && <GripVertical aria-hidden="true" className="card-drag-indicator" size={14} />}</div>)}</div>
     <div className="save-window">{naming ? <form onSubmit={(event) => void saveAll(event)}><label>Collection name<input aria-label="Collection name" disabled={savingAll} maxLength={80} value={collectionName} onChange={(event) => setCollectionName(event.target.value)} /></label><div><button type="button" aria-label="Cancel new collection" disabled={savingAll} onClick={() => setNaming(false)}><X size={15} /></button><button className="create-collection" disabled={savingAll} type="submit">{savingAll ? "Saving…" : "Create and save"}</button></div></form> : <button disabled={!repository || !activeSpaceId || savingAll} onClick={() => setNaming(true)}><Layers3 size={16} /> Save all as collection <Plus size={14} /></button>}</div>
     {confirmingDuplicates && <div className="drop-confirm-backdrop"><section className="drop-confirm" role="dialog" aria-modal="true" aria-label="Close duplicate tabs"><small>DUPLICATE TABS</small><h2>Close {duplicateTabIds.length} duplicate tab{duplicateTabIds.length === 1 ? "" : "s"}?</h2><p>Tabloom will keep the active copy when possible, otherwise the leftmost copy. Chrome and extension pages are not included.</p><div><button aria-label="Cancel duplicate cleanup" disabled={closingDuplicates} onClick={() => setConfirmingDuplicates(false)}>Cancel</button><button className="close-after-save" disabled={closingDuplicates} onClick={() => void confirmDuplicateCleanup()}>{closingDuplicates ? "Closing…" : "Close duplicates"}</button></div></section></div>}
   </aside>;

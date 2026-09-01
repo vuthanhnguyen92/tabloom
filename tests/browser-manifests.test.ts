@@ -26,6 +26,16 @@ describe("browser manifests", () => {
     expect(manifest.browser_specific_settings.gecko.id).toBe("tabloom@tabloom.app");
   });
 
+  it("requests native favicon access only in the Chromium build", () => {
+    const chromium = JSON.parse(readFileSync(resolve("extension/manifests/chromium.json"), "utf8"));
+    const firefox = JSON.parse(readFileSync(resolve("extension/manifests/firefox.json"), "utf8"));
+    const safari = JSON.parse(readFileSync(resolve("extension/manifests/safari.json"), "utf8"));
+
+    expect(chromium.permissions).toContain("favicon");
+    expect(firefox.permissions).not.toContain("favicon");
+    expect(safari.permissions).not.toContain("favicon");
+  });
+
   it("does not request unsupported Safari identity, bookmark, or tab-group access", () => {
     const manifest = JSON.parse(readFileSync(resolve("extension/manifests/safari.json"), "utf8"));
     expect(manifest.permissions).not.toContain("identity");

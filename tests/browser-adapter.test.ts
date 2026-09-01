@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { createWebExtensionAdapter } from "../extension/browser/webextension";
+import { createChromiumAdapter } from "../extension/browser/chromium";
+import { createFirefoxAdapter } from "../extension/browser/firefox";
 import { createSafariAdapter } from "../extension/browser/safari";
 
 function createNamespace({ withGroups = true } = {}) {
@@ -38,11 +40,32 @@ function createNamespace({ withGroups = true } = {}) {
       getRedirectURL: vi.fn((path?: string) => `https://extension.example/${path ?? ""}`),
       launchWebAuthFlow: vi.fn(async () => "https://extension.example/auth-callback?code=abc"),
     },
+    runtime: { getURL: (path = "") => `chrome-extension://tabloom/${path}` },
   };
   return namespace;
 }
 
 describe("BrowserAdapter", () => {
+  it("resolves Chromium favicons through the browser-local favicon database", () => {
+    const adapter = createChromiumAdapter(createNamespace());
+
+    expect(adapter.favicons.resolve({
+      pageUrl: "https://linear.app/roadmap",
+      capturedUrl: "https://linear.app/favicon.ico",
+      size: 32,
+    })).toBe("chrome-extension://tabloom/_favicon/?pageUrl=https%3A%2F%2Flinear.app%2Froadmap&size=32");
+  });
+
+  it("retains captured favicon URLs on Firefox", () => {
+    const adapter = createFirefoxAdapter(createNamespace());
+
+    expect(adapter.favicons.resolve({
+      pageUrl: "https://linear.app/roadmap",
+      capturedUrl: "https://linear.app/favicon.ico",
+      size: 32,
+    })).toBe("https://linear.app/favicon.ico");
+  });
+
   it("normalizes shared tab, storage, bookmarks, permission, and identity operations", async () => {
     const namespace = createNamespace();
     const adapter = createWebExtensionAdapter("firefox", namespace);

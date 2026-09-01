@@ -5,6 +5,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { CurrentTabsSheet } from "../extension/CurrentTabsSheet";
 import { createDemoSnapshot } from "../shared/domain";
 import { MemoryWorkspaceRepository } from "../shared/repository";
+import type { FaviconResolver } from "../extension/browser/types";
 const extensionStyles = readFileSync("extension/style.css", "utf8");
 
 let styleElement: HTMLStyleElement;
@@ -44,6 +45,7 @@ function setup() {
 describe("CurrentTabsSheet", () => {
   it("shows a current tab favicon and falls back to its first letter when loading fails", async () => {
     const snapshot = createDemoSnapshot();
+    const resolveFavicon: FaviconResolver = vi.fn(({ pageUrl }) => `native-favicon:${pageUrl ?? ""}`);
     render(<CurrentTabsSheet
       activeSpaceId="space-launch"
       collections={snapshot.collections}
@@ -53,12 +55,14 @@ describe("CurrentTabsSheet", () => {
       onExpandedChange={vi.fn()}
       onMessage={vi.fn()}
       onWorkspaceReload={vi.fn(async () => undefined)}
+      resolveFavicon={resolveFavicon}
       listTabs={vi.fn(async () => [{ ...browserTabs[0], favIconUrl: "https://linear.app/favicon.ico" }])}
     />);
 
     const card = (await screen.findByText("Roadmap")).closest<HTMLElement>("[draggable='true']")!;
     const favicon = card.querySelector("img");
-    expect(favicon).toHaveAttribute("src", "https://linear.app/favicon.ico");
+    expect(favicon).toHaveAttribute("src", "native-favicon:https://linear.app/roadmap");
+    expect(resolveFavicon).toHaveBeenCalledWith({ pageUrl: "https://linear.app/roadmap", capturedUrl: "https://linear.app/favicon.ico", size: 32 });
     fireEvent.error(favicon!);
     expect(card.querySelector("img")).not.toBeInTheDocument();
     expect(within(card).getByText("R", { exact: true })).toBeVisible();

@@ -6,6 +6,8 @@ export type BrowserTarget = "chromium" | "firefox" | "safari";
 export type OpenCollectionResult = { opened: number; grouped: boolean };
 export type ActivateExistingTabResult = { tabloomClosed: boolean; cleanupError?: string };
 export type StorageChanges = Record<string, { oldValue?: unknown; newValue?: unknown }>;
+export type ResolveFaviconInput = { pageUrl?: string | null; capturedUrl?: string | null; size?: number };
+export type FaviconResolver = (input: ResolveFaviconInput) => string | null;
 
 export type SafariNativeAuthRequest = {
   type: "tabloom.oauth.start";
@@ -70,6 +72,7 @@ export interface BrowserAdapter {
     launchWebAuthFlow(details: { url: string; interactive: boolean }): Promise<string | undefined>;
   };
   readonly bookmarks: { getTree(): Promise<BookmarkNode[]> };
+  readonly favicons: { resolve: FaviconResolver };
   readonly permissions: { request(permission: "bookmarks" | "tabGroups"): Promise<boolean> };
   readonly tabs: {
     listCurrentWindow(): Promise<BrowserTab[]>;

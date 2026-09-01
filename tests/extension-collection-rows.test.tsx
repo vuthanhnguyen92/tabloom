@@ -6,6 +6,7 @@ import { CollectionRows } from "../extension/CollectionRows";
 import { createDemoSnapshot } from "../shared/domain";
 import { mergeBookmarkEntries, toBookmarkWorkspace } from "../shared/bookmarks";
 import { MemoryWorkspaceRepository } from "../shared/repository";
+import type { FaviconResolver } from "../extension/browser/types";
 const extensionStyles = readFileSync("extension/style.css", "utf8");
 
 let styleElement: HTMLStyleElement;
@@ -54,11 +55,13 @@ describe("CollectionRows", () => {
   it("shows a saved-card favicon and falls back to its first letter when loading fails", () => {
     const snapshot = createDemoSnapshot();
     snapshot.links[0].favicon_url = "https://linear.app/favicon.ico";
-    render(<CollectionRows collections={snapshot.collections} links={snapshot.links} repository={new MemoryWorkspaceRepository("demo-user", snapshot)} onReload={vi.fn(async () => undefined)} />);
+    const resolveFavicon: FaviconResolver = vi.fn(({ pageUrl }) => `native-favicon:${pageUrl ?? ""}`);
+    render(<CollectionRows collections={snapshot.collections} links={snapshot.links} repository={new MemoryWorkspaceRepository("demo-user", snapshot)} onReload={vi.fn(async () => undefined)} resolveFavicon={resolveFavicon} />);
 
     const card = screen.getByRole("link", { name: /Product roadmap/i });
     const favicon = card.querySelector("img");
-    expect(favicon).toHaveAttribute("src", "https://linear.app/favicon.ico");
+    expect(favicon).toHaveAttribute("src", "native-favicon:https://linear.app/roadmap");
+    expect(resolveFavicon).toHaveBeenCalledWith({ pageUrl: "https://linear.app/roadmap", capturedUrl: "https://linear.app/favicon.ico", size: 32 });
     fireEvent.error(favicon!);
     expect(card.querySelector("img")).not.toBeInTheDocument();
     expect(within(card).getByText("P", { exact: true })).toBeVisible();

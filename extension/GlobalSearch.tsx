@@ -4,6 +4,10 @@ import { createPortal } from "react-dom";
 import type { BrowserTab } from "../shared/capture";
 import { hostnameFor, searchWorkspace, type SavedLink, type WorkspaceSearchResult, type WorkspaceSnapshot } from "../shared/domain";
 import { searchCurrentTabs, type CurrentTabSearchResult } from "./current-tab-search";
+import { FaviconTile } from "./FaviconTile";
+import type { FaviconResolver } from "./browser/types";
+
+const capturedFavicon: FaviconResolver = ({ capturedUrl }) => capturedUrl ?? null;
 
 export type GlobalSearchProps = {
   snapshot: WorkspaceSnapshot;
@@ -11,6 +15,7 @@ export type GlobalSearchProps = {
   onActivateCurrentTab: (tabId: number) => Promise<void>;
   onError?: (message: string) => void;
   onOpen?: (link: SavedLink) => void;
+  resolveFavicon?: FaviconResolver;
 };
 
 type SavedLinkSearchResult = WorkspaceSearchResult & { kind: "saved-link" };
@@ -24,21 +29,15 @@ function sourceLabel(result: WorkspaceSearchResult): string {
   return "Tabloom";
 }
 
-function ResultFavicon({ faviconUrl, title }: { faviconUrl?: string | null; title: string }) {
-  const [failed, setFailed] = useState(false);
-  const fallback = title.trim().charAt(0).toUpperCase() || "•";
-  return <span className="global-search-favicon">{faviconUrl && !failed ? (
-    // Favicons are browser-provided URLs and do not use the hosted site's image pipeline.
-    // eslint-disable-next-line @next/next/no-img-element
-    <img alt="" onError={() => setFailed(true)} src={faviconUrl} />
-  ) : fallback}</span>;
+function ResultFavicon({ capturedUrl, pageUrl, resolveFavicon, title }: { capturedUrl?: string | null; pageUrl?: string | null; resolveFavicon: FaviconResolver; title: string }) {
+  return <FaviconTile className="global-search-favicon" src={resolveFavicon({ pageUrl, capturedUrl, size: 32 })} title={title} />;
 }
 
 function errorMessage(error: unknown, fallback: string): string {
   return error instanceof Error && error.message ? error.message : fallback;
 }
 
-export function GlobalSearch({ snapshot, listCurrentTabs, onActivateCurrentTab, onError, onOpen }: GlobalSearchProps) {
+export function GlobalSearch({ snapshot, listCurrentTabs, onActivateCurrentTab, onError, onOpen, resolveFavicon = capturedFavicon }: GlobalSearchProps) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [activeIndex, setActiveIndex] = useState(0);
@@ -182,7 +181,7 @@ export function GlobalSearch({ snapshot, listCurrentTabs, onActivateCurrentTab, 
                   onMouseEnter={() => setActiveIndex(index)}
                   type="button"
                 >
-                  <ResultFavicon faviconUrl={result.tab.favIconUrl} title={result.tab.title || hostnameFor(result.tab.url)} />
+                  <ResultFavicon capturedUrl={result.tab.favIconUrl} pageUrl={result.tab.url} resolveFavicon={resolveFavicon} title={result.tab.title || hostnameFor(result.tab.url)} />
                   <span className="global-search-copy">
                     <strong>{result.tab.title || hostnameFor(result.tab.url)}</strong>
                     <span>{hostnameFor(result.tab.url)}</span>
@@ -205,7 +204,7 @@ export function GlobalSearch({ snapshot, listCurrentTabs, onActivateCurrentTab, 
                     rel="noreferrer"
                     target="_blank"
                   >
-                    <ResultFavicon faviconUrl={result.link.favicon_url} title={result.link.title} />
+                    <ResultFavicon capturedUrl={result.link.favicon_url} pageUrl={result.link.url} resolveFavicon={resolveFavicon} title={result.link.title} />
                     <span className="global-search-copy">
                       <strong>{result.link.title || hostnameFor(result.link.url)}</strong>
                       <span>{result.space.name} › {result.collection.name}</span>

@@ -8,6 +8,9 @@ import { openCollectionTabs } from "./chrome-api";
 import { BROWSER_TAB_MIME } from "./CurrentTabsSheet";
 import { FaviconTile } from "./FaviconTile";
 import type { CollectionCollapsePreference } from "./collection-collapse-preference";
+import type { FaviconResolver } from "./browser/types";
+
+const capturedFavicon: FaviconResolver = ({ capturedUrl }) => capturedUrl ?? null;
 
 export type CollectionRowsProps = {
   collections: Collection[];
@@ -25,6 +28,7 @@ export type CollectionRowsProps = {
   onError?: (message: string) => void;
   onMessage?: (message: string) => void;
   highlightedLinkId?: string;
+  resolveFavicon?: FaviconResolver;
 };
 
 type DraggedItem =
@@ -40,7 +44,7 @@ const waitForDeleteExit = () => new Promise<void>((resolve) => setTimeout(resolv
   typeof window !== "undefined" && window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ? 0 : DELETE_EXIT_MS,
 ));
 
-export function CollectionRows({ collections, links, allLinks = links, bookmarkDropCollections = [], browserTabDragSession = 0, collapsePreference, collapseScope = "local", repository, onReload, onOpenCollection = async (collection, collectionLinks) => { await openCollectionTabs(collection.name, collectionLinks.map((link) => link.url)); }, onBrowserTabDrop, onBookmarkDrop, onError, onMessage, highlightedLinkId }: CollectionRowsProps) {
+export function CollectionRows({ collections, links, allLinks = links, bookmarkDropCollections = [], browserTabDragSession = 0, collapsePreference, collapseScope = "local", repository, onReload, onOpenCollection = async (collection, collectionLinks) => { await openCollectionTabs(collection.name, collectionLinks.map((link) => link.url)); }, onBrowserTabDrop, onBookmarkDrop, onError, onMessage, highlightedLinkId, resolveFavicon = capturedFavicon }: CollectionRowsProps) {
   const [dragged, setDragged] = useState<DraggedItem>(null);
   const [linkDropPreview, setLinkDropPreview] = useState<LinkDropPreview>(null);
   const [collectionDropPreview, setCollectionDropPreview] = useState<CollectionDropPreview>(null);
@@ -312,7 +316,7 @@ export function CollectionRows({ collections, links, allLinks = links, bookmarkD
             onDragEnd={clearDrag}
             onDragOver={(event) => { event.stopPropagation(); if (!canMutate) return; allowDrop(event); if (!previewBrowserTabDrop(event, collection)) previewLinkDrop(collection, link.id); }}
             onDrop={(event) => { event.preventDefault(); event.stopPropagation(); if (!canMutate) return clearDrag(); if (acceptBrowserTab(event, collection)) return; if (dragged?.kind === "browser-bookmark") void copyBookmark(collection); else void moveLink(collection.id, link.id); }}
-          ><FaviconTile src={link.favicon_url} title={link.title} /><span><b>{link.title}</b><small>{hostnameFor(link.url)}</small>{link.device_label && <small className="bookmark-device-label">{link.device_label}</small>}</span><GripVertical aria-hidden="true" className="card-drag-indicator" size={14} /></a>{canMutate && link.origin === "saved" && <button aria-label={`Delete ${link.title}`} className="saved-link-delete" draggable={false} title={`Delete ${link.title}`} onClick={(event) => { event.stopPropagation(); setPendingDeleteLink(link); }}><Trash2 size={14} /></button>}</div>
+          ><FaviconTile src={resolveFavicon({ pageUrl: link.url, capturedUrl: link.favicon_url, size: 32 })} title={link.title} /><span><b>{link.title}</b><small>{hostnameFor(link.url)}</small>{link.device_label && <small className="bookmark-device-label">{link.device_label}</small>}</span><GripVertical aria-hidden="true" className="card-drag-indicator" size={14} /></a>{canMutate && link.origin === "saved" && <button aria-label={`Delete ${link.title}`} className="saved-link-delete" draggable={false} title={`Delete ${link.title}`} onClick={(event) => { event.stopPropagation(); setPendingDeleteLink(link); }}><Trash2 size={14} /></button>}</div>
           </Fragment>; })}
           {showsPreview && !linkDropPreview.targetLinkId && <div aria-hidden="true" className="ext-link-drop-preview"><span>Drop here</span></div>}
         </div>

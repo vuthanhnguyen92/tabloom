@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 import { GlobalSearch } from "../extension/GlobalSearch";
 import type { BrowserTab } from "../shared/capture";
 import { createDemoSnapshot, type WorkspaceSnapshot } from "../shared/domain";
+import type { FaviconResolver } from "../extension/browser/types";
 
 const currentTabs: BrowserTab[] = [
   { id: 1, title: "Tabloom", url: "chrome-extension://tabloom/index.html", active: true, index: 0 },
@@ -159,10 +160,13 @@ describe("GlobalSearch", () => {
     const user = userEvent.setup();
     const snapshot = searchSnapshot();
     snapshot.links[0] = { ...snapshot.links[0], favicon_url: "https://invalid.example/favicon.ico" };
-    renderSearch({ snapshot });
+    const resolveFavicon: FaviconResolver = vi.fn(({ pageUrl }) => `native-favicon:${pageUrl ?? ""}`);
+    renderSearch({ snapshot, resolveFavicon });
     await user.click(screen.getByRole("button", { name: "Search all links" }));
     await user.type(screen.getByRole("searchbox"), "Product roadmap");
     const result = screen.getByRole("link", { name: /Product roadmap/ });
+    expect(result.querySelector("img")).toHaveAttribute("src", "native-favicon:https://linear.app/roadmap");
+    expect(resolveFavicon).toHaveBeenCalledWith({ pageUrl: "https://linear.app/roadmap", capturedUrl: "https://invalid.example/favicon.ico", size: 32 });
     fireEvent.error(result.querySelector("img")!);
     expect(result.querySelector(".global-search-favicon")).toHaveTextContent("P");
   });
