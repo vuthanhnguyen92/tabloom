@@ -96,6 +96,20 @@ class LocalWorkspaceRepository implements WorkspaceRepository {
     private readonly cache: ChromeSnapshotCache,
   ) {}
 
+  static async openExisting(area: StorageArea): Promise<LocalWorkspaceRepository | null> {
+    const cache = new ChromeSnapshotCache(area);
+    return withLocalWorkspaceLock(async () => {
+      await cache.migrateLegacyOnce();
+      const existing = await cache.read();
+      return existing
+        ? new LocalWorkspaceRepository(
+            new MemoryWorkspaceRepository("local-user", existing),
+            cache,
+          )
+        : null;
+    });
+  }
+
   static async create(area: StorageArea) {
     const cache = new ChromeSnapshotCache(area);
     return withLocalWorkspaceLock(async () => {
@@ -137,6 +151,12 @@ class LocalWorkspaceRepository implements WorkspaceRepository {
 
 export function createLocalWorkspaceRepository(area: StorageArea = browserAdapter.storage): Promise<WorkspaceRepository> {
   return LocalWorkspaceRepository.create(area);
+}
+
+export function openLocalWorkspaceRepository(
+  area: StorageArea = browserAdapter.storage,
+): Promise<WorkspaceRepository | null> {
+  return LocalWorkspaceRepository.openExisting(area);
 }
 
 export const browserAuthStorage = {
