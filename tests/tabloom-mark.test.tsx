@@ -1,8 +1,14 @@
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
-import { TabloomMark } from "../shared/TabloomMark";
+import { resolveBundledAssetUrl, TabloomMark } from "../shared/TabloomMark";
 
 describe("TabloomMark", () => {
+  it("resolves both Vite string assets and Next.js static image objects", () => {
+    expect(resolveBundledAssetUrl("/mark.svg")).toBe("/mark.svg");
+    expect(resolveBundledAssetUrl({ src: "/_next/static/mark.svg" }))
+      .toBe("/_next/static/mark.svg");
+  });
+
   it("renders the shared mark as decorative by default", () => {
     const { container } = render(<TabloomMark className="test-mark" />);
 

@@ -5,6 +5,10 @@ export type TabloomMarkProps = {
   title?: string;
 };
 
+export function resolveBundledAssetUrl(asset: string | { src: string }): string {
+  return typeof asset === "string" ? asset : asset.src;
+}
+
 export function TabloomMark({ className, title }: TabloomMarkProps) {
   return (
     // The source is a bundled local asset shared by hosted and extension surfaces.
@@ -13,7 +17,7 @@ export function TabloomMark({ className, title }: TabloomMarkProps) {
       alt={title ?? ""}
       aria-hidden={title ? undefined : true}
       className={className}
-      src={markUrl}
+      src={resolveBundledAssetUrl(markUrl)}
     />
   );
 }
