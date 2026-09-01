@@ -21,4 +21,15 @@ describe("WorkspaceBootBoundary", () => {
 
     expect(screen.getByText("Remembered space")).toBeVisible();
   });
+
+  it("announces workspace restoration without painting defaults", () => {
+    render(
+      <WorkspaceBootBoundary ready={false} label="Restoring workspace">
+        <div>My Collection</div>
+      </WorkspaceBootBoundary>,
+    );
+
+    expect(screen.getByRole("main", { name: "Restoring workspace" })).toHaveAttribute("aria-busy", "true");
+    expect(screen.queryByText("My Collection")).not.toBeInTheDocument();
+  });
 });

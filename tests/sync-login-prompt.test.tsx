@@ -14,6 +14,21 @@ const signedInProps = {
 };
 
 describe("SyncLoginPrompt", () => {
+  it("offers explicit restoration without starting sign-in automatically", () => {
+    const onSignIn = vi.fn(async () => undefined);
+
+    render(<SyncLoginPrompt
+      callbackUrl="https://stable.chromiumapp.org/auth-callback"
+      configured
+      onSignIn={onSignIn}
+      recoverySuggested
+      target="chromium"
+    />);
+
+    expect(screen.getByRole("button", { name: /Reconnect to restore workspace/i })).toBeVisible();
+    expect(onSignIn).not.toHaveBeenCalled();
+  });
+
   it("opens a login modal without blocking local workspace use when Supabase is unavailable", async () => {
     render(<header style={{ transform: "translateY(0)" }}>
       <SyncLoginPrompt callbackUrl="https://stable.chromiumapp.org/auth-callback" configured={false} onSignIn={vi.fn()} target="chromium" />

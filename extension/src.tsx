@@ -13,15 +13,16 @@ import type { WorkspaceMergePlan } from "../shared/workspace-merge";
 import { SupabaseWorkspaceSyncRepository } from "../shared/workspace-sync-repository";
 import { TabloomMark } from "../shared/TabloomMark";
 import { openCollectionTabs, type CaptureTab } from "./chrome-api";
-import { ChromeSnapshotCache, createLocalWorkspaceRepository } from "./storage";
-import { extensionSupabase, signInExtensionWithGoogle } from "./supabase";
+import { ChromeSnapshotCache, createLocalWorkspaceRepository, openLocalWorkspaceRepository } from "./storage";
+import { extensionSupabase, recoverExtensionSessionSilently, signInExtensionWithGoogle } from "./supabase";
 import { CollectionRows } from "./CollectionRows";
 import { BrowserBookmarksPanel } from "./BrowserBookmarksPanel";
 import { CurrentTabsSheet } from "./CurrentTabsSheet";
 import { saveDroppedTab } from "./dropped-tab";
 import { SpaceSidebar } from "./SpaceSidebar";
 import { browserAdapter, browserTarget } from "./browser";
-import { callbackForTarget } from "./auth/oauth";
+import { callbackForTarget, isSilentOAuthMiss, type ExtensionOAuthSession } from "./auth/oauth";
+import { AuthRecoveryPreference } from "./auth/recovery-preference";
 import { SyncLoginPrompt, type SyncUser } from "./SyncLoginPrompt";
 import { CreateCollectionPrompt } from "./CreateCollectionPrompt";
 import { WorkspaceSyncPrompt } from "./WorkspaceSyncPrompt";
@@ -38,12 +39,14 @@ import { SelectedSpacePreference } from "./selected-space-preference";
 import { CollectionCollapsePreference } from "./collection-collapse-preference";
 import { mergeAccountWorkspaceIntoLocal } from "./logout-workspace";
 import { WorkspaceBootBoundary } from "./WorkspaceBootBoundary";
+import { bootstrapWorkspace } from "./workspace-bootstrap";
 import "./style.css";
 
 const cache = new ChromeSnapshotCache();
 const oauthCallbackUrl = callbackForTarget(browserTarget, browserAdapter.identity);
 const selectedSpacePreference = new SelectedSpacePreference(browserAdapter.storage);
 const collectionCollapsePreference = new CollectionCollapsePreference(browserAdapter.storage);
+const authRecoveryPreference = new AuthRecoveryPreference(browserAdapter.storage);
 const LOCAL_SPACE_SCOPE = "local";
 const accountSpaceScope = (userId: string) => `account:${userId}`;
 
@@ -64,7 +67,7 @@ function waitForStorageKey(key: string, expiresAt: number): Promise<void> {
 
 function Mark() { return <span className="ext-brand"><TabloomMark className="ext-brand-mark" />tabloom</span>; }
 
-function ExtensionApp() {
+export function ExtensionApp() {
   const [bootstrapReady, setBootstrapReady] = useState(false);
   const [repository, setRepository] = useState<WorkspaceRepository | null>(null);
   const [bookmarkRepository, setBookmarkRepository] = useState<BookmarkRepository | null>(null);
@@ -84,7 +87,9 @@ function ExtensionApp() {
   const [savingDroppedTab, setSavingDroppedTab] = useState(false);
   const [browserTabDrag, setBrowserTabDrag] = useState({ active: false, session: 0 });
   const [workspaceScope, setWorkspaceScope] = useState(LOCAL_SPACE_SCOPE);
+  const [recoverySuggested, setRecoverySuggested] = useState(false);
   const savingDroppedTabRef = useRef(false);
+  const silentRecoveryBusyRef = useRef(false);
   const localRepositoryRef = useRef<WorkspaceRepository | null>(null);
   const syncUserIdRef = useRef<string | null>(null);
   const localFirstStorageRef = useRef<LocalFirstStorage | null>(null);
@@ -255,26 +260,66 @@ function ExtensionApp() {
     }
   }
 
+  async function activateRecoveredSession(userId: string, generation: number) {
+    if (!extensionSupabase || activationGenerationRef.current !== generation) return;
+    syncUserIdRef.current = userId;
+    setBookmarkRepository(new SupabaseBookmarkRepository(extensionSupabase, userId));
+    setSyncStatus("checking");
+    await activateCanonical(userId, generation);
+  }
+
   useEffect(() => {
     let active = true;
     void (async () => {
       try {
-        const local = await createLocalWorkspaceRepository();
-        if (!active) return;
+        const generation = ++activationGenerationRef.current;
+        const result = await bootstrapWorkspace({
+          openLocal: () => openLocalWorkspaceRepository(),
+          createLocal: () => createLocalWorkspaceRepository(),
+          getStoredSession: async (): Promise<ExtensionOAuthSession | null> => {
+            if (!extensionSupabase) return null;
+            const session = (await extensionSupabase.auth.getSession()).data.session;
+            return session ? {
+              user: {
+                id: session.user.id,
+                email: session.user.email,
+                user_metadata: session.user.user_metadata,
+              },
+            } : null;
+          },
+          recoverSession: recoverExtensionSessionSilently,
+          loadRemote: () => {
+            if (!extensionSupabase) throw new Error("Supabase is not configured.");
+            return new SupabaseWorkspaceSyncRepository(extensionSupabase).loadVersioned();
+          },
+          saveRemote: (userId, value) => cache.saveCloud(userId, value),
+          recoveryState: () => authRecoveryPreference.read(),
+          markRecoveryPending: () => authRecoveryPreference.markPending(),
+          clearRecoveryState: () => authRecoveryPreference.clear(),
+          canRecover: () => Boolean(extensionSupabase) && browserAdapter.capabilities.identity,
+          isOnline: () => navigator.onLine,
+        });
+        if (!active || activationGenerationRef.current !== generation) return;
+
+        setRecoverySuggested(result.recoverySuggested);
+        if (result.session) setUser(result.session.user);
+
+        if (result.mode === "recovered") {
+          await activateRecoveredSession(result.session.user.id, generation);
+          return;
+        }
+
+        const local = result.localRepository;
         localRepositoryRef.current = local;
         setRepository(local);
         await load(local);
-        if (!extensionSupabase) return;
-        const generation = ++activationGenerationRef.current;
-        try {
-          const { data } = await extensionSupabase.auth.getSession();
-          if (!active || activationGenerationRef.current !== generation) return;
-          if (data.session) {
-            setUser(data.session.user);
-            await beginWorkspaceSync(data.session.user.id, local, generation);
-          }
-        } catch {
-          if (active && activationGenerationRef.current === generation) setMessage("Cloud sync is unavailable · your local workspace is still ready");
+        if (!active || activationGenerationRef.current !== generation) return;
+        setBootstrapReady(true);
+
+        if (result.mode === "local-session") {
+          await beginWorkspaceSync(result.session.user.id, local, generation);
+        } else if (result.mode === "offline") {
+          setMessage("Cloud sync is unavailable · your local workspace is still ready");
         }
       } catch {
         if (active) setError("Could not restore your local Tabloom workspace.");
@@ -290,6 +335,45 @@ function ExtensionApp() {
     // Bootstrap owns the initial repository and coordinator lifecycle; rerunning it would create duplicate listeners.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  async function retrySilentRecovery(local: WorkspaceRepository) {
+    if (!extensionSupabase || !recoverySuggested || silentRecoveryBusyRef.current) return;
+    silentRecoveryBusyRef.current = true;
+    const generation = ++activationGenerationRef.current;
+    try {
+      const session = await recoverExtensionSessionSilently();
+      if (activationGenerationRef.current !== generation) return;
+      await authRecoveryPreference.clear();
+      setRecoverySuggested(false);
+      setUser(session.user);
+      await beginWorkspaceSync(session.user.id, local, generation);
+    } catch (reason) {
+      if (!isSilentOAuthMiss(reason) && activationGenerationRef.current === generation) {
+        setError(reason instanceof Error ? reason.message : "Could not restore your workspace.");
+      }
+    } finally {
+      silentRecoveryBusyRef.current = false;
+    }
+  }
+
+  useEffect(() => {
+    const local = localRepositoryRef.current;
+    if (!recoverySuggested || !local) return;
+    let attempted = false;
+    const attempt = () => {
+      if (attempted || document.visibilityState !== "visible") return;
+      attempted = true;
+      void retrySilentRecovery(local);
+    };
+    window.addEventListener("focus", attempt);
+    document.addEventListener("visibilitychange", attempt);
+    return () => {
+      window.removeEventListener("focus", attempt);
+      document.removeEventListener("visibilitychange", attempt);
+    };
+    // Recovery is deliberately limited to one attempt for each mounted new-tab lifetime.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [recoverySuggested]);
 
   const activeSpace = snapshot?.spaces.find((space) => space.id === selectedSpace) ?? snapshot?.spaces[0];
   const collections = snapshot?.collections.filter((collection) => collection.space_id === activeSpace?.id) ?? [];
@@ -370,6 +454,8 @@ function ExtensionApp() {
     const session = await signInExtensionWithGoogle();
     const local = localRepositoryRef.current;
     if (!extensionSupabase || !local || activationGenerationRef.current !== generation) return;
+    await authRecoveryPreference.clear();
+    setRecoverySuggested(false);
     setUser(session.user);
     await beginWorkspaceSync(session.user.id, local, generation);
   }
@@ -379,13 +465,15 @@ function ExtensionApp() {
     const local = localRepositoryRef.current;
     const accountRepository = repository;
     const userId = syncUserIdRef.current;
-    if (!extensionSupabase || !local || !accountRepository || !userId) return;
+    if (!extensionSupabase || !accountRepository || !userId) return;
     stopActiveCoordinator();
-    const [localSnapshot, accountSnapshot] = await Promise.all([
-      local.load(),
-      accountRepository.load(),
-    ]);
-    await cache.write(mergeAccountWorkspaceIntoLocal(localSnapshot, accountSnapshot));
+    const accountSnapshot = await accountRepository.load();
+    if (local) {
+      const localSnapshot = await local.load();
+      await cache.write(mergeAccountWorkspaceIntoLocal(localSnapshot, accountSnapshot));
+    } else {
+      await cache.write(accountSnapshot);
+    }
     const nextLocal = await createLocalWorkspaceRepository();
     try {
       const { error: signOutError } = await extensionSupabase.auth.signOut();
@@ -395,6 +483,7 @@ function ExtensionApp() {
       throw reason;
     }
     if (activationGenerationRef.current !== generation) return;
+    await authRecoveryPreference.suppress();
     syncUserIdRef.current = null;
     localRepositoryRef.current = nextLocal;
     setBookmarkRepository(null);
@@ -490,9 +579,9 @@ function ExtensionApp() {
     ? new CombinedWorkspaceRepository(repository, bookmarkRepository)
     : null;
 
-  return <WorkspaceBootBoundary ready={bootstrapReady}><main className={`ext-shell ${tabsExpanded ? "sheet-open" : "sheet-collapsed"}`}>
+  return <WorkspaceBootBoundary ready={bootstrapReady} label="Restoring workspace"><main className={`ext-shell ${tabsExpanded ? "sheet-open" : "sheet-collapsed"}`}>
     {snapshot ? <SpaceSidebar activeSpaceId={activeSpace?.id ?? ""} brand={<Mark />} repository={repository} snapshot={snapshot} onError={setError} onMessage={setMessage} onReload={() => repository ? load(repository) : Promise.resolve()} onSelect={selectSpace} /> : <aside className="ext-sidebar collapsed"><div className="sidebar-top" /></aside>}
-    <section className="ext-main"><header><div><h1>{activeSpace?.name || "Your workspace"}</h1></div><div className="ext-header-tools">{repository && <CreateCollectionPrompt activeSpaceId={activeSpace?.origin === "saved" && !activeSpace.read_only ? activeSpace.id : undefined} repository={repository} onCreated={() => load(repository)} onError={setError} />}{user && !coordinatorState && (syncStatus === "pending" || syncStatus === "error") && <button className="sync-login-trigger sync-retry-trigger" onClick={() => void retryWorkspaceSync()}>Retry sync</button>}{snapshot && <GlobalSearch listCurrentTabs={() => browserAdapter.tabs.listCurrentWindow()} onActivateCurrentTab={async (tabId) => { const result = await browserAdapter.tabs.activateExisting(tabId); if (result.cleanupError) setError(result.cleanupError); }} onError={setError} resolveFavicon={browserAdapter.favicons.resolve} snapshot={snapshot} />}<SyncLoginPrompt callbackUrl={oauthCallbackUrl} configured={Boolean(extensionSupabase)} onSignIn={signIn} onLogout={logout} onRetrySync={() => coordinatorRef.current?.retryFailed() ?? Promise.resolve()} syncState={coordinatorState ?? undefined} target={browserTarget} user={user} /></div></header>
+    <section className="ext-main"><header><div><h1>{activeSpace?.name || "Your workspace"}</h1></div><div className="ext-header-tools">{repository && <CreateCollectionPrompt activeSpaceId={activeSpace?.origin === "saved" && !activeSpace.read_only ? activeSpace.id : undefined} repository={repository} onCreated={() => load(repository)} onError={setError} />}{user && !coordinatorState && (syncStatus === "pending" || syncStatus === "error") && <button className="sync-login-trigger sync-retry-trigger" onClick={() => void retryWorkspaceSync()}>Retry sync</button>}{snapshot && <GlobalSearch listCurrentTabs={() => browserAdapter.tabs.listCurrentWindow()} onActivateCurrentTab={async (tabId) => { const result = await browserAdapter.tabs.activateExisting(tabId); if (result.cleanupError) setError(result.cleanupError); }} onError={setError} resolveFavicon={browserAdapter.favicons.resolve} snapshot={snapshot} />}<SyncLoginPrompt callbackUrl={oauthCallbackUrl} configured={Boolean(extensionSupabase)} onSignIn={signIn} onLogout={logout} onRetrySync={() => coordinatorRef.current?.retryFailed() ?? Promise.resolve()} recoverySuggested={recoverySuggested} syncState={coordinatorState ?? undefined} target={browserTarget} user={user} /></div></header>
       {activeSpace?.id === BROWSER_BOOKMARKS_SPACE_ID && bookmarkRepository && repository && bookmarkWorkspace && browserAdapter.capabilities.bookmarks
         ? <BrowserBookmarksPanel repository={bookmarkRepository} workspace={bookmarkWorkspace} cache={bookmarkCache} onWorkspaceReload={() => load(repository)} />
         : null}
@@ -506,4 +595,5 @@ function ExtensionApp() {
   </main></WorkspaceBootBoundary>;
 }
 
-createRoot(document.getElementById("root")!).render(<React.StrictMode><ExtensionApp /></React.StrictMode>);
+const rootElement = document.getElementById("root");
+if (rootElement) createRoot(rootElement).render(<React.StrictMode><ExtensionApp /></React.StrictMode>);

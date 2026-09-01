@@ -14,6 +14,7 @@ export type SyncLoginPromptProps = {
   user?: SyncUser | null;
   syncState?: WorkspaceSyncState;
   onRetrySync?: () => Promise<void>;
+  recoverySuggested?: boolean;
 };
 
 export type SyncUser = {
@@ -38,7 +39,7 @@ function accountDetails(user: SyncUser) {
   };
 }
 
-export function SyncLoginPrompt({ callbackUrl, configured, onSignIn, onLogout, target, user, syncState, onRetrySync }: SyncLoginPromptProps) {
+export function SyncLoginPrompt({ callbackUrl, configured, onSignIn, onLogout, target, user, syncState, onRetrySync, recoverySuggested = false }: SyncLoginPromptProps) {
   const [open, setOpen] = useState(false);
   const [accountOpen, setAccountOpen] = useState(false);
   const [connecting, setConnecting] = useState(false);
@@ -150,7 +151,7 @@ export function SyncLoginPrompt({ callbackUrl, configured, onSignIn, onLogout, t
   }
 
   return <>
-    <button className="sync-login-trigger" onClick={() => setOpen(true)}><Cloud size={15} /> Sign in to sync</button>
+    <button className="sync-login-trigger" onClick={() => setOpen(true)}><Cloud size={15} /> {recoverySuggested ? "Reconnect to restore workspace" : "Sign in to sync"}</button>
     {open && createPortal(<div className="drop-confirm-backdrop">
       <section className="drop-confirm sync-login-modal" role="dialog" aria-modal="true" aria-label="Sync with Tabloom">
         <button className="dialog-close" aria-label="Close sign-in" disabled={connecting} onClick={() => setOpen(false)}><X size={18} /></button>
