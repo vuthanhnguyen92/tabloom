@@ -7,6 +7,7 @@ import {
   Sparkles,
 } from "lucide-react";
 import { Brand } from "./components/Brand";
+import { BrowserDownloadButton } from "./BrowserDownloadButton";
 
 const previewLinks = [
   ["Brand system", "figma.com", "#f56f72"],
@@ -26,9 +27,7 @@ export default function Home() {
           <a href="#workflow">How it works</a>
           <a href="#privacy">Privacy</a>
         </nav>
-        <a className="button button-quiet" href="/app">
-          Open workspace <ArrowRight size={16} />
-        </a>
+        <BrowserDownloadButton className="button button-quiet" iconSize={16} />
       </header>
 
       <section className="hero" id="top">
@@ -40,12 +39,10 @@ export default function Home() {
             return to focused work without hunting through a crowded tab bar.
           </p>
           <div className="hero-actions">
-            <a className="button button-primary" href="/app">
-              Start organizing <ArrowRight size={18} />
-            </a>
-            <span className="no-card"><Check size={15} /> Free personal workspace</span>
+            <BrowserDownloadButton className="button button-primary" />
+            <span className="no-card"><Check size={15} /> Unpack and install in a few steps</span>
           </div>
-          <div className="browser-note"><Compass size={22} /> Chrome new-tab extension included</div>
+          <div className="browser-note"><Compass size={22} /> Chrome, Firefox, and Safari builds included</div>
         </div>
         <div className="hero-visual" aria-label="Tabloom workspace preview">
           <div className="orb orb-one" />
@@ -107,7 +104,7 @@ export default function Home() {
         <div className="cta-bloom" aria-hidden="true"><i /><i /><i /><i /><i /></div>
         <span className="eyebrow">Ready when your next idea arrives</span>
         <h2>Clear the tabs.<br />Keep what matters.</h2>
-        <a className="button button-dark" href="/app">Start organizing <ArrowRight size={18} /></a>
+        <BrowserDownloadButton className="button button-dark" />
       </section>
 
       <footer id="privacy">

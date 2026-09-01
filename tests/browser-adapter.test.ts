@@ -4,6 +4,17 @@ import { createChromiumAdapter } from "../extension/browser/chromium";
 import { createFirefoxAdapter } from "../extension/browser/firefox";
 import { createSafariAdapter } from "../extension/browser/safari";
 
+function createTabEvent<Args extends unknown[]>() {
+  const listeners = new Set<(...args: Args) => void>();
+  return {
+    addListener: vi.fn((listener: (...args: Args) => void) => listeners.add(listener)),
+    removeListener: vi.fn((listener: (...args: Args) => void) => listeners.delete(listener)),
+    emit(...args: Args) {
+      for (const listener of listeners) listener(...args);
+    },
+  };
+}
+
 function createNamespace({ withGroups = true } = {}) {
   let nextTabId = 10;
   const storageListeners = new Set<(changes: Record<string, { oldValue?: unknown; newValue?: unknown }>, areaName: string) => void>();
@@ -13,6 +24,7 @@ function createNamespace({ withGroups = true } = {}) {
       create: vi.fn(async () => ({ id: nextTabId++ })),
       update: vi.fn(async (tabId: number) => ({ id: tabId, title: "Target", url: "https://target.example", active: true, index: 1 })),
       remove: vi.fn(async () => undefined),
+      onRemoved: createTabEvent<[number]>(),
       group: withGroups ? vi.fn(async () => 7) : undefined,
       ungroup: withGroups ? vi.fn(async () => undefined) : undefined,
     },
@@ -93,6 +105,20 @@ describe("BrowserAdapter", () => {
     expect(listener).toHaveBeenCalledWith(["workspace"]);
     unsubscribe();
     namespace.storage.onChanged.emit({ queue: { newValue: [] } }, "local");
+    expect(listener).toHaveBeenCalledOnce();
+  });
+
+  it("emits browser tab changes and stops after unsubscribe", () => {
+    const namespace = createNamespace();
+    const adapter = createWebExtensionAdapter("chromium", namespace);
+    const listener = vi.fn();
+
+    const unsubscribe = adapter.tabChanges.subscribe(listener);
+    namespace.tabs.onRemoved.emit(1);
+    expect(listener).toHaveBeenCalledOnce();
+
+    unsubscribe();
+    namespace.tabs.onRemoved.emit(2);
     expect(listener).toHaveBeenCalledOnce();
   });
 

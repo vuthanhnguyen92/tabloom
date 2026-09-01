@@ -22,6 +22,26 @@ export function createWebExtensionAdapter(target: BrowserTarget, api: WebExtensi
         return () => onChanged.removeListener(handleChange);
       },
     },
+    tabChanges: {
+      subscribe(listener) {
+        const removers: Array<() => void> = [];
+        const subscribe = <Listener,>(event: { addListener(listener: Listener): void; removeListener(listener: Listener): void } | undefined, handler: Listener) => {
+          if (!event) return;
+          event.addListener(handler);
+          removers.push(() => event.removeListener(handler));
+        };
+        const notify = () => listener();
+        subscribe(api.tabs.onCreated, notify);
+        subscribe(api.tabs.onRemoved, notify);
+        subscribe(api.tabs.onUpdated, notify);
+        subscribe(api.tabs.onMoved, notify);
+        subscribe(api.tabs.onAttached, notify);
+        subscribe(api.tabs.onDetached, notify);
+        subscribe(api.tabs.onReplaced, notify);
+        subscribe(api.tabs.onActivated, notify);
+        return () => removers.forEach((remove) => remove());
+      },
+    },
     identity: {
       getRedirectURL(path) {
         if (!api.identity) throw new Error(`${target} does not provide the identity API required for sign-in.`);

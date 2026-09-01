@@ -25,10 +25,11 @@ export type CurrentTabsSheetProps = {
   onWorkspaceReload: () => Promise<void>;
   listTabs?: () => Promise<CaptureTab[]>;
   closeTabs?: (tabIds: number[]) => Promise<void>;
+  subscribeToTabChanges?: (listener: () => void) => () => void;
   resolveFavicon?: FaviconResolver;
 };
 
-export function CurrentTabsSheet({ activeSpaceId, expanded, repository, refreshVersion = 0, onError, onExpandedChange, onMessage, onOpenTab, onTabDragChange, onWorkspaceReload, listTabs = listCurrentWindowTabs, closeTabs = (tabIds) => browserAdapter.tabs.close(tabIds), resolveFavicon = capturedFavicon }: CurrentTabsSheetProps) {
+export function CurrentTabsSheet({ activeSpaceId, expanded, repository, refreshVersion = 0, onError, onExpandedChange, onMessage, onOpenTab, onTabDragChange, onWorkspaceReload, listTabs = listCurrentWindowTabs, closeTabs = (tabIds) => browserAdapter.tabs.close(tabIds), subscribeToTabChanges, resolveFavicon = capturedFavicon }: CurrentTabsSheetProps) {
   const [tabs, setTabs] = useState<CaptureTab[]>([]);
   const [loading, setLoading] = useState(true);
   const [naming, setNaming] = useState(false);
@@ -52,6 +53,25 @@ export function CurrentTabsSheet({ activeSpaceId, expanded, repository, refreshV
     void listTabs().then((next) => { if (active) { setTabs(next); setLoading(false); } }).catch((reason) => { if (active) { onError(reason instanceof Error ? reason.message : "Could not read current tabs."); setLoading(false); } });
     return () => { active = false; };
   }, [listTabs, onError, refreshVersion]);
+
+  useEffect(() => {
+    if (!subscribeToTabChanges) return;
+    let active = true;
+    let refreshTimer: ReturnType<typeof setTimeout> | undefined;
+    const unsubscribe = subscribeToTabChanges(() => {
+      clearTimeout(refreshTimer);
+      refreshTimer = setTimeout(() => {
+        void listTabs()
+          .then((next) => { if (active) setTabs(next); })
+          .catch((reason) => { if (active) onError(reason instanceof Error ? reason.message : "Could not refresh current tabs."); });
+      }, 80);
+    });
+    return () => {
+      active = false;
+      clearTimeout(refreshTimer);
+      unsubscribe();
+    };
+  }, [listTabs, onError, subscribeToTabChanges]);
 
   function startDrag(event: DragEvent, tab: CaptureTab) {
     if (!tab.saveable) return;

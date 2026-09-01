@@ -106,6 +106,37 @@ describe("CurrentTabsSheet", () => {
     expect(onExpandedChange).toHaveBeenCalledWith(false);
   });
 
+  it("removes a closed browser tab from the tray after a tab-change event", async () => {
+    const snapshot = createDemoSnapshot();
+    let currentTabs = browserTabs;
+    let notifyTabChange: () => void = () => undefined;
+    const listTabs = vi.fn(async () => currentTabs);
+
+    render(<CurrentTabsSheet
+      activeSpaceId="space-launch"
+      collections={snapshot.collections}
+      expanded
+      repository={new MemoryWorkspaceRepository("demo-user", snapshot)}
+      onError={vi.fn()}
+      onExpandedChange={vi.fn()}
+      onMessage={vi.fn()}
+      onWorkspaceReload={vi.fn(async () => undefined)}
+      listTabs={listTabs}
+      subscribeToTabChanges={(listener) => {
+        notifyTabChange = listener;
+        return () => undefined;
+      }}
+    />);
+
+    expect(await screen.findByText("Roadmap")).toBeInTheDocument();
+    currentTabs = browserTabs.filter((tab) => tab.id !== 41);
+    notifyTabChange();
+
+    await waitFor(() => expect(screen.queryByText("Roadmap")).not.toBeInTheDocument());
+    expect(screen.getByText("Settings")).toBeInTheDocument();
+    expect(listTabs).toHaveBeenCalledTimes(2);
+  });
+
   it("disables duplicate cleanup when the window has no duplicate web tabs", async () => {
     setup();
     await screen.findByText("Roadmap");

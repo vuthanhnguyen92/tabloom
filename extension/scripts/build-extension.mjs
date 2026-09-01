@@ -10,6 +10,8 @@ const supportedTargets = ["chromium", "firefox", "safari"];
 const targetArg = process.argv.find((argument) => argument.startsWith("--target="))?.split("=")[1];
 const targets = targetArg ? [targetArg] : supportedTargets;
 const markSource = resolve(root, "shared/assets/tabloom-mark.svg");
+const downloadOutput = resolve(root, "public/downloads");
+const webExtCli = resolve(root, "node_modules/web-ext/bin/web-ext.js");
 
 if (targets.some((target) => !supportedTargets.includes(target))) {
   throw new Error(`Unknown browser target. Use one of: ${supportedTargets.join(", ")}.`);
@@ -31,6 +33,16 @@ for (const target of targets) {
   await generateExtensionIcons(output, markSource);
   const manifest = JSON.parse(readFileSync(manifestSource, "utf8"));
   writeAuthReport(resolve(root, "dist-extension/reports"), target, manifest, authCallbacks);
+  mkdirSync(downloadOutput, { recursive: true });
+  const packageResult = spawnSync(process.execPath, [
+    webExtCli,
+    "build",
+    "--source-dir", output,
+    "--artifacts-dir", downloadOutput,
+    "--filename", `tabloom-${target}.zip`,
+    "--overwrite-dest",
+  ], { cwd: root, stdio: "inherit" });
+  if (packageResult.status !== 0) process.exit(packageResult.status ?? 1);
 }
 
 if (process.argv.includes("--safari-project")) {

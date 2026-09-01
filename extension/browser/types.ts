@@ -6,6 +6,11 @@ export type BrowserTarget = "chromium" | "firefox" | "safari";
 export type OpenCollectionResult = { opened: number; grouped: boolean };
 export type ActivateExistingTabResult = { tabloomClosed: boolean; cleanupError?: string };
 export type StorageChanges = Record<string, { oldValue?: unknown; newValue?: unknown }>;
+
+export type BrowserEvent<Listener> = {
+  addListener(listener: Listener): void;
+  removeListener(listener: Listener): void;
+};
 export type ResolveFaviconInput = { pageUrl?: string | null; capturedUrl?: string | null; size?: number };
 export type FaviconResolver = (input: ResolveFaviconInput) => string | null;
 
@@ -32,10 +37,13 @@ export type WebExtensionNamespace = {
       addListener(listener: (tabId: number, changeInfo: { url?: string }) => void): void;
       removeListener(listener: (tabId: number, changeInfo: { url?: string }) => void): void;
     };
-    onRemoved?: {
-      addListener(listener: (tabId: number) => void): void;
-      removeListener(listener: (tabId: number) => void): void;
-    };
+    onCreated?: BrowserEvent<(tab: BrowserTab) => void>;
+    onRemoved?: BrowserEvent<(tabId: number) => void>;
+    onMoved?: BrowserEvent<(tabId: number) => void>;
+    onAttached?: BrowserEvent<(tabId: number) => void>;
+    onDetached?: BrowserEvent<(tabId: number) => void>;
+    onReplaced?: BrowserEvent<(addedTabId: number, removedTabId: number) => void>;
+    onActivated?: BrowserEvent<(activeInfo: { tabId: number; windowId: number }) => void>;
   };
   tabGroups?: { update(groupId: number, updateProperties: { title: string; collapsed: boolean }): Promise<unknown> };
   permissions: { request(permission: { permissions: string[] }): Promise<boolean> };
@@ -66,6 +74,9 @@ export interface BrowserAdapter {
   readonly storage: WebExtensionNamespace["storage"]["local"];
   readonly storageChanges: {
     subscribe(listener: (changedKeys: string[]) => void): () => void;
+  };
+  readonly tabChanges: {
+    subscribe(listener: () => void): () => void;
   };
   readonly identity: {
     getRedirectURL(path?: string): string;

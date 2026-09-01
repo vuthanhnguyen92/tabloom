@@ -3,14 +3,7 @@ import { useState } from "react";
 const failedFaviconSources = new Set<string>();
 
 function failureKey(src: string): string {
-  try {
-    const source = new URL(src);
-    const pageUrl = source.searchParams.get("pageUrl");
-    const hostname = new URL(pageUrl ?? src).hostname;
-    return hostname || src;
-  } catch {
-    return src;
-  }
+  return src;
 }
 
 export function FaviconTile({ className = "favicon-tile", src, title }: { className?: string; src?: string | null; title?: string | null }) {

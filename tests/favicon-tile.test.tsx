@@ -10,14 +10,25 @@ describe("FaviconTile", () => {
     expect(document.querySelector("img")).toHaveAttribute("src", "https://assets.unique.example/favicon.ico");
   });
 
-  it("does not request a favicon source again after it fails", () => {
+  it("does not request the exact same favicon source again after it fails", () => {
     const first = render(<FaviconTile src="https://failed-once.unique.example/one.ico" title="Failed" />);
     fireEvent.error(first.container.querySelector("img")!);
     first.unmount();
 
-    const second = render(<FaviconTile src="https://failed-once.unique.example/two.ico" title="Failed" />);
+    const second = render(<FaviconTile src="https://failed-once.unique.example/one.ico" title="Failed" />);
 
     expect(second.container.querySelector("img")).not.toBeInTheDocument();
     expect(screen.getByText("F", { exact: true })).toBeVisible();
+  });
+
+  it("tries a newly discovered favicon even when an older source on the same host failed", () => {
+    const first = render(<FaviconTile src="https://retry-source.unique.example/old.ico" title="Before" />);
+    fireEvent.error(first.container.querySelector("img")!);
+    first.unmount();
+
+    const second = render(<FaviconTile src="https://retry-source.unique.example/current.ico" title="After" />);
+
+    expect(second.container.querySelector("img")).toHaveAttribute("src", "https://retry-source.unique.example/current.ico");
+    expect(screen.getByText("A", { exact: true })).toBeVisible();
   });
 });

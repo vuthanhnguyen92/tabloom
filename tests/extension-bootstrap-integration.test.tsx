@@ -1,9 +1,12 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { createEvent, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { WorkspaceBootstrapResult } from "../extension/workspace-bootstrap";
+import { createDemoSnapshot } from "../shared/domain";
+import { MemoryWorkspaceRepository } from "../shared/repository";
 
 const mocks = vi.hoisted(() => ({
   bootstrapWorkspace: vi.fn(),
+  openAndInspect: vi.fn(),
   storageState: {} as Record<string, unknown>,
 }));
 
@@ -33,6 +36,7 @@ vi.mock("../extension/browser", () => ({
       }),
     },
     storageChanges: { subscribe: vi.fn(() => () => undefined) },
+    tabChanges: { subscribe: vi.fn(() => () => undefined) },
     identity: {
       getRedirectURL: vi.fn((path = "") => `https://stable-id.chromiumapp.org/${path}`),
       launchWebAuthFlow: vi.fn(),
@@ -42,7 +46,7 @@ vi.mock("../extension/browser", () => ({
     permissions: { request: vi.fn(async () => false) },
     tabs: {
       listCurrentWindow: vi.fn(async () => []),
-      openAndInspect: vi.fn(),
+      openAndInspect: mocks.openAndInspect,
       activateExisting: vi.fn(),
       close: vi.fn(),
       openCollection: vi.fn(),
@@ -55,6 +59,7 @@ import { ExtensionApp } from "../extension/src";
 describe("ExtensionApp bootstrap", () => {
   beforeEach(() => {
     mocks.bootstrapWorkspace.mockReset();
+    mocks.openAndInspect.mockReset();
     for (const key of Object.keys(mocks.storageState)) delete mocks.storageState[key];
   });
 
@@ -77,5 +82,36 @@ describe("ExtensionApp bootstrap", () => {
     await waitFor(() => {
       expect(screen.queryByRole("main", { name: "Restoring workspace" })).not.toBeInTheDocument();
     });
+  });
+
+  it("leaves saved-card clicks to native current-tab and modifier-key browser behavior", async () => {
+    const snapshot = createDemoSnapshot();
+    mocks.bootstrapWorkspace.mockResolvedValue({
+      mode: "local-only",
+      localRepository: new MemoryWorkspaceRepository("local-user", snapshot),
+      session: null,
+      recoverySuggested: false,
+    });
+
+    render(<ExtensionApp />);
+    const card = await screen.findByRole("link", { name: /Product roadmap/i });
+    let regularClickWasPrevented = false;
+    document.addEventListener("click", (event) => {
+      regularClickWasPrevented = event.defaultPrevented;
+      event.preventDefault();
+    }, { once: true });
+    const regularClick = createEvent.click(card, { button: 0 });
+    fireEvent(card, regularClick);
+    let commandClickWasPrevented = false;
+    document.addEventListener("click", (event) => {
+      commandClickWasPrevented = event.defaultPrevented;
+      event.preventDefault();
+    }, { once: true });
+    const commandClick = createEvent.click(card, { button: 0, metaKey: true });
+    fireEvent(card, commandClick);
+
+    expect(regularClickWasPrevented).toBe(false);
+    expect(commandClickWasPrevented).toBe(false);
+    expect(mocks.openAndInspect).not.toHaveBeenCalled();
   });
 });

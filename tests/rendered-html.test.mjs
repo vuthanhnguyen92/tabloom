@@ -33,7 +33,8 @@ test("server-renders the Tabloom marketing experience", async () => {
   assert.match(html, /clear workspace\./);
   assert.match(html, /Capture every useful tab/);
   assert.match(html, /Make space for focused work/);
-  assert.match(html, /Start organizing/);
+  assert.match(html, /Download Tabloom/);
+  assert.match(html, /\/downloads\/tabloom-chromium\.zip/);
   assert.doesNotMatch(html, /codex-preview|react-loading-skeleton/i);
 });
 
