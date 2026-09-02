@@ -64,6 +64,30 @@ describe("Tabloom landing page", () => {
     expect(screen.getByText("My Space · Launch planning")).toBeInTheDocument();
   });
 
+  it("describes local-first use, optional sync, supported browsers, and MCP", () => {
+    render(<Home />);
+
+    expect(
+      screen.getByText(/your spaces stay useful on this device before you sign in/i),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/sign in when you want cross-device sync/i),
+    ).toBeInTheDocument();
+    for (const browser of [
+      "Chrome",
+      "Arc",
+      "Dia",
+      "Firefox",
+      "Safari on macOS",
+    ]) {
+      expect(screen.getByText(browser)).toBeInTheDocument();
+    }
+    expect(screen.queryByText(/iphone|ipad/i)).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("link", { name: /connect with mcp/i }),
+    ).toHaveAttribute("href", "/mcp");
+  });
+
   it("does not advertise retired product behavior", () => {
     render(<Home />);
 

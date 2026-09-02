@@ -1,8 +1,9 @@
-import { ArrowRight, Check, Sparkles } from "lucide-react";
+import { Check, Sparkles } from "lucide-react";
 import { BrowserDownloadButton } from "./BrowserDownloadButton";
 import { Brand } from "./components/Brand";
 import { WorkflowStory } from "./marketing/WorkflowStory";
 import { WorkspacePreview } from "./marketing/WorkspacePreview";
+import { ProductDetails } from "./marketing/ProductDetails";
 
 function MarketingHeader() {
   return (
@@ -78,20 +79,7 @@ export default function Home() {
         <WorkflowStory />
       </section>
 
-      <section className="local-first-section" id="local-first">
-        <span className="eyebrow">Local-first</span>
-        <h2>Useful before you sign in.</h2>
-        <p>Keep working locally, then sign in when you want cross-device sync.</p>
-      </section>
-
-      <section className="mcp-section" id="mcp">
-        <span className="eyebrow">MCP for AI</span>
-        <h2>Connect your workspace to AI.</h2>
-        <p>Let authorized agents work with the context you have saved.</p>
-        <a href="/mcp">
-          Connect with MCP <ArrowRight aria-hidden="true" size={16} />
-        </a>
-      </section>
+      <ProductDetails />
 
       <section className="download-cta">
         <span className="eyebrow">Ready in every new tab</span>
