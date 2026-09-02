@@ -1,6 +1,7 @@
 import { ArrowRight, Check, Sparkles } from "lucide-react";
 import { BrowserDownloadButton } from "./BrowserDownloadButton";
 import { Brand } from "./components/Brand";
+import { WorkspacePreview } from "./marketing/WorkspacePreview";
 
 function MarketingHeader() {
   return (
@@ -65,6 +66,7 @@ export default function Home() {
             </span>
           </div>
         </div>
+        <WorkspacePreview />
       </section>
 
       <section className="workflow-story" id="features">

@@ -38,6 +38,16 @@ describe("Tabloom landing page", () => {
     ).toHaveAttribute("href", "/mcp");
   });
 
+  it("shows the real workspace model in the hero", () => {
+    render(<Home />);
+
+    const preview = screen.getByLabelText("Tabloom workspace preview");
+    expect(within(preview).getByText("My Space")).toBeInTheDocument();
+    expect(within(preview).getByText("Launch planning")).toBeInTheDocument();
+    expect(within(preview).getByText("Current tabs")).toBeInTheDocument();
+    expect(within(preview).getByText("Sprint notes")).toBeInTheDocument();
+  });
+
   it("does not advertise retired product behavior", () => {
     render(<Home />);
 
