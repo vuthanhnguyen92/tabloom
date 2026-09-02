@@ -29,10 +29,10 @@ test("server-renders the Tabloom marketing experience", async () => {
 
   const html = await response.text();
   assert.match(html, /<title>Tabloom/);
-  assert.match(html, /Turn tab chaos into a/);
-  assert.match(html, /clear workspace\./);
-  assert.match(html, /Capture every useful tab/);
-  assert.match(html, /Make space for focused work/);
+  assert.match(html, /Make every new tab your workspace\./);
+  assert.match(html, /Drag a live tab into the right context\./);
+  assert.match(html, /Spaces for projects\. Collections for context\./);
+  assert.match(html, /Search everything without leaving the new tab\./);
   assert.match(html, /Download Tabloom/);
   assert.match(html, /\/downloads\/tabloom-chromium\.zip/);
   assert.doesNotMatch(html, /codex-preview|react-loading-skeleton/i);
