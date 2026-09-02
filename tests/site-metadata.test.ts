@@ -10,11 +10,17 @@ describe("site metadata", () => {
     const metadata = await generateMetadata();
 
     expect(String(metadata.metadataBase)).toBe("https://tabloom.nickvu.dev/");
+    expect(metadata.title).toMatchObject({
+      default: "Tabloom — Make every new tab your workspace",
+    });
+    expect(metadata.description).toBe(
+      "Turn every new tab into an organized browser workspace. Save locally, shape links into spaces and collections, and sync when you choose.",
+    );
     expect(metadata.alternates?.canonical).toBe("/");
     expect(metadata.openGraph).toMatchObject({
       url: "/",
-      images: [{ url: "/og.png" }],
+      images: [{ url: "/og-workspace.png" }],
     });
-    expect(metadata.twitter).toMatchObject({ images: ["/og.png"] });
+    expect(metadata.twitter).toMatchObject({ images: ["/og-workspace.png"] });
   });
 });
