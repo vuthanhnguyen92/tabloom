@@ -1,6 +1,7 @@
 import { ArrowRight, Check, Sparkles } from "lucide-react";
 import { BrowserDownloadButton } from "./BrowserDownloadButton";
 import { Brand } from "./components/Brand";
+import { WorkflowStory } from "./marketing/WorkflowStory";
 import { WorkspacePreview } from "./marketing/WorkspacePreview";
 
 function MarketingHeader() {
@@ -74,15 +75,7 @@ export default function Home() {
           <span className="eyebrow">From open tab to useful context</span>
           <h2>Keep your browser moving with your work.</h2>
         </div>
-        <article>
-          <h3>Drag a live tab into the right context.</h3>
-        </article>
-        <article>
-          <h3>Spaces for projects. Collections for context.</h3>
-        </article>
-        <article>
-          <h3>Search everything without leaving the new tab.</h3>
-        </article>
+        <WorkflowStory />
       </section>
 
       <section className="local-first-section" id="local-first">

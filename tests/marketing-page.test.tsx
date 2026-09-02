@@ -48,6 +48,22 @@ describe("Tabloom landing page", () => {
     expect(within(preview).getByText("Sprint notes")).toBeInTheDocument();
   });
 
+  it("renders capture, organize, and search as one ordered workflow", () => {
+    render(<Home />);
+
+    const steps = Array.from(
+      document.querySelectorAll("#features article[data-step]"),
+    );
+    expect(steps.map((step) => step.getAttribute("data-step"))).toEqual([
+      "capture",
+      "organize",
+      "search",
+    ]);
+    expect(screen.getAllByText("Save all as collection").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Open all").length).toBeGreaterThan(0);
+    expect(screen.getByText("My Space · Launch planning")).toBeInTheDocument();
+  });
+
   it("does not advertise retired product behavior", () => {
     render(<Home />);
 
