@@ -6,6 +6,16 @@ import { createDemoSnapshot } from "../shared/domain";
 import { MemoryWorkspaceRepository } from "../shared/repository";
 import { CombinedWorkspaceRepository, type BookmarkRepository } from "../shared/bookmark-repository";
 import { mergeBookmarkEntries, toBookmarkWorkspace } from "../shared/bookmarks";
+import type { CollectionShareRepository } from "../shared/collection-sharing";
+
+function shareRepository(): CollectionShareRepository {
+  return {
+    get: vi.fn(async () => null),
+    enable: vi.fn(async (collectionId) => ({ collectionId, token: "a".repeat(43), createdAt: "2026-09-04T00:00:00.000Z", updatedAt: "2026-09-04T00:00:00.000Z" })),
+    regenerate: vi.fn(),
+    disable: vi.fn(),
+  };
+}
 
 function combinedFixture() {
   const normalSnapshot = createDemoSnapshot("demo-user");
@@ -23,6 +33,38 @@ function combinedFixture() {
 }
 
 describe("WorkspaceClient", () => {
+  it("opens live sharing for mutable synced collections", async () => {
+    const sharing = shareRepository();
+    render(<WorkspaceClient repository={new MemoryWorkspaceRepository("demo-user", createDemoSnapshot())} mode="synced" initialSnapshot={createDemoSnapshot()} sharing={{ availability: "ready", repository: sharing, siteUrl: "https://tabloom.nickvu.dev", onRequestSignIn: vi.fn() }} />);
+
+    await userEvent.click(screen.getByRole("button", { name: "Share Plan" }));
+
+    expect(await screen.findByRole("dialog", { name: "Share Plan" })).toBeVisible();
+    expect(sharing.get).toHaveBeenCalledWith("collection-plan");
+  });
+
+  it("does not offer sharing for browser bookmark collections", async () => {
+    const user = userEvent.setup();
+    const { repository, snapshot } = combinedFixture();
+    render(<WorkspaceClient repository={repository} mode="synced" initialSnapshot={snapshot} sharing={{ availability: "ready", repository: shareRepository(), siteUrl: "https://tabloom.nickvu.dev", onRequestSignIn: vi.fn() }} />);
+
+    expect(screen.getByRole("button", { name: "Share Plan" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /Browser Bookmarks/ }));
+    expect(screen.queryByRole("button", { name: "Share Work / Design" })).not.toBeInTheDocument();
+  });
+
+  it("routes local-only collection sharing to sign in without a remote read", async () => {
+    const onRequestSignIn = vi.fn();
+    const sharing = shareRepository();
+    render(<WorkspaceClient repository={new MemoryWorkspaceRepository("demo-user", createDemoSnapshot())} mode="demo" initialSnapshot={createDemoSnapshot()} sharing={{ availability: "sign-in-required", repository: null, siteUrl: "https://tabloom.nickvu.dev", onRequestSignIn }} />);
+
+    await userEvent.click(screen.getByRole("button", { name: "Share Plan" }));
+    await userEvent.click(screen.getByRole("button", { name: "Sign in to sync" }));
+
+    expect(onRequestSignIn).toHaveBeenCalledOnce();
+    expect(sharing.get).not.toHaveBeenCalled();
+  });
+
   it("renders Browser Bookmarks without mutation controls", async () => {
     const user = userEvent.setup();
     const { repository, snapshot } = combinedFixture();

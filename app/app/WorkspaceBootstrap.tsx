@@ -8,6 +8,7 @@ import { MemoryWorkspaceRepository, SupabaseWorkspaceRepository, type WorkspaceR
 import { CombinedWorkspaceRepository, SupabaseBookmarkRepository } from "../../shared/bookmark-repository";
 import { Brand } from "../components/Brand";
 import { getSupabaseBrowserClient } from "../lib/supabase-browser";
+import { SupabaseCollectionShareRepository, type CollectionShareClient } from "../../shared/collection-sharing";
 import { WorkspaceClient } from "./WorkspaceClient";
 
 const demoRepository = new MemoryWorkspaceRepository("demo-user", createDemoSnapshot());
@@ -40,5 +41,16 @@ export function WorkspaceBootstrap() {
   if (session === undefined) return <main className="workspace-loading"><Brand /><span>Checking your session…</span></main>;
   if (client && !session) return <main className="signin-page"><div className="signin-card"><Brand /><span className="eyebrow">YOUR LINKS, EVERYWHERE</span><h1>Welcome to your calmer browser.</h1><p>Sign in once to keep spaces and collections synchronized with the Tabloom new-tab extension.</p><button className="button button-primary" onClick={() => void client.auth.signInWithOAuth({ provider: "google", options: { redirectTo: `${window.location.origin}/app` } })}>Sign in with Google</button><Link href="/">Back to Tabloom</Link></div></main>;
   if (!repository) return null;
-  return <WorkspaceClient repository={repository} mode={client ? "synced" : "demo"} initialSnapshot={client ? undefined : createDemoSnapshot()} onSignOut={client ? () => void client.auth.signOut() : undefined} />;
+  return <WorkspaceClient
+    repository={repository}
+    mode={client ? "synced" : "demo"}
+    initialSnapshot={client ? undefined : createDemoSnapshot()}
+    onSignOut={client ? () => void client.auth.signOut() : undefined}
+    sharing={client && session ? {
+      availability: "ready",
+      repository: new SupabaseCollectionShareRepository(client as unknown as CollectionShareClient),
+      siteUrl: process.env.NEXT_PUBLIC_SITE_URL || "https://tabloom.nickvu.dev",
+      onRequestSignIn: () => undefined,
+    } : undefined}
+  />;
 }
