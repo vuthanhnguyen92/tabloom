@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "@fontsource/poppins/latin-400.css";
 import "@fontsource/poppins/latin-500.css";
@@ -12,6 +12,7 @@ import type { WorkspaceRepository } from "../shared/repository";
 import type { WorkspaceMergePlan } from "../shared/workspace-merge";
 import { SupabaseWorkspaceSyncRepository } from "../shared/workspace-sync-repository";
 import { TabloomMark } from "../shared/TabloomMark";
+import { SupabaseCollectionShareRepository, type CollectionShareClient, type ShareAvailability } from "../shared/collection-sharing";
 import { openCollectionTabs, type CaptureTab } from "./chrome-api";
 import { ChromeSnapshotCache, createLocalWorkspaceRepository, openLocalWorkspaceRepository } from "./storage";
 import { extensionSupabase, recoverExtensionSessionSilently, signInExtensionWithGoogle } from "./supabase";
@@ -49,6 +50,7 @@ const collectionCollapsePreference = new CollectionCollapsePreference(browserAda
 const authRecoveryPreference = new AuthRecoveryPreference(browserAdapter.storage);
 const LOCAL_SPACE_SCOPE = "local";
 const accountSpaceScope = (userId: string) => `account:${userId}`;
+const tabloomSiteUrl = import.meta.env.VITE_TABLOOM_WEB_URL || "https://tabloom.nickvu.dev";
 
 function waitForStorageKey(key: string, expiresAt: number): Promise<void> {
   return new Promise((resolve) => {
@@ -88,6 +90,7 @@ export function ExtensionApp() {
   const [browserTabDrag, setBrowserTabDrag] = useState({ active: false, session: 0 });
   const [workspaceScope, setWorkspaceScope] = useState(LOCAL_SPACE_SCOPE);
   const [recoverySuggested, setRecoverySuggested] = useState(false);
+  const [signInOpenRequest, setSignInOpenRequest] = useState(0);
   const savingDroppedTabRef = useRef(false);
   const silentRecoveryBusyRef = useRef(false);
   const localRepositoryRef = useRef<WorkspaceRepository | null>(null);
@@ -98,6 +101,19 @@ export function ExtensionApp() {
   const activationGenerationRef = useRef(0);
   const selectionScopeRef = useRef(LOCAL_SPACE_SCOPE);
   const [coordinatorState, setCoordinatorState] = useState<WorkspaceSyncState | null>(null);
+  const shareRepository = useMemo(
+    () => extensionSupabase && user
+      ? new SupabaseCollectionShareRepository(extensionSupabase as unknown as CollectionShareClient)
+      : null,
+    [user],
+  );
+  const shareAvailability: ShareAvailability = !extensionSupabase || !user
+    ? "sign-in-required"
+    : !navigator.onLine || coordinatorState?.phase === "offline"
+      ? "offline"
+      : syncStatus === "synced" && (!coordinatorState || coordinatorState.phase === "synced")
+        ? "ready"
+        : "sync-required";
 
   async function preferredSpaceId(next: WorkspaceSnapshot, scope: string): Promise<string> {
     try {
@@ -581,11 +597,11 @@ export function ExtensionApp() {
 
   return <WorkspaceBootBoundary ready={bootstrapReady} label="Restoring workspace"><main className={`ext-shell ${tabsExpanded ? "sheet-open" : "sheet-collapsed"}`}>
     {snapshot ? <SpaceSidebar activeSpaceId={activeSpace?.id ?? ""} brand={<Mark />} repository={repository} snapshot={snapshot} onError={setError} onMessage={setMessage} onReload={() => repository ? load(repository) : Promise.resolve()} onSelect={selectSpace} /> : <aside className="ext-sidebar collapsed"><div className="sidebar-top" /></aside>}
-    <section className="ext-main"><header><div><h1>{activeSpace?.name || "Your workspace"}</h1></div><div className="ext-header-tools">{repository && <CreateCollectionPrompt activeSpaceId={activeSpace?.origin === "saved" && !activeSpace.read_only ? activeSpace.id : undefined} repository={repository} onCreated={() => load(repository)} onError={setError} />}{user && !coordinatorState && (syncStatus === "pending" || syncStatus === "error") && <button className="sync-login-trigger sync-retry-trigger" onClick={() => void retryWorkspaceSync()}>Retry sync</button>}{snapshot && <GlobalSearch listCurrentTabs={() => browserAdapter.tabs.listCurrentWindow()} onActivateCurrentTab={async (tabId) => { const result = await browserAdapter.tabs.activateExisting(tabId); if (result.cleanupError) setError(result.cleanupError); }} onError={setError} resolveFavicon={browserAdapter.favicons.resolve} snapshot={snapshot} />}<SyncLoginPrompt callbackUrl={oauthCallbackUrl} configured={Boolean(extensionSupabase)} onSignIn={signIn} onLogout={logout} onRetrySync={() => coordinatorRef.current?.retryFailed() ?? Promise.resolve()} recoverySuggested={recoverySuggested} syncState={coordinatorState ?? undefined} target={browserTarget} user={user} /></div></header>
+    <section className="ext-main"><header><div><h1>{activeSpace?.name || "Your workspace"}</h1></div><div className="ext-header-tools">{repository && <CreateCollectionPrompt activeSpaceId={activeSpace?.origin === "saved" && !activeSpace.read_only ? activeSpace.id : undefined} repository={repository} onCreated={() => load(repository)} onError={setError} />}{user && !coordinatorState && (syncStatus === "pending" || syncStatus === "error") && <button className="sync-login-trigger sync-retry-trigger" onClick={() => void retryWorkspaceSync()}>Retry sync</button>}{snapshot && <GlobalSearch listCurrentTabs={() => browserAdapter.tabs.listCurrentWindow()} onActivateCurrentTab={async (tabId) => { const result = await browserAdapter.tabs.activateExisting(tabId); if (result.cleanupError) setError(result.cleanupError); }} onError={setError} resolveFavicon={browserAdapter.favicons.resolve} snapshot={snapshot} />}<SyncLoginPrompt callbackUrl={oauthCallbackUrl} configured={Boolean(extensionSupabase)} onSignIn={signIn} onLogout={logout} onRetrySync={() => coordinatorRef.current?.retryFailed() ?? Promise.resolve()} openRequest={signInOpenRequest} recoverySuggested={recoverySuggested} syncState={coordinatorState ?? undefined} target={browserTarget} user={user} /></div></header>
       {activeSpace?.id === BROWSER_BOOKMARKS_SPACE_ID && bookmarkRepository && repository && bookmarkWorkspace && browserAdapter.capabilities.bookmarks
         ? <BrowserBookmarksPanel repository={bookmarkRepository} workspace={bookmarkWorkspace} cache={bookmarkCache} onWorkspaceReload={() => load(repository)} />
         : null}
-      {repository && snapshot && <CollectionRows bookmarkDropCollections={savedCollections} browserTabDragSession={browserTabDrag.active ? browserTabDrag.session : 0} collapsePreference={collectionCollapsePreference} collapseScope={workspaceScope} collections={collections} links={snapshot.links} allLinks={snapshot.links} highlightedLinkId={pendingTab?.duplicate?.id ?? pendingBookmark?.duplicate.id} repository={repository} resolveFavicon={browserAdapter.favicons.resolve} onError={setError} onMessage={setMessage} onReload={() => load(repository)} onOpenCollection={(collection, collectionLinks) => openCollection(collection.name, collectionLinks.map((link) => link.url))} onBookmarkDrop={handleBookmarkDrop} onBrowserTabDrop={(tab, collectionId) => { setBrowserTabDrag((current) => ({ ...current, active: false })); setPendingTab({ tab, collectionId, duplicate: findDuplicateLink(snapshot.links.filter((item) => item.origin === "saved"), collectionId, tab.url ?? "") }); }} />}
+      {repository && snapshot && <CollectionRows bookmarkDropCollections={savedCollections} browserTabDragSession={browserTabDrag.active ? browserTabDrag.session : 0} collapsePreference={collectionCollapsePreference} collapseScope={workspaceScope} collections={collections} links={snapshot.links} allLinks={snapshot.links} highlightedLinkId={pendingTab?.duplicate?.id ?? pendingBookmark?.duplicate.id} repository={repository} resolveFavicon={browserAdapter.favicons.resolve} onError={setError} onMessage={setMessage} onReload={() => load(repository)} onOpenCollection={(collection, collectionLinks) => openCollection(collection.name, collectionLinks.map((link) => link.url))} onBookmarkDrop={handleBookmarkDrop} onBrowserTabDrop={(tab, collectionId) => { setBrowserTabDrag((current) => ({ ...current, active: false })); setPendingTab({ tab, collectionId, duplicate: findDuplicateLink(snapshot.links.filter((item) => item.origin === "saved"), collectionId, tab.url ?? "") }); }} share={{ availability: shareAvailability, repository: shareRepository, siteUrl: tabloomSiteUrl, onRequestSignIn: () => setSignInOpenRequest((value) => value + 1), onRequestSyncRetry: () => { void retryWorkspaceSync(); }, onToast: setMessage }} />}
     </section>
     <CurrentTabsSheet activeSpaceId={activeSpace?.origin === "saved" ? activeSpace.id : undefined} collections={snapshot?.collections.filter((item) => item.origin === "saved" && item.space_id === activeSpace?.id) ?? []} expanded={tabsExpanded} repository={repository} refreshVersion={tabsRefreshVersion} resolveFavicon={browserAdapter.favicons.resolve} subscribeToTabChanges={browserAdapter.tabChanges.subscribe} onError={setError} onExpandedChange={setTabsExpanded} onMessage={setMessage} onTabDragChange={(dragging) => setBrowserTabDrag((current) => dragging ? { active: true, session: current.session + 1 } : { ...current, active: false })} onWorkspaceReload={() => repository ? load(repository) : Promise.resolve()} />
     {pendingTab && <div className="drop-confirm-backdrop"><section className="drop-confirm" role="dialog" aria-modal="true" aria-label={pendingTab.duplicate ? "Duplicate current tab" : "Save dropped tab"}><button className="dialog-close" aria-label="Cancel dropped tab" disabled={savingDroppedTab} onClick={() => setPendingTab(null)}><X size={18} /></button>{pendingTab.duplicate ? <><small>DUPLICATE LINK</small><h2>Already saved in {snapshot?.collections.find((item) => item.id === pendingTab.collectionId)?.name ?? "this collection"}</h2><p>The existing saved card is highlighted. Keep or close the current tab without creating a duplicate, or save another copy.</p><div><button disabled={savingDroppedTab} onClick={keepDuplicateTabOpen}>Keep tab open</button><button disabled={savingDroppedTab || typeof pendingTab.tab.id !== "number"} onClick={() => void closeDuplicateTab()}>Close tab</button><button className="close-after-save" disabled={savingDroppedTab} onClick={() => void confirmDroppedTab(false)}>Save another copy</button></div></> : <><small>SAVE CURRENT TAB</small><h2>{pendingTab.tab.title || "Untitled tab"}</h2><p>Save this tab and keep it open, or close it after Tabloom confirms the link was saved?</p><div><button disabled={savingDroppedTab} onClick={() => setPendingTab(null)}>Cancel</button><button disabled={savingDroppedTab} onClick={() => void confirmDroppedTab(false)}>Save and keep tab open</button><button className="close-after-save" disabled={savingDroppedTab} onClick={() => void confirmDroppedTab(true)}>Save and close tab</button></div></>}</section></div>}

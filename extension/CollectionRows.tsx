@@ -1,5 +1,7 @@
-import { ArrowDown, ArrowUp, ChevronRight, GripVertical, Pencil, Trash2, X } from "lucide-react";
+import { ArrowDown, ArrowUp, ChevronRight, GripVertical, Pencil, Share2, Trash2, X } from "lucide-react";
 import { Fragment, useEffect, useRef, useState, type DragEvent } from "react";
+import { CollectionShareDialog } from "../shared/CollectionShareDialog";
+import type { CollectionShareRepository, ShareAvailability } from "../shared/collection-sharing";
 import type { Collection, SavedLink } from "../shared/domain";
 import { findDuplicateLink, hostnameFor } from "../shared/domain";
 import type { WorkspaceRepository } from "../shared/repository";
@@ -29,6 +31,14 @@ export type CollectionRowsProps = {
   onMessage?: (message: string) => void;
   highlightedLinkId?: string;
   resolveFavicon?: FaviconResolver;
+  share?: {
+    availability: ShareAvailability;
+    repository: CollectionShareRepository | null;
+    siteUrl: string;
+    onRequestSignIn: () => void;
+    onRequestSyncRetry: () => void;
+    onToast: (message: string) => void;
+  };
 };
 
 type DraggedItem =
@@ -46,7 +56,7 @@ const waitForDeleteExit = () => new Promise<void>((resolve) => setTimeout(resolv
   typeof window !== "undefined" && window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ? 0 : DELETE_EXIT_MS,
 ));
 
-export function CollectionRows({ collections, links, allLinks = links, bookmarkDropCollections = [], browserTabDragSession = 0, collapsePreference, collapseScope = "local", repository, onReload, onOpenCollection = async (collection, collectionLinks) => { await openCollectionTabs(collection.name, collectionLinks.map((link) => link.url)); }, onBrowserTabDrop, onBookmarkDrop, onError, onMessage, highlightedLinkId, resolveFavicon = capturedFavicon }: CollectionRowsProps) {
+export function CollectionRows({ collections, links, allLinks = links, bookmarkDropCollections = [], browserTabDragSession = 0, collapsePreference, collapseScope = "local", repository, onReload, onOpenCollection = async (collection, collectionLinks) => { await openCollectionTabs(collection.name, collectionLinks.map((link) => link.url)); }, onBrowserTabDrop, onBookmarkDrop, onError, onMessage, highlightedLinkId, resolveFavicon = capturedFavicon, share }: CollectionRowsProps) {
   const [dragged, setDragged] = useState<DraggedItem>(null);
   const [linkDropPreview, setLinkDropPreview] = useState<LinkDropPreview>(null);
   const [collectionDropPreview, setCollectionDropPreview] = useState<CollectionDropPreview>(null);
@@ -58,6 +68,7 @@ export function CollectionRows({ collections, links, allLinks = links, bookmarkD
   const [removingCollectionId, setRemovingCollectionId] = useState<string | null>(null);
   const [removingLinkId, setRemovingLinkId] = useState<string | null>(null);
   const [editingCollection, setEditingCollection] = useState<{ id: string; originalName: string; value: string; error?: string } | null>(null);
+  const [sharingCollection, setSharingCollection] = useState<Collection | null>(null);
   const [optimisticCollectionNames, setOptimisticCollectionNames] = useState<Record<string, string>>({});
   const [optimisticLinkText, setOptimisticLinkText] = useState<Record<string, OptimisticLinkText>>({});
   const collectionNameInputRef = useRef<HTMLInputElement>(null);
@@ -413,7 +424,7 @@ export function CollectionRows({ collections, links, allLinks = links, bookmarkD
           }}
           ref={collectionNameInputRef}
           value={editingCollection.value}
-        />{editingCollection.error && <small role="alert">{editingCollection.error}</small>}</div> : canMutate ? <button aria-label={`Rename ${displayName}`} className="collection-name-edit" draggable={false} title={`Rename ${displayName}`} onClick={(event) => { event.stopPropagation(); startRenamingCollection(collection, displayName); }}><b>{displayName}</b><Pencil aria-hidden="true" size={13} /></button> : <b className="collection-name-readonly">{displayName}</b>}</div>{canMutate && !isEditingCollection && <div className="collection-reorder-actions"><button aria-label={`Move ${displayName} up`} disabled={!canMoveUp} draggable={false} onClick={(event) => { event.stopPropagation(); void moveCollectionByStep(collection.id, -1); }}><ArrowUp size={14} /></button><button aria-label={`Move ${displayName} down`} disabled={!canMoveDown} draggable={false} onClick={(event) => { event.stopPropagation(); void moveCollectionByStep(collection.id, 1); }}><ArrowDown size={14} /></button></div>}<div className="ext-col-meta"><span>{collectionLinks.length} links</span>{canMutate && !isEditingCollection && <button aria-label={`Delete ${displayName}`} className="collection-delete" draggable={false} title={`Delete ${displayName}`} onClick={(event) => { event.stopPropagation(); setPendingDelete(displayCollection); }}><Trash2 size={15} /></button>}</div></div>
+        />{editingCollection.error && <small role="alert">{editingCollection.error}</small>}</div> : canMutate ? <button aria-label={`Rename ${displayName}`} className="collection-name-edit" draggable={false} title={`Rename ${displayName}`} onClick={(event) => { event.stopPropagation(); startRenamingCollection(collection, displayName); }}><b>{displayName}</b><Pencil aria-hidden="true" size={13} /></button> : <b className="collection-name-readonly">{displayName}</b>}</div>{canMutate && !isEditingCollection && <div className="collection-reorder-actions"><button aria-label={`Move ${displayName} up`} disabled={!canMoveUp} draggable={false} onClick={(event) => { event.stopPropagation(); void moveCollectionByStep(collection.id, -1); }}><ArrowUp size={14} /></button><button aria-label={`Move ${displayName} down`} disabled={!canMoveDown} draggable={false} onClick={(event) => { event.stopPropagation(); void moveCollectionByStep(collection.id, 1); }}><ArrowDown size={14} /></button></div>}<div className="ext-col-meta"><span>{collectionLinks.length} links</span>{canMutate && !isEditingCollection && share && <button aria-label={`Share ${displayName}`} className="collection-share" draggable={false} title={`Share ${displayName}`} onClick={(event) => { event.preventDefault(); event.stopPropagation(); clearDrag(); setSharingCollection(displayCollection); }}><Share2 size={15} /></button>}{canMutate && !isEditingCollection && <button aria-label={`Delete ${displayName}`} className="collection-delete" draggable={false} title={`Delete ${displayName}`} onClick={(event) => { event.stopPropagation(); setPendingDelete(displayCollection); }}><Trash2 size={15} /></button>}</div></div>
         <div aria-hidden={isCollapsed} className="collection-body" id={`collection-body-${collection.id}`} inert={isCollapsed}>
         <div className="collection-body-inner">
         <div className="ext-link-grid">
@@ -470,5 +481,15 @@ export function CollectionRows({ collections, links, allLinks = links, bookmarkD
         <div><button type="button" onClick={() => setEditingLink(null)}>Cancel</button><button className="close-after-save" type="submit">Save changes</button></div>
       </form>
     </section></div>}
+    {sharingCollection && share && <CollectionShareDialog
+      availability={share.availability}
+      collection={sharingCollection}
+      onClose={() => setSharingCollection(null)}
+      onRequestSignIn={share.onRequestSignIn}
+      onRequestSyncRetry={share.onRequestSyncRetry}
+      onToast={share.onToast}
+      repository={share.repository}
+      siteUrl={share.siteUrl}
+    />}
   </div>;
 }

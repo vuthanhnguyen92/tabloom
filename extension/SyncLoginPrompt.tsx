@@ -15,6 +15,7 @@ export type SyncLoginPromptProps = {
   syncState?: WorkspaceSyncState;
   onRetrySync?: () => Promise<void>;
   recoverySuggested?: boolean;
+  openRequest?: number;
 };
 
 export type SyncUser = {
@@ -39,12 +40,19 @@ function accountDetails(user: SyncUser) {
   };
 }
 
-export function SyncLoginPrompt({ callbackUrl, configured, onSignIn, onLogout, target, user, syncState, onRetrySync, recoverySuggested = false }: SyncLoginPromptProps) {
+export function SyncLoginPrompt({ callbackUrl, configured, onSignIn, onLogout, target, user, syncState, onRetrySync, recoverySuggested = false, openRequest = 0 }: SyncLoginPromptProps) {
   const [open, setOpen] = useState(false);
   const [accountOpen, setAccountOpen] = useState(false);
   const [connecting, setConnecting] = useState(false);
   const [error, setError] = useState("");
   const accountRef = useRef<HTMLDivElement>(null);
+  const handledOpenRequest = useRef(openRequest);
+
+  useEffect(() => {
+    if (user || openRequest <= handledOpenRequest.current) return;
+    handledOpenRequest.current = openRequest;
+    setOpen(true);
+  }, [openRequest, user]);
 
   useEffect(() => {
     if (!accountOpen) return;

@@ -1,4 +1,5 @@
-import { createEvent, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { createEvent, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { WorkspaceBootstrapResult } from "../extension/workspace-bootstrap";
 import { createDemoSnapshot } from "../shared/domain";
@@ -113,5 +114,22 @@ describe("ExtensionApp bootstrap", () => {
     expect(regularClickWasPrevented).toBe(false);
     expect(commandClickWasPrevented).toBe(false);
     expect(mocks.openAndInspect).not.toHaveBeenCalled();
+  });
+
+  it("routes sharing from a local collection into the existing sign-in modal", async () => {
+    const snapshot = createDemoSnapshot();
+    mocks.bootstrapWorkspace.mockResolvedValue({
+      mode: "local-only",
+      localRepository: new MemoryWorkspaceRepository("local-user", snapshot),
+      session: null,
+      recoverySuggested: false,
+    });
+
+    render(<ExtensionApp />);
+    await userEvent.click(await screen.findByRole("button", { name: "Share Plan" }));
+    await userEvent.click(within(screen.getByRole("dialog", { name: "Share Plan" })).getByRole("button", { name: "Sign in to sync" }));
+
+    expect(screen.getByRole("dialog", { name: "Sync with Tabloom" })).toBeVisible();
+    expect(screen.queryByRole("dialog", { name: "Share Plan" })).not.toBeInTheDocument();
   });
 });

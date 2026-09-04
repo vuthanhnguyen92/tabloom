@@ -6,6 +6,7 @@ import { CollectionRows } from "../extension/CollectionRows";
 import { createDemoSnapshot } from "../shared/domain";
 import { mergeBookmarkEntries, toBookmarkWorkspace } from "../shared/bookmarks";
 import { MemoryWorkspaceRepository } from "../shared/repository";
+import type { CollectionShareRepository } from "../shared/collection-sharing";
 import type { FaviconResolver } from "../extension/browser/types";
 const extensionStyles = readFileSync("extension/style.css", "utf8");
 
@@ -23,6 +24,20 @@ function setup() {
   const onReload = vi.fn(async () => undefined);
   const view = render(<CollectionRows collections={snapshot.collections} links={snapshot.links} repository={repository} onReload={onReload} />);
   return { repository, onReload, container: view.container };
+}
+
+function shareRepository(): CollectionShareRepository {
+  return {
+    get: vi.fn(async () => null),
+    enable: vi.fn(async () => ({
+      collectionId: "collection-plan",
+      token: "abcdefghijklmnopqrstuvwxyzABCDEFGH123456789",
+      createdAt: "2026-09-04T00:00:00.000Z",
+      updatedAt: "2026-09-04T00:00:00.000Z",
+    })),
+    regenerate: vi.fn(),
+    disable: vi.fn(),
+  };
 }
 
 const createDataTransfer = (types: string[] = []) => ({ effectAllowed: "none", dropEffect: "none", types, getData: () => "" });
@@ -176,6 +191,84 @@ describe("CollectionRows", () => {
 
     expect(screen.getByRole("button", { name: "Rename Plan" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Rename Imported" })).not.toBeInTheDocument();
+  });
+
+  it("opens sharing from a mutable collection without changing its collapsed state", async () => {
+    const snapshot = createDemoSnapshot();
+    const repository = shareRepository();
+    render(<CollectionRows
+      collections={snapshot.collections}
+      links={snapshot.links}
+      repository={new MemoryWorkspaceRepository("demo-user", snapshot)}
+      onReload={vi.fn(async () => undefined)}
+      share={{
+        availability: "ready",
+        repository,
+        siteUrl: "https://tabloom.nickvu.dev",
+        onRequestSignIn: vi.fn(),
+        onRequestSyncRetry: vi.fn(),
+        onToast: vi.fn(),
+      }}
+    />);
+
+    const shareButton = screen.getByRole("button", { name: "Share Plan" });
+    expect(shareButton).toHaveAttribute("draggable", "false");
+    await userEvent.click(shareButton);
+
+    expect(await screen.findByRole("dialog", { name: "Share Plan" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Collapse Plan" })).toHaveAttribute("aria-expanded", "true");
+    expect(repository.get).toHaveBeenCalledWith("collection-plan");
+  });
+
+  it("never offers sharing for browser-bookmark collections", () => {
+    const normal = createDemoSnapshot();
+    const bookmark = toBookmarkWorkspace("demo-user", mergeBookmarkEntries(
+      [{ id: "mac", device_name: "Work Mac", last_synced_at: null }],
+      [{ id: "entry", source_id: "mac", chrome_bookmark_id: "one", url: "https://example.com", normalized_url: "https://example.com/", title: "Browser example", folder_path: "Imported", syncing: false, position: 0 }],
+    ));
+    render(<CollectionRows
+      collections={[normal.collections[0], bookmark.collections[0]]}
+      links={[normal.links[0], ...bookmark.links]}
+      repository={new MemoryWorkspaceRepository("demo-user", normal)}
+      onReload={vi.fn(async () => undefined)}
+      share={{
+        availability: "ready",
+        repository: shareRepository(),
+        siteUrl: "https://tabloom.nickvu.dev",
+        onRequestSignIn: vi.fn(),
+        onRequestSyncRetry: vi.fn(),
+        onToast: vi.fn(),
+      }}
+    />);
+
+    expect(screen.getByRole("button", { name: "Share Plan" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Share Imported" })).not.toBeInTheDocument();
+  });
+
+  it("routes local-only sharing to sign-in without reading remote share state", async () => {
+    const snapshot = createDemoSnapshot();
+    const repository = shareRepository();
+    const onRequestSignIn = vi.fn();
+    render(<CollectionRows
+      collections={[snapshot.collections[0]]}
+      links={snapshot.links}
+      repository={new MemoryWorkspaceRepository("demo-user", snapshot)}
+      onReload={vi.fn(async () => undefined)}
+      share={{
+        availability: "sign-in-required",
+        repository,
+        siteUrl: "https://tabloom.nickvu.dev",
+        onRequestSignIn,
+        onRequestSyncRetry: vi.fn(),
+        onToast: vi.fn(),
+      }}
+    />);
+
+    await userEvent.click(screen.getByRole("button", { name: "Share Plan" }));
+    await userEvent.click(screen.getByRole("button", { name: "Sign in to sync" }));
+
+    expect(onRequestSignIn).toHaveBeenCalledOnce();
+    expect(repository.get).not.toHaveBeenCalled();
   });
 
   it("keeps the optimistic collection label and reports a failed rename", async () => {

@@ -179,7 +179,7 @@ export function CollectionShareDialog({
       {availability === "sign-in-required" && <div className="collection-share-gate">
         <Link2 aria-hidden="true" size={24} />
         <p>Sign in and sync this collection before creating a live share link.</p>
-        <button className="collection-share-primary" onClick={onRequestSignIn}>Sign in to sync</button>
+        <button className="collection-share-primary" onClick={() => { onClose(); onRequestSignIn(); }}>Sign in to sync</button>
       </div>}
 
       {availability === "sync-required" && <div className="collection-share-gate">

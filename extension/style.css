@@ -215,3 +215,39 @@ input::placeholder, textarea::placeholder { color: var(--text-muted); opacity: 1
 .favicon-tile, .global-search-favicon { position: relative; }
 .favicon-tile-fallback { position: relative; z-index: 0; }
 .favicon-tile img, .global-search-favicon img { position: absolute; z-index: 1; inset: 0; margin: auto; background: inherit; }
+
+/* Live collection sharing */
+.collection-delete, .collection-share { pointer-events: auto; }
+.collection-share { position: absolute; right: 32px; top: 50%; width: 30px; height: 30px; display: grid; place-items: center; padding: 0; border: 0; border-radius: 8px; color: #928da3; background: var(--surface-page); opacity: 0; transform: translateY(calc(-50% + 2px)); transition: opacity var(--motion-fast) var(--ease-out), transform var(--motion-fast) var(--ease-out), color var(--motion-fast) var(--ease-out), background var(--motion-fast) var(--ease-out); }
+.ext-columns article:hover .collection-delete, .ext-columns article:hover .collection-share, .collection-delete:focus-visible, .collection-share:focus-visible { opacity: 1; transform: translateY(-50%); }
+.collection-share:hover { color: var(--accent); background: var(--surface-accent); }
+.collection-share-backdrop { position: fixed; z-index: 120; inset: 0; display: grid; place-items: center; padding: 20px; background: rgba(22, 21, 29, .68); backdrop-filter: blur(5px); animation: motion-backdrop-in var(--motion-base) ease-out both; }
+.collection-share-dialog { position: relative; width: min(560px, 100%); padding: 28px; border: 1px solid var(--border-default); border-radius: 16px; color: var(--text-primary); background: var(--surface-panel); box-shadow: 0 28px 80px rgba(0, 0, 0, .28); animation: motion-dialog-in var(--motion-slow) var(--ease-out) both; }
+.collection-share-dialog > small { color: var(--accent); font-size: 10px; font-weight: 600; letter-spacing: .16em; }
+.collection-share-dialog h2 { margin: 6px 42px 22px 0; font-size: 22px; font-weight: 600; }
+.collection-share-dialog h3 { margin: 0 0 6px; font-size: 16px; font-weight: 600; }
+.collection-share-dialog p { margin: 0; color: var(--text-muted); line-height: 1.5; }
+.collection-share-dialog button { min-height: 42px; display: inline-flex; align-items: center; justify-content: center; gap: 7px; padding: 0 14px; border: 1px solid var(--border-default); border-radius: 9px; color: var(--text-primary); background: var(--surface-page); font: inherit; font-size: 13px; font-weight: 500; }
+.collection-share-dialog button:hover:not(:disabled) { border-color: var(--accent); background: var(--surface-accent); }
+.collection-share-dialog button:disabled { cursor: wait; opacity: .6; }
+.collection-share-dialog .dialog-close { position: absolute; top: 18px; right: 18px; width: 36px; min-height: 36px; padding: 0; }
+.collection-share-gate, .collection-share-unshared { display: grid; justify-items: start; gap: 16px; padding: 22px; border: 1px solid var(--border-default); border-radius: 12px; background: var(--surface-page); }
+.collection-share-gate > svg { color: var(--accent); }
+.collection-share-primary { color: #fff !important; border-color: var(--accent) !important; background: var(--accent) !important; }
+.collection-share-primary:hover:not(:disabled) { filter: brightness(1.08); }
+.collection-share-loading { min-height: 120px; display: grid; place-items: center; }
+.collection-share-active { display: grid; gap: 17px; }
+.collection-share-active label { display: grid; gap: 7px; color: var(--text-muted); font-size: 12px; font-weight: 500; }
+.collection-share-active label > span { display: grid; grid-template-columns: minmax(0, 1fr) 42px; gap: 7px; }
+.collection-share-active input { min-width: 0; height: 42px; padding: 0 12px; border: 1px solid var(--border-default); border-radius: 9px; color: var(--text-primary); background: var(--surface-page); font: inherit; font-size: 12px; outline: none; }
+.collection-share-active input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent); }
+.collection-share-active label > span button { width: 42px; padding: 0; }
+.collection-share-active > p { display: flex; align-items: center; gap: 7px; color: #24986f; font-size: 12px; }
+.collection-share-actions { display: flex; flex-wrap: wrap; gap: 9px; padding-top: 3px; }
+.collection-share-dialog button.danger { color: #d94f5a; }
+.collection-share-dialog button.danger:hover:not(:disabled) { border-color: #d94f5a; background: rgba(217, 79, 90, .1); }
+.collection-share-confirmation { position: absolute; inset: 0; display: grid; align-content: center; gap: 8px; padding: 34px; border-radius: inherit; background: var(--surface-panel); }
+.collection-share-confirmation > div { display: flex; justify-content: flex-end; gap: 9px; margin-top: 14px; }
+.collection-share-error { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 16px; padding: 11px 12px; border: 1px solid rgba(217, 79, 90, .3); border-radius: 9px; color: #c74652; background: rgba(217, 79, 90, .08); font-size: 12px; }
+.collection-share-error button { min-height: 32px; padding-inline: 10px; }
+@media (max-width: 560px) { .collection-share-dialog { padding: 22px; }.collection-share-actions { display: grid; }.collection-share-actions button { width: 100%; }.collection-share-confirmation { padding: 24px; } }
