@@ -1,0 +1,54 @@
+import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { SharedCollectionView } from "../app/s/[token]/SharedCollectionView";
+
+const links = [
+  { id: "one", title: "Linear roadmap", description: "Release plan", url: "https://linear.app/roadmap", favicon_url: null, position: 0 },
+  { id: "two", title: "Reference", description: "", url: "https://example.com/reference", favicon_url: "https://example.com/favicon.ico", position: 1 },
+];
+
+afterEach(() => vi.restoreAllMocks());
+
+describe("SharedCollectionView", () => {
+  it("renders an anonymous read-only collection with safe card links", () => {
+    render(<SharedCollectionView snapshot={{ name: "Launch plan", links }} />);
+
+    expect(screen.getByRole("heading", { name: "Launch plan" })).toBeVisible();
+    expect(screen.getByText("2 links")).toBeVisible();
+    expect(screen.getByText("Release plan")).toBeVisible();
+    expect(screen.getByText("example.com")).toBeVisible();
+    expect(screen.getByRole("link", { name: /Linear roadmap/ })).toHaveAttribute("href", "https://linear.app/roadmap");
+    expect(screen.getByRole("link", { name: /Linear roadmap/ })).toHaveAttribute("rel", "noreferrer noopener");
+    expect(document.body).not.toHaveTextContent(/owner|space|device|sync/i);
+  });
+
+  it("renders a useful empty collection", () => {
+    render(<SharedCollectionView snapshot={{ name: "Reading list", links: [] }} />);
+    expect(screen.getByText("Nothing saved here yet")).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Open all" })).not.toBeInTheDocument();
+  });
+
+  it("opens a small collection in its canonical order", async () => {
+    const open = vi.spyOn(window, "open").mockImplementation(() => null);
+    render(<SharedCollectionView snapshot={{ name: "Launch plan", links }} />);
+
+    await userEvent.click(screen.getByRole("button", { name: "Open all" }));
+
+    expect(open.mock.calls.map(([url]) => url)).toEqual(links.map((link) => link.url));
+    expect(open).toHaveBeenCalledWith(links[0].url, "_blank", "noopener,noreferrer");
+  });
+
+  it("confirms unusually large collections and supports cancellation", async () => {
+    const open = vi.spyOn(window, "open").mockImplementation(() => null);
+    const manyLinks = Array.from({ length: 11 }, (_, index) => ({ ...links[0], id: `link-${index}`, title: `Link ${index}`, url: `https://example.com/${index}`, position: index }));
+    render(<SharedCollectionView snapshot={{ name: "Big list", links: manyLinks }} />);
+
+    await userEvent.click(screen.getByRole("button", { name: "Open all" }));
+    expect(screen.getByRole("dialog", { name: "Open 11 tabs?" })).toBeVisible();
+    expect(open).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(screen.queryByRole("dialog", { name: "Open 11 tabs?" })).not.toBeInTheDocument();
+    expect(open).not.toHaveBeenCalled();
+  });
+});

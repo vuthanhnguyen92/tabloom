@@ -58,3 +58,15 @@ test("privacy route explains Tabloom data handling", async () => {
   assert.match(html, /only when you choose to sync/i);
   assert.match(html, /device name and sync status/i);
 });
+
+test("invalid shared collection routes render a generic private state", async () => {
+  const response = await render("/s/not-a-valid-token");
+  assert.equal(response.status, 200);
+  assert.match(response.headers.get("cache-control") ?? "", /private, no-store/i);
+  assert.equal(response.headers.get("referrer-policy"), "no-referrer");
+  assert.match(response.headers.get("x-robots-tag") ?? "", /noindex, nofollow/i);
+  const html = await response.text();
+  const visibleHtml = html.slice(html.indexOf("<body"), html.indexOf("<!--$-->"));
+  assert.match(visibleHtml, /This shared collection is unavailable/);
+  assert.doesNotMatch(visibleHtml, /not-a-valid-token/);
+});

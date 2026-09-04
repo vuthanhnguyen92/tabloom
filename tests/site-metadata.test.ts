@@ -23,4 +23,26 @@ describe("site metadata", () => {
     });
     expect(metadata.twitter).toMatchObject({ images: ["/og-workspace.png"] });
   });
+
+  it("keeps shared collection metadata private and token-free", async () => {
+    const { metadata } = await import("../app/s/[token]/page");
+    expect(metadata).toMatchObject({
+      title: "Shared collection | Tabloom",
+      robots: { index: false, follow: false },
+    });
+    expect(JSON.stringify(metadata)).not.toMatch(/token|collection name/i);
+  });
+
+  it("adds no-store, no-referrer, and noindex headers only to shared routes", async () => {
+    const { default: config } = await import("../next.config");
+    expect(config.headers).toBeTypeOf("function");
+    await expect(config.headers!()).resolves.toEqual(expect.arrayContaining([{
+      source: "/s/:path*",
+      headers: expect.arrayContaining([
+        { key: "Cache-Control", value: "private, no-store" },
+        { key: "Referrer-Policy", value: "no-referrer" },
+        { key: "X-Robots-Tag", value: "noindex, nofollow" },
+      ]),
+    }]));
+  });
 });

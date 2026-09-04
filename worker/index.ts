@@ -40,7 +40,14 @@ const worker = {
       }, allowedWidths);
     }
 
-    return handler.fetch(request, env, ctx);
+    const response = await handler.fetch(request, env, ctx);
+    if (!url.pathname.startsWith("/s/")) return response;
+
+    const secured = new Response(response.body, response);
+    secured.headers.set("Cache-Control", "private, no-store");
+    secured.headers.set("Referrer-Policy", "no-referrer");
+    secured.headers.set("X-Robots-Tag", "noindex, nofollow");
+    return secured;
   },
 };
 
