@@ -13,6 +13,7 @@ describe("shared workspace package", () => {
         "./domain": "./domain.ts",
         "./repository": "./repository.ts",
         "./workspace-sync-repository": "./workspace-sync-repository.ts",
+        "./collection-sharing": "./collection-sharing.ts",
       },
       dependencies: {
         "@supabase/supabase-js": "2.112.4",

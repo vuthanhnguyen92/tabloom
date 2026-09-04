@@ -79,6 +79,7 @@ describe("Tabloom MCP service configuration", () => {
       "./domain",
       "./repository",
       "./workspace-sync-repository",
+      "./collection-sharing",
     ]);
   });
 });
