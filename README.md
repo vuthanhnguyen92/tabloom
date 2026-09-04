@@ -42,6 +42,14 @@ npm test
 
 Row-level security ensures every user can read and change only rows whose `user_id` matches their authenticated Supabase user.
 
+## Live collection sharing
+
+Signed-in users can enable a read-only live URL for an ordinary synced collection from the web workspace or any extension build. Sharing is off by default. Anyone possessing `https://tabloom.nickvu.dev/s/<token>` can view the collection without signing in; the owner identity, parent space, device information, and sync state are never included. Synced edits appear when the recipient reloads. Regenerating the URL or disabling sharing invalidates the previous bearer link immediately, and deleting the collection revokes it through the database cascade.
+
+Apply `supabase/migrations/202609040001_live_collection_sharing.sql` before deploying owner controls. The public loader uses the anonymous key and the allow-listed `load_shared_collection` RPC; it never requires or accepts a service-role key. Release in this order: database migration, web application, then rebuilt browser packages.
+
+Production smoke checks should cover enable, anonymous read, edit-and-reload, regenerate, disable, and collection deletion. The live Playwright gate requires `TABLOOM_E2E_LIVE=1` plus the documented `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY`, `TABLOOM_E2E_USER_EMAIL`, `TABLOOM_E2E_USER_PASSWORD`, and `TABLOOM_E2E_WEB_URL` values.
+
 ## Remote MCP authorization
 
 The remote MCP service uses a dedicated authorization facade at

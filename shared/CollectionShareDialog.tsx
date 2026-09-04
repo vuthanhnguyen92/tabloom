@@ -64,7 +64,9 @@ export function CollectionShareDialog({
 
   useEffect(() => {
     closeRef.current?.focus();
-    if (availability === "ready") void load();
+    if (availability !== "ready") return;
+    const timer = window.setTimeout(() => void load(), 0);
+    return () => window.clearTimeout(timer);
   }, [availability, load]);
 
   useEffect(() => {
