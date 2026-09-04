@@ -5,6 +5,10 @@ const TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/;
 const SNAPSHOT_KEYS = ["links", "name"];
 const LINK_KEYS = ["description", "favicon_url", "id", "position", "title", "url"];
 
+export function isCollectionShareToken(value: string): boolean {
+  return TOKEN_PATTERN.test(value);
+}
+
 export class SharedCollectionUnavailableError extends Error {
   constructor() {
     super("This shared collection is unavailable.");
@@ -40,7 +44,7 @@ function parseSnapshot(value: unknown): SharedCollectionSnapshot | null {
       || !link.title.trim()
       || typeof link.description !== "string"
       || !isPublicUrl(link.url)
-      || (link.favicon_url !== null && !isPublicUrl(link.favicon_url))
+      || (link.favicon_url !== null && typeof link.favicon_url !== "string")
       || typeof link.position !== "number"
       || !Number.isSafeInteger(link.position)
       || link.position < 0
@@ -50,12 +54,12 @@ function parseSnapshot(value: unknown): SharedCollectionSnapshot | null {
       title: link.title,
       description: link.description,
       url: link.url,
-      favicon_url: link.favicon_url,
+      favicon_url: null,
       position: link.position,
     };
   });
 
-  links.sort((left, right) => left.position - right.position || left.id.localeCompare(right.id));
+  links.sort((left, right) => left.position - right.position);
   return { name: snapshot.name, links };
 }
 
@@ -64,7 +68,7 @@ export async function loadSharedCollection(
   fetcher: typeof fetch = fetch,
 ): Promise<SharedCollectionSnapshot | null> {
   try {
-    if (!TOKEN_PATTERN.test(token)) throw new SharedCollectionUnavailableError();
+    if (!isCollectionShareToken(token)) throw new SharedCollectionUnavailableError();
     const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL?.trim();
     const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY?.trim();
     if (!supabaseUrl || !anonKey) throw new SharedCollectionUnavailableError();

@@ -1,5 +1,4 @@
 "use client";
-/* eslint-disable @next/next/no-img-element -- remote favicons are untrusted runtime URLs */
 
 import { ExternalLink, X } from "lucide-react";
 import Link from "next/link";
@@ -12,9 +11,14 @@ const LARGE_COLLECTION_THRESHOLD = 10;
 
 export function SharedCollectionView({ snapshot }: { snapshot: SharedCollectionSnapshot }) {
   const [confirmOpen, setConfirmOpen] = useState(false);
+  const [blockedCount, setBlockedCount] = useState(0);
 
   function openAll() {
-    snapshot.links.forEach((link) => window.open(link.url, "_blank", "noopener,noreferrer"));
+    let blocked = 0;
+    snapshot.links.forEach((link) => {
+      if (!window.open(link.url, "_blank", "noopener,noreferrer")) blocked += 1;
+    });
+    setBlockedCount(blocked);
     setConfirmOpen(false);
   }
 
@@ -32,12 +36,17 @@ export function SharedCollectionView({ snapshot }: { snapshot: SharedCollectionS
       </div>
       {snapshot.links.length ? <div className="shared-link-grid">
         {snapshot.links.map((link) => <a className="shared-link-card" href={link.url} key={link.id} rel="noreferrer noopener">
-          <i>{link.favicon_url ? <img alt="" src={link.favicon_url} /> : link.title[0]?.toUpperCase()}</i>
+          <i>{link.title[0]?.toUpperCase()}</i>
           <span><b>{link.title}</b><small>{link.description || hostnameFor(link.url)}</small></span>
           <ExternalLink aria-hidden="true" size={15} />
         </a>)}
       </div> : <div className="shared-collection-empty"><span>✦</span><h2>Nothing saved here yet</h2><p>This live collection will update after its next synced edit.</p></div>}
+      {blockedCount > 0 && <p className="shared-open-warning" role="status">Your browser blocked {blockedCount} {blockedCount === 1 ? "tab" : "tabs"}. Allow popups for Tabloom and try again.</p>}
     </section>
     {confirmOpen && <div className="dialog-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setConfirmOpen(false); }}><section aria-label={`Open ${snapshot.links.length} tabs?`} aria-modal="true" className="dialog" role="dialog"><button aria-label="Close dialog" className="dialog-close" onClick={() => setConfirmOpen(false)}><X size={18} /></button><h2>Open {snapshot.links.length} tabs?</h2><p>Opening a large collection can make your browser feel busy.</p><div className="dialog-actions"><button onClick={() => setConfirmOpen(false)}>Cancel</button><button className="button-primary" onClick={openAll}>Open tabs</button></div></section></div>}
   </main>;
+}
+
+export function SharedCollectionUnavailable({ temporary = false }: { temporary?: boolean }) {
+  return <main className="shared-collection-page shared-collection-unavailable"><header><Link href="/"><Brand /></Link></header><section><span>✦</span><h1>{temporary ? "This shared collection is temporarily unavailable" : "This shared collection is unavailable"}</h1><p>{temporary ? "Tabloom could not load this collection right now. Please try again shortly." : "The link may have expired, been replaced, or sharing may have been turned off."}</p><Link className="button button-primary" href="/">Visit Tabloom</Link></section></main>;
 }

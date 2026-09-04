@@ -172,7 +172,10 @@ begin
             'title', saved_link.title,
             'description', saved_link.description,
             'url', saved_link.url,
-            'favicon_url', saved_link.favicon_url,
+            -- Public shares never auto-load captured remote resources. Some
+            -- favicon URLs are signed or unique and can identify an owner or
+            -- reveal recipient visits to a third party.
+            'favicon_url', null,
             'position', saved_link.position
           )
           order by saved_link.position, saved_link.created_at, saved_link.id

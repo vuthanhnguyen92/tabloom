@@ -41,6 +41,7 @@ import { CollectionCollapsePreference } from "./collection-collapse-preference";
 import { mergeAccountWorkspaceIntoLocal } from "./logout-workspace";
 import { WorkspaceBootBoundary } from "./WorkspaceBootBoundary";
 import { bootstrapWorkspace } from "./workspace-bootstrap";
+import { useOnlineStatus } from "./online-status";
 import "./style.css";
 
 const cache = new ChromeSnapshotCache();
@@ -91,6 +92,7 @@ export function ExtensionApp() {
   const [workspaceScope, setWorkspaceScope] = useState(LOCAL_SPACE_SCOPE);
   const [recoverySuggested, setRecoverySuggested] = useState(false);
   const [signInOpenRequest, setSignInOpenRequest] = useState(0);
+  const online = useOnlineStatus();
   const savingDroppedTabRef = useRef(false);
   const silentRecoveryBusyRef = useRef(false);
   const localRepositoryRef = useRef<WorkspaceRepository | null>(null);
@@ -109,7 +111,7 @@ export function ExtensionApp() {
   );
   const shareAvailability: ShareAvailability = !extensionSupabase || !user
     ? "sign-in-required"
-    : !navigator.onLine || coordinatorState?.phase === "offline"
+    : !online || coordinatorState?.phase === "offline"
       ? "offline"
       : syncStatus === "synced" && (!coordinatorState || coordinatorState.phase === "synced")
         ? "ready"

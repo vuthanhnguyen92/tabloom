@@ -1,6 +1,7 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { useState } from "react";
 import { CollectionShareDialog } from "../shared/CollectionShareDialog";
 import type {
   CollectionShare,
@@ -161,5 +162,18 @@ describe("CollectionShareDialog", () => {
 
     await userEvent.keyboard("{Escape}");
     await waitFor(() => expect(props.onClose).toHaveBeenCalledOnce());
+  });
+
+  it("restores focus to the invoking share control when closed", async () => {
+    function Harness() {
+      const [open, setOpen] = useState(false);
+      return <><button onClick={() => setOpen(true)}>Share collection</button>{open && <CollectionShareDialog availability="offline" collection={collection} repository={null} siteUrl="https://tabloom.nickvu.dev" onRequestSignIn={vi.fn()} onRequestSyncRetry={vi.fn()} onToast={vi.fn()} onClose={() => setOpen(false)} />}</>;
+    }
+    render(<Harness />);
+    const trigger = screen.getByRole("button", { name: "Share collection" });
+    await userEvent.click(trigger);
+    expect(screen.getByRole("button", { name: "Close sharing" })).toHaveFocus();
+    await userEvent.click(screen.getByRole("button", { name: "Close sharing" }));
+    expect(trigger).toHaveFocus();
   });
 });

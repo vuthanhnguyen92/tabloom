@@ -1,6 +1,6 @@
 begin;
 
-select plan(36);
+select plan(37);
 
 select has_table('public', 'collection_shares', 'collection shares table exists');
 select has_function('public', 'enable_collection_share', array['uuid'], 'enable share RPC exists');
@@ -94,6 +94,11 @@ select is(
   (select array_agg(key order by key) from jsonb_object_keys(public.load_shared_collection(current_setting('app.share_token')) #> '{links,0}') as key),
   array['description', 'favicon_url', 'id', 'position', 'title', 'url']::text[],
   'public link exposes only approved fields'
+);
+select is(
+  public.load_shared_collection(current_setting('app.share_token')) #> '{links,0,favicon_url}',
+  'null'::jsonb,
+  'public snapshots omit captured favicon URLs'
 );
 select is(public.load_shared_collection('bad token'), null::jsonb, 'malformed tokens are unavailable');
 select is(public.load_shared_collection('AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'), null::jsonb, 'unknown tokens are unavailable');

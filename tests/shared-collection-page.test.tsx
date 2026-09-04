@@ -1,7 +1,7 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { SharedCollectionView } from "../app/s/[token]/SharedCollectionView";
+import { SharedCollectionUnavailable, SharedCollectionView } from "../app/s/[token]/SharedCollectionView";
 
 const links = [
   { id: "one", title: "Linear roadmap", description: "Release plan", url: "https://linear.app/roadmap", favicon_url: null, position: 0 },
@@ -50,5 +50,18 @@ describe("SharedCollectionView", () => {
     await userEvent.click(screen.getByRole("button", { name: "Cancel" }));
     expect(screen.queryByRole("dialog", { name: "Open 11 tabs?" })).not.toBeInTheDocument();
     expect(open).not.toHaveBeenCalled();
+  });
+
+  it("reports blocked popups instead of silently claiming success", async () => {
+    vi.spyOn(window, "open").mockImplementation(() => null);
+    render(<SharedCollectionView snapshot={{ name: "Launch plan", links }} />);
+    await userEvent.click(screen.getByRole("button", { name: "Open all" }));
+    expect(screen.getByRole("status")).toHaveTextContent("browser blocked 2 tabs");
+  });
+
+  it("uses token-free temporary copy for remote failures", () => {
+    render(<SharedCollectionUnavailable temporary />);
+    expect(screen.getByRole("heading", { name: "This shared collection is temporarily unavailable" })).toBeVisible();
+    expect(document.body).not.toHaveTextContent(/expired|replaced|turned off/i);
   });
 });

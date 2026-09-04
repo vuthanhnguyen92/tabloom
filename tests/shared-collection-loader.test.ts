@@ -23,7 +23,7 @@ describe("loadSharedCollection", () => {
 
     await expect(loadSharedCollection(token, fetcher)).resolves.toEqual({
       name: "Design references",
-      links: [validSnapshot.links[1], validSnapshot.links[0]],
+      links: [{ ...validSnapshot.links[1], favicon_url: null }, validSnapshot.links[0]],
     });
     expect(fetcher).toHaveBeenCalledWith(
       "https://project.supabase.co/rest/v1/rpc/load_shared_collection",
@@ -34,6 +34,22 @@ describe("loadSharedCollection", () => {
         body: JSON.stringify({ share_token: token }),
       }),
     );
+  });
+
+  it("preserves server tie ordering and strips public favicon URLs", async () => {
+    const tied = [
+      { ...validSnapshot.links[0], id: "z-id", position: 1, favicon_url: "data:image/png;base64,private" },
+      { ...validSnapshot.links[1], id: "a-id", position: 1 },
+    ];
+    const fetcher = vi.fn(async () => new Response(JSON.stringify({ name: "Tied", links: tied }), { status: 200 }));
+
+    await expect(loadSharedCollection(token, fetcher)).resolves.toEqual({
+      name: "Tied",
+      links: [
+        { ...tied[0], favicon_url: null },
+        { ...tied[1], favicon_url: null },
+      ],
+    });
   });
 
   it("preserves a null RPC response as unavailable", async () => {

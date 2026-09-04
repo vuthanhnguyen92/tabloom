@@ -28,11 +28,6 @@ test("an anonymous live collection follows edits, regeneration, and revocation",
     return text ? JSON.parse(text) : null;
   }
 
-  async function rpc(name: string) {
-    const value = await rest(`rpc/${name}`, { method: "POST", body: JSON.stringify({ target_collection_id: collectionId }) });
-    return (Array.isArray(value) ? value[0] : value) as { token: string };
-  }
-
   await rest("spaces", { method: "POST", body: JSON.stringify({ id: spaceId, user_id: session.user.id, name: "Private owner space", color: "#7657e8", position: 999 }) });
   await rest("collections", { method: "POST", body: JSON.stringify({ id: collectionId, user_id: session.user.id, space_id: spaceId, name: "Share acceptance", position: 0 }) });
   await rest("links", { method: "POST", body: JSON.stringify([
@@ -40,10 +35,20 @@ test("an anonymous live collection follows edits, regeneration, and revocation",
     { id: secondLinkId, user_id: session.user.id, collection_id: collectionId, title: "Second shared card", description: "", url: "https://example.com/second", favicon_url: null, position: 1 },
   ]) });
 
+  const projectRef = new URL(supabaseUrl).hostname.split(".")[0];
+  const ownerContext = await browser.newContext();
+  const owner = await ownerContext.newPage();
+  await owner.goto(webUrl);
+  await owner.evaluate(({ key, value }) => localStorage.setItem(key, value), { key: `sb-${projectRef}-auth-token`, value: JSON.stringify(session) });
+  await owner.goto(`${webUrl}/app`);
+  await owner.getByRole("button", { name: "Share Share acceptance" }).click();
+  await owner.getByRole("button", { name: "Enable sharing" }).click();
+  const originalUrl = await owner.getByLabel("Share URL").inputValue();
+  const original = { token: originalUrl.split("/").at(-1)! };
+
   const context = await browser.newContext();
   const page = await context.newPage();
   try {
-    const original = await rpc("enable_collection_share");
     await page.goto(`${webUrl}/s/${original.token}`);
     await expect(page.getByRole("heading", { name: "Share acceptance" })).toBeVisible();
     await expect(page.getByText("First shared card")).toBeVisible();
@@ -54,22 +59,46 @@ test("an anonymous live collection follows edits, regeneration, and revocation",
     await rest(`links?id=eq.${firstLinkId}`, { method: "PATCH", body: JSON.stringify({ title: "Edited shared card", position: 1 }) });
     await rest(`links?id=eq.${secondLinkId}`, { method: "DELETE" });
     await rest("links", { method: "POST", body: JSON.stringify({ id: crypto.randomUUID(), user_id: session.user.id, collection_id: collectionId, title: "New shared card", description: "", url: "https://example.com/new", favicon_url: null, position: 0 }) });
+    await expect(page.getByRole("heading", { name: "Share acceptance" })).toBeVisible();
+    await expect(page.getByText("First shared card")).toBeVisible();
+    await expect(page.getByText("New shared card")).not.toBeVisible();
     await page.reload();
     await expect(page.getByRole("heading", { name: "Updated acceptance" })).toBeVisible();
     await expect(page.getByText("New shared card")).toBeVisible();
     await expect(page.getByText("Edited shared card")).toBeVisible();
     await expect(page.getByText("Second shared card")).not.toBeVisible();
 
-    const replacement = await rpc("regenerate_collection_share");
+    await page.evaluate(() => {
+      Reflect.set(window, "__openedTabs", []);
+      window.open = ((url?: string | URL) => {
+        (Reflect.get(window, "__openedTabs") as string[]).push(String(url));
+        return window;
+      }) as typeof window.open;
+    });
+    await page.getByRole("button", { name: "Open all" }).click();
+    expect(await page.evaluate(() => Reflect.get(window, "__openedTabs"))).toEqual(["https://example.com/new", "https://example.com/first"]);
+
+    await rest("links", { method: "POST", body: JSON.stringify(Array.from({ length: 9 }, (_, index) => ({ id: crypto.randomUUID(), user_id: session.user.id, collection_id: collectionId, title: `Extra ${index}`, description: "", url: `https://example.com/extra-${index}`, favicon_url: null, position: index + 2 }))) });
+    await page.reload();
+    await page.getByRole("button", { name: "Open all" }).click();
+    await expect(page.getByRole("dialog", { name: "Open 11 tabs?" })).toBeVisible();
+    await page.getByRole("button", { name: "Cancel" }).click();
+
+    await owner.getByRole("button", { name: "Regenerate link" }).click();
+    await owner.getByRole("button", { name: "Confirm regenerate" }).click();
+    const replacementUrl = await owner.getByLabel("Share URL").inputValue();
+    const replacement = { token: replacementUrl.split("/").at(-1)! };
     await page.goto(`${webUrl}/s/${original.token}`);
     await expect(page.getByRole("heading", { name: "This shared collection is unavailable" })).toBeVisible();
     await page.goto(`${webUrl}/s/${replacement.token}`);
     await expect(page.getByRole("heading", { name: "Updated acceptance" })).toBeVisible();
-    await rpc("disable_collection_share");
+    await owner.getByRole("button", { name: "Disable sharing" }).click();
+    await owner.getByRole("button", { name: "Confirm disable" }).click();
     await page.reload();
     await expect(page.getByRole("heading", { name: "This shared collection is unavailable" })).toBeVisible();
   } finally {
     await context.close();
+    await ownerContext.close();
     await rest(`spaces?id=eq.${spaceId}`, { method: "DELETE" });
   }
 });

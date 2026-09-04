@@ -63,7 +63,12 @@ export function CollectionShareDialog({
   }, [availability, collection.id, repository]);
 
   useEffect(() => {
+    const invokingControl = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     closeRef.current?.focus();
+    return () => invokingControl?.focus();
+  }, []);
+
+  useEffect(() => {
     if (availability !== "ready") return;
     const timer = window.setTimeout(() => void load(), 0);
     return () => window.clearTimeout(timer);
