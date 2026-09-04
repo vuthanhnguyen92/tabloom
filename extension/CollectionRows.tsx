@@ -39,6 +39,8 @@ type DraggedItem =
 type LinkDropPreview = { collectionId: string; targetLinkId?: string } | null;
 type PendingDuplicateMove = { sourceId: string; collectionId: string; targetLinkId?: string; duplicate: SavedLink } | null;
 type CollectionDropPreview = { targetId: string; edge: "before" | "after" } | null;
+type EditingLink = { original: SavedLink; title: string; description: string; error?: string } | null;
+type OptimisticLinkText = { title: string; description: string };
 const DELETE_EXIT_MS = 200;
 const waitForDeleteExit = () => new Promise<void>((resolve) => setTimeout(resolve,
   typeof window !== "undefined" && window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ? 0 : DELETE_EXIT_MS,
@@ -52,23 +54,41 @@ export function CollectionRows({ collections, links, allLinks = links, bookmarkD
   const [pendingDuplicateMove, setPendingDuplicateMove] = useState<PendingDuplicateMove>(null);
   const [pendingDelete, setPendingDelete] = useState<Collection | null>(null);
   const [pendingDeleteLink, setPendingDeleteLink] = useState<SavedLink | null>(null);
+  const [editingLink, setEditingLink] = useState<EditingLink>(null);
   const [removingCollectionId, setRemovingCollectionId] = useState<string | null>(null);
   const [removingLinkId, setRemovingLinkId] = useState<string | null>(null);
   const [editingCollection, setEditingCollection] = useState<{ id: string; originalName: string; value: string; error?: string } | null>(null);
   const [optimisticCollectionNames, setOptimisticCollectionNames] = useState<Record<string, string>>({});
+  const [optimisticLinkText, setOptimisticLinkText] = useState<Record<string, OptimisticLinkText>>({});
   const collectionNameInputRef = useRef<HTMLInputElement>(null);
+  const linkTitleInputRef = useRef<HTMLInputElement>(null);
   const [collapsedState, setCollapsedState] = useState<{ scope: string; ids: Set<string>; ready: boolean }>(() => ({ scope: collapseScope, ids: new Set(), ready: !collapsePreference }));
   const [deleting, setDeleting] = useState(false);
   const orderedCollections = [...collections].sort((a, b) => a.position - b.position);
   const canMutateCollection = (collection: Collection) => collection.origin === "saved" && !collection.read_only;
   const collectionIdsKey = orderedCollections.map((collection) => collection.id).join("\0");
   const editingCollectionId = editingCollection?.id;
+  const editingLinkId = editingLink?.original.id;
 
   useEffect(() => {
     if (!editingCollectionId) return;
     collectionNameInputRef.current?.focus();
     collectionNameInputRef.current?.select();
   }, [editingCollectionId]);
+
+  useEffect(() => {
+    if (!editingLinkId) return;
+    linkTitleInputRef.current?.focus();
+    linkTitleInputRef.current?.select();
+    const cancelOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        setEditingLink(null);
+      }
+    };
+    window.addEventListener("keydown", cancelOnEscape);
+    return () => window.removeEventListener("keydown", cancelOnEscape);
+  }, [editingLinkId]);
 
   useEffect(() => {
     let active = true;
@@ -111,6 +131,41 @@ export function CollectionRows({ collections, links, allLinks = links, bookmarkD
 
   function cancelRenamingCollection() {
     setEditingCollection(null);
+  }
+
+  function startEditingLink(link: SavedLink) {
+    if (link.origin !== "saved" || link.read_only) return;
+    clearDrag();
+    const optimistic = optimisticLinkText[link.id];
+    setEditingLink({
+      original: link,
+      title: optimistic?.title ?? link.title,
+      description: optimistic?.description ?? link.description,
+    });
+  }
+
+  async function saveLinkText() {
+    if (!editingLink) return;
+    const current = editingLink;
+    const title = current.title.trim();
+    const description = current.description.trim();
+    if (!title) {
+      setEditingLink({ ...current, error: "Title is required" });
+      return;
+    }
+    setOptimisticLinkText((values) => ({ ...values, [current.original.id]: { title, description } }));
+    setEditingLink(null);
+    try {
+      await repository.updateLink(current.original.id, { title, description });
+      await onReload();
+      setOptimisticLinkText((values) => {
+        const next = { ...values };
+        delete next[current.original.id];
+        return next;
+      });
+    } catch (reason) {
+      onError?.(reason instanceof Error ? reason.message : `Could not update ${current.original.title}.`);
+    }
   }
 
   async function saveCollectionName(collection: Collection) {
@@ -364,21 +419,24 @@ export function CollectionRows({ collections, links, allLinks = links, bookmarkD
         <div className="ext-link-grid">
           {collectionLinks.map((link) => {
             const isRemovingLink = removingLinkId === link.id;
+            const optimisticText = optimisticLinkText[link.id];
+            const displayLink = optimisticText ? { ...link, ...optimisticText } : link;
+            const subtitle = displayLink.description || hostnameFor(displayLink.url);
             return <Fragment key={link.id}>
             {showsPreview && linkDropPreview.targetLinkId === link.id && <div aria-hidden="true" className="ext-link-drop-preview"><span>Drop here</span></div>}
             <div aria-busy={isRemovingLink || undefined} className={`ext-link-card${isRemovingLink ? " is-removing" : ""}`}><a
-            aria-label={`${link.title} · ${hostnameFor(link.url)}`}
+            aria-label={`${displayLink.title} · ${subtitle}`}
             className={[
               (dragged?.kind === "saved-link" && dragged.id === link.id) || (dragged?.kind === "browser-bookmark" && dragged.link.id === link.id) ? "dragging" : "",
               link.id === highlightedLinkId || link.id === pendingDuplicateMove?.duplicate.id ? "duplicate-highlight" : "",
             ].filter(Boolean).join(" ") || undefined}
             draggable={!isRemovingLink}
-            href={link.url}
+            href={displayLink.url}
             onDragStart={(event) => { event.stopPropagation(); if (isRemovingLink) return event.preventDefault(); event.dataTransfer.effectAllowed = link.origin === "browser-bookmark" ? "copy" : "move"; setLinkDropPreview(null); setDragged(link.origin === "browser-bookmark" ? { kind: "browser-bookmark", link } : { kind: "saved-link", id: link.id }); }}
             onDragEnd={clearDrag}
             onDragOver={(event) => { event.stopPropagation(); if (!canMutate) return; allowDrop(event); if (!previewBrowserTabDrop(event, collection)) previewLinkDrop(collection, link.id); }}
             onDrop={(event) => { event.preventDefault(); event.stopPropagation(); if (!canMutate) return clearDrag(); if (acceptBrowserTab(event, collection)) return; if (dragged?.kind === "browser-bookmark") void copyBookmark(collection); else void moveLink(collection.id, link.id); }}
-          ><FaviconTile src={resolveFavicon({ pageUrl: link.url, capturedUrl: link.favicon_url, size: 32 })} title={link.title} /><span><b>{link.title}</b><small>{hostnameFor(link.url)}</small>{link.device_label && <small className="bookmark-device-label">{link.device_label}</small>}</span><GripVertical aria-hidden="true" className="card-drag-indicator" size={14} /></a>{canMutate && link.origin === "saved" && <button aria-label={`Delete ${link.title}`} className="saved-link-delete" draggable={false} title={`Delete ${link.title}`} onClick={(event) => { event.stopPropagation(); setPendingDeleteLink(link); }}><Trash2 size={14} /></button>}</div>
+          ><FaviconTile src={resolveFavicon({ pageUrl: displayLink.url, capturedUrl: displayLink.favicon_url, size: 32 })} title={displayLink.title} /><span><b>{displayLink.title}</b><small>{subtitle}</small>{displayLink.device_label && <small className="bookmark-device-label">{displayLink.device_label}</small>}</span><GripVertical aria-hidden="true" className="card-drag-indicator" size={14} /></a>{canMutate && displayLink.origin === "saved" && <><button aria-label={`Edit ${displayLink.title}`} className="saved-link-action saved-link-edit" draggable={false} title={`Edit ${displayLink.title}`} onClick={(event) => { event.preventDefault(); event.stopPropagation(); startEditingLink(displayLink); }}><Pencil size={14} /></button><button aria-label={`Delete ${displayLink.title}`} className="saved-link-action saved-link-delete" draggable={false} title={`Delete ${displayLink.title}`} onClick={(event) => { event.preventDefault(); event.stopPropagation(); setPendingDeleteLink(displayLink); }}><Trash2 size={14} /></button></>}</div>
           </Fragment>; })}
           {showsPreview && !linkDropPreview.targetLinkId && <div aria-hidden="true" className="ext-link-drop-preview"><span>Drop here</span></div>}
         </div>
@@ -401,6 +459,16 @@ export function CollectionRows({ collections, links, allLinks = links, bookmarkD
       <small>DELETE SAVED LINK</small><h2>Delete “{pendingDeleteLink.title}”?</h2>
       <p>The saved link will be permanently removed from this collection. The open browser tab, if any, will not be closed.</p>
       <div><button disabled={deleting} onClick={() => setPendingDeleteLink(null)}>Cancel</button><button className="close-after-save" disabled={deleting} onClick={() => void deleteSavedLink()}>Delete link permanently</button></div>
+    </section></div>}
+    {editingLink && <div className="drop-confirm-backdrop"><section aria-label={`Edit ${editingLink.original.title}`} aria-modal="true" className="drop-confirm link-editor-modal" role="dialog">
+      <button aria-label="Cancel editing link" className="dialog-close" onClick={() => setEditingLink(null)}><X size={18} /></button>
+      <small>EDIT SAVED LINK</small><h2>Edit card details</h2>
+      <form onSubmit={(event) => { event.preventDefault(); void saveLinkText(); }}>
+        <label>Title<input aria-invalid={Boolean(editingLink.error)} aria-label="Title" onChange={(event) => setEditingLink((current) => current ? { ...current, title: event.target.value, error: undefined } : current)} ref={linkTitleInputRef} value={editingLink.title} /></label>
+        {editingLink.error && <small role="alert">{editingLink.error}</small>}
+        <label>Subtitle<input aria-label="Subtitle" onChange={(event) => setEditingLink((current) => current ? { ...current, description: event.target.value } : current)} placeholder={hostnameFor(editingLink.original.url)} value={editingLink.description} /></label>
+        <div><button type="button" onClick={() => setEditingLink(null)}>Cancel</button><button className="close-after-save" type="submit">Save changes</button></div>
+      </form>
     </section></div>}
   </div>;
 }

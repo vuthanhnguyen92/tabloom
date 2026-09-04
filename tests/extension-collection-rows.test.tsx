@@ -207,6 +207,108 @@ describe("CollectionRows", () => {
     expect(getComputedStyle(deleteButton).right).toBe("0px");
   });
 
+  it("edits a saved-link title and subtitle with an optimistic card update", async () => {
+    const snapshot = createDemoSnapshot();
+    const repository = new MemoryWorkspaceRepository("demo-user", snapshot);
+    let releaseUpdate: () => void = () => undefined;
+    repository.updateLink = vi.fn(() => new Promise<void>((resolve) => { releaseUpdate = resolve; }));
+    const onReload = vi.fn(async () => undefined);
+    render(<CollectionRows collections={snapshot.collections} links={snapshot.links} repository={repository} onReload={onReload} />);
+
+    await userEvent.hover(screen.getByRole("link", { name: /Product roadmap/i }).closest(".ext-link-card")!);
+    await userEvent.click(screen.getByRole("button", { name: "Edit Product roadmap" }));
+    const dialog = screen.getByRole("dialog", { name: "Edit Product roadmap" });
+    const title = within(dialog).getByRole("textbox", { name: "Title" });
+    const subtitle = within(dialog).getByRole("textbox", { name: "Subtitle" });
+    expect(title).toHaveValue("Product roadmap");
+    expect(subtitle).toHaveValue("");
+
+    await userEvent.clear(title);
+    await userEvent.type(title, "  Product direction  ");
+    await userEvent.type(subtitle, "  Q4 priorities  ");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Save changes" }));
+
+    expect(screen.queryByRole("dialog", { name: "Edit Product roadmap" })).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /Product direction/i })).toHaveTextContent("Q4 priorities");
+    expect(repository.updateLink).toHaveBeenCalledWith("link-0", { title: "Product direction", description: "Q4 priorities" });
+    expect(onReload).not.toHaveBeenCalled();
+
+    releaseUpdate();
+    await waitFor(() => expect(onReload).toHaveBeenCalledOnce());
+  });
+
+  it("falls back to the hostname when a saved-link subtitle is blank", async () => {
+    const snapshot = createDemoSnapshot();
+    const repository = new MemoryWorkspaceRepository("demo-user", snapshot);
+    let releaseUpdate: () => void = () => undefined;
+    repository.updateLink = vi.fn(() => new Promise<void>((resolve) => { releaseUpdate = resolve; }));
+    const onReload = vi.fn(async () => undefined);
+    render(<CollectionRows collections={snapshot.collections} links={snapshot.links} repository={repository} onReload={onReload} />);
+
+    await userEvent.hover(screen.getByRole("link", { name: /Brand system/i }).closest(".ext-link-card")!);
+    await userEvent.click(screen.getByRole("button", { name: "Edit Brand system" }));
+    const dialog = screen.getByRole("dialog", { name: "Edit Brand system" });
+    const subtitle = within(dialog).getByRole("textbox", { name: "Subtitle" });
+    expect(subtitle).toHaveValue("Figma assets for launch");
+    await userEvent.clear(subtitle);
+    await userEvent.click(within(dialog).getByRole("button", { name: "Save changes" }));
+
+    expect(screen.getByRole("link", { name: /Brand system/i })).toHaveTextContent("figma.com");
+    releaseUpdate();
+    await waitFor(() => expect(onReload).toHaveBeenCalledOnce());
+  });
+
+  it("rejects an empty saved-link title and cancels editing with Escape", async () => {
+    const { repository, onReload } = setup();
+
+    await userEvent.hover(screen.getByRole("link", { name: /Product roadmap/i }).closest(".ext-link-card")!);
+    await userEvent.click(screen.getByRole("button", { name: "Edit Product roadmap" }));
+    const dialog = screen.getByRole("dialog", { name: "Edit Product roadmap" });
+    const title = within(dialog).getByRole("textbox", { name: "Title" });
+    await userEvent.clear(title);
+    await userEvent.click(within(dialog).getByRole("button", { name: "Save changes" }));
+    expect(title).toHaveAttribute("aria-invalid", "true");
+    expect(within(dialog).getByText("Title is required")).toBeVisible();
+
+    await userEvent.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog", { name: "Edit Product roadmap" })).not.toBeInTheDocument();
+    expect(onReload).not.toHaveBeenCalled();
+    expect((await repository.load()).links.find((item) => item.id === "link-0")?.title).toBe("Product roadmap");
+  });
+
+  it("offers card editing only for mutable saved links", () => {
+    const normal = createDemoSnapshot();
+    const bookmark = toBookmarkWorkspace("demo-user", mergeBookmarkEntries(
+      [{ id: "mac", device_name: "Work Mac", last_synced_at: null }],
+      [{ id: "entry", source_id: "mac", chrome_bookmark_id: "one", url: "https://example.com", normalized_url: "https://example.com/", title: "Browser example", folder_path: "Imported", syncing: false, position: 0 }],
+    ));
+    render(<CollectionRows collections={[normal.collections[0], bookmark.collections[0]]} links={[normal.links[0], ...bookmark.links]} repository={new MemoryWorkspaceRepository("demo-user", normal)} onReload={vi.fn(async () => undefined)} />);
+
+    expect(screen.getByRole("button", { name: "Edit Product roadmap" })).toHaveAttribute("draggable", "false");
+    expect(screen.queryByRole("button", { name: "Edit Browser example" })).not.toBeInTheDocument();
+  });
+
+  it("keeps an optimistic card edit visible when persistence fails", async () => {
+    const snapshot = createDemoSnapshot();
+    const repository = new MemoryWorkspaceRepository("demo-user", snapshot);
+    repository.updateLink = vi.fn(async () => { throw new Error("Failed to sync"); });
+    const onError = vi.fn();
+    const onReload = vi.fn(async () => undefined);
+    render(<CollectionRows collections={snapshot.collections} links={snapshot.links} repository={repository} onError={onError} onReload={onReload} />);
+
+    await userEvent.hover(screen.getByRole("link", { name: /Product roadmap/i }).closest(".ext-link-card")!);
+    await userEvent.click(screen.getByRole("button", { name: "Edit Product roadmap" }));
+    const dialog = screen.getByRole("dialog", { name: "Edit Product roadmap" });
+    const title = within(dialog).getByRole("textbox", { name: "Title" });
+    await userEvent.clear(title);
+    await userEvent.type(title, "Product direction");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Save changes" }));
+
+    await waitFor(() => expect(onError).toHaveBeenCalledWith("Failed to sync"));
+    expect(screen.getByRole("link", { name: /Product direction/i })).toBeVisible();
+    expect(onReload).not.toHaveBeenCalled();
+  });
+
   it("asks for confirmation before deleting a saved-link card", async () => {
     const { repository } = setup();
 
