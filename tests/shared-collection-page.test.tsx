@@ -14,10 +14,13 @@ describe("SharedCollectionView", () => {
   it("renders an anonymous read-only collection with safe card links", () => {
     render(<SharedCollectionView snapshot={{ name: "Launch plan", links }} />);
 
-    expect(screen.getByRole("heading", { name: "Launch plan" })).toBeVisible();
+    expect(screen.getByLabelText("Tabloom").closest("a")).toHaveClass("shared-collection-brand");
+    expect(screen.queryByText("Shared collection")).not.toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Launch plan" })).toHaveClass("shared-collection-title");
     expect(screen.getByText("2 links")).toBeVisible();
     expect(screen.getByText("Release plan")).toBeVisible();
     expect(screen.getByText("example.com")).toBeVisible();
+    expect(screen.getByRole("button", { name: "Open all" })).toHaveClass("shared-open-all-button");
     expect(screen.getByRole("link", { name: /Linear roadmap/ })).toHaveAttribute("href", "https://linear.app/roadmap");
     expect(screen.getByRole("link", { name: /Linear roadmap/ })).toHaveAttribute("rel", "noreferrer noopener");
     expect(document.body).not.toHaveTextContent(/owner|space|device|sync/i);

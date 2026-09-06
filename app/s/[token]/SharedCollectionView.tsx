@@ -28,11 +28,11 @@ export function SharedCollectionView({ snapshot }: { snapshot: SharedCollectionS
   }
 
   return <main className="shared-collection-page">
-    <header><Link href="/"><Brand /></Link><span>Shared collection</span></header>
+    <header><Link className="shared-collection-brand" href="/"><Brand /></Link></header>
     <section className="shared-collection-shell">
       <div className="shared-collection-heading">
-        <div><span className="eyebrow">LIVE COLLECTION</span><h1>{snapshot.name}</h1><p>{snapshot.links.length} {snapshot.links.length === 1 ? "link" : "links"}</p></div>
-        {!!snapshot.links.length && <button className="button button-primary" onClick={requestOpenAll}><ExternalLink size={16} /> Open all</button>}
+        <div><span className="eyebrow">LIVE COLLECTION</span><h1 className="shared-collection-title">{snapshot.name}</h1><p>{snapshot.links.length} {snapshot.links.length === 1 ? "link" : "links"}</p></div>
+        {!!snapshot.links.length && <button className="button button-primary shared-open-all-button" onClick={requestOpenAll}><ExternalLink size={16} /> Open all</button>}
       </div>
       {snapshot.links.length ? <div className="shared-link-grid">
         {snapshot.links.map((link) => <a className="shared-link-card" href={link.url} key={link.id} rel="noreferrer noopener">
