@@ -220,6 +220,33 @@ describe("CollectionRows", () => {
     expect(repository.get).toHaveBeenCalledWith("collection-plan");
   });
 
+  it("keeps sharing visible without overlapping the collection controls", () => {
+    const snapshot = createDemoSnapshot();
+    render(<CollectionRows
+      collections={snapshot.collections}
+      links={snapshot.links}
+      repository={new MemoryWorkspaceRepository("demo-user", snapshot)}
+      onReload={vi.fn(async () => undefined)}
+      share={{
+        availability: "ready",
+        repository: shareRepository(),
+        siteUrl: "https://tabloom.nickvu.dev",
+        onRequestSignIn: vi.fn(),
+        onRequestSyncRetry: vi.fn(),
+        onToast: vi.fn(),
+      }}
+    />);
+
+    const shareButton = screen.getByRole("button", { name: "Share Plan" });
+    const metadata = shareButton.closest<HTMLElement>(".ext-col-meta")!;
+    const reorderActions = screen.getByRole("button", { name: "Move Plan down" }).closest<HTMLElement>(".collection-reorder-actions")!;
+
+    expect(getComputedStyle(shareButton).position).toBe("static");
+    expect(getComputedStyle(shareButton).opacity).toBe("1");
+    expect(metadata).toContainElement(reorderActions);
+    expect(getComputedStyle(reorderActions).right).toBe("calc(100% + 8px)");
+  });
+
   it("never offers sharing for browser-bookmark collections", () => {
     const normal = createDemoSnapshot();
     const bookmark = toBookmarkWorkspace("demo-user", mergeBookmarkEntries(
