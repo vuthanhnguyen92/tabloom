@@ -26,6 +26,40 @@ describe("SharedCollectionView", () => {
     expect(document.body).not.toHaveTextContent(/owner|space|device|sync/i);
   });
 
+  it("exposes an ordered, anonymous machine-readable collection", () => {
+    render(<SharedCollectionView snapshot={{ name: "Launch plan", links }} />);
+
+    expect(screen.getByRole("list", { name: "Launch plan" })).toBeVisible();
+    expect(screen.getAllByRole("listitem")).toHaveLength(2);
+
+    const script = document.querySelector<HTMLScriptElement>('script[type="application/ld+json"]');
+    expect(script).not.toBeNull();
+    const structuredData = JSON.parse(script!.textContent!);
+    expect(structuredData).toEqual({
+      "@context": "https://schema.org",
+      "@type": "CollectionPage",
+      name: "Launch plan",
+      description: "Launch plan — 2 links shared with Tabloom.",
+      mainEntity: {
+        "@type": "ItemList",
+        numberOfItems: 2,
+        itemListElement: [
+          {
+            "@type": "ListItem",
+            position: 1,
+            item: { "@type": "WebPage", name: "Linear roadmap", description: "Release plan", url: "https://linear.app/roadmap" },
+          },
+          {
+            "@type": "ListItem",
+            position: 2,
+            item: { "@type": "WebPage", name: "Reference", url: "https://example.com/reference" },
+          },
+        ],
+      },
+    });
+    expect(script!.textContent).not.toMatch(/owner|user|account|space|device/i);
+  });
+
   it("renders a useful empty collection", () => {
     render(<SharedCollectionView snapshot={{ name: "Reading list", links: [] }} />);
     expect(screen.getByText("Nothing saved here yet")).toBeVisible();

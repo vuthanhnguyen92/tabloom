@@ -24,13 +24,46 @@ describe("site metadata", () => {
     expect(metadata.twitter).toMatchObject({ images: ["/og-workspace.png"] });
   });
 
-  it("keeps shared collection metadata private and token-free", async () => {
-    const { metadata } = await import("../app/s/[token]/page");
+  it("describes a valid shared collection without making it discoverable", async () => {
+    const { buildSharedCollectionMetadata } = await import("../app/lib/shared-collection-metadata");
+    const token = "a".repeat(43);
+    const metadata = buildSharedCollectionMetadata(token, {
+      name: "Launch plan",
+      links: [
+        { id: "one", title: "Roadmap", description: "Release plan", url: "https://linear.app/roadmap", favicon_url: null, position: 0 },
+        { id: "two", title: "Reference", description: "", url: "https://example.com/reference", favicon_url: null, position: 1 },
+      ],
+    });
+
     expect(metadata).toMatchObject({
-      title: "Shared collection | Tabloom",
+      title: { absolute: "Launch plan | Tabloom" },
+      description: "Launch plan — 2 links shared with Tabloom.",
+      alternates: { canonical: `/s/${token}` },
+      robots: { index: false, follow: false },
+      openGraph: {
+        title: "Launch plan | Tabloom",
+        description: "Launch plan — 2 links shared with Tabloom.",
+        url: `/s/${token}`,
+      },
+      twitter: {
+        title: "Launch plan | Tabloom",
+        description: "Launch plan — 2 links shared with Tabloom.",
+      },
+    });
+    expect(JSON.stringify(metadata)).not.toMatch(/owner|user|account|space|device/i);
+  });
+
+  it("uses generic metadata when a shared collection is unavailable", async () => {
+    const { buildSharedCollectionMetadata } = await import("../app/lib/shared-collection-metadata");
+    const metadata = buildSharedCollectionMetadata("a".repeat(43), null);
+
+    expect(metadata).toMatchObject({
+      title: { absolute: "Shared collection | Tabloom" },
+      description: "A read-only collection shared with Tabloom.",
       robots: { index: false, follow: false },
     });
-    expect(JSON.stringify(metadata)).not.toMatch(/token|collection name/i);
+    expect(metadata.alternates).toBeUndefined();
+    expect(metadata.openGraph).toBeUndefined();
   });
 
   it("adds no-store, no-referrer, and noindex headers only to shared routes", async () => {
