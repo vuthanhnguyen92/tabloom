@@ -151,3 +151,7 @@ End-to-end acceptance will verify that an owner enables sharing in the extension
 4. Run the production acceptance flow before advertising sharing.
 
 If the database migration is unavailable, owner surfaces hide no existing functionality: Share reports that the feature is temporarily unavailable, and all workspace operations continue normally.
+
+## Saving an independent copy
+
+Visitors can save a shared collection as a private, editable copy in their own account. Changes to the original, including revocation and deletion, do not update or remove that copy. See the [save implementation plan](../plans/2026-09-09-save-shared-collection.md) and [behavior, acceptance setup, and rollout notes](../../shared-collection-saving.md).
