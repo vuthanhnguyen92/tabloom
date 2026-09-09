@@ -14,7 +14,7 @@ function parseCollapsedByScope(value: unknown): Record<string, string[]> {
   ));
 }
 
-function extensionCollectionCollapseStore(storage: BrowserAdapter["storage"]): OrganizerPreferenceStore {
+export function extensionCollectionCollapseStore(storage: BrowserAdapter["storage"]): OrganizerPreferenceStore {
   let loaded: Promise<Record<string, string[]>> | null = null;
   const collapsed = () => loaded ??= storage.get(STORAGE_KEY).then((result) => parseCollapsedByScope(result[STORAGE_KEY]));
   const scopeFor = (key: string) => key.startsWith(KEY_PREFIX) ? key.slice(KEY_PREFIX.length) : key;

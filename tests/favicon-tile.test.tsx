@@ -1,6 +1,6 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
-import { FaviconTile } from "../extension/FaviconTile";
+import { FaviconTile } from "../shared/organizer/FaviconTile";
 
 describe("FaviconTile", () => {
   it("shows its monogram immediately while the favicon loads", () => {

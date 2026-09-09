@@ -114,3 +114,16 @@ button:not(:disabled):active { transform: scale(.97); }
 @media (prefers-reduced-motion: reduce) { .workspace-boot-indicator { animation: none; opacity: .65; } }
 
 /* Live collection sharing */
+
+/* The extension keeps Current Tabs as a vertical browser panel at every width. */
+.extension-workspace .organizer-shell { grid-template-columns: 230px minmax(0, 1fr) 360px; grid-template-rows: minmax(0, 1fr); transition: grid-template-columns var(--motion-slow) var(--ease-standard); }
+.extension-workspace .organizer-shell:has(.organizer-space-rail.collapsed) { grid-template-columns: 68px minmax(0, 1fr) 360px; }
+.extension-workspace .organizer-shell:has(> .current-tabs-sheet.collapsed) { grid-template-columns: 230px minmax(0, 1fr) 54px; }
+.extension-workspace .organizer-shell:has(.organizer-space-rail.collapsed):has(> .current-tabs-sheet.collapsed) { grid-template-columns: 68px minmax(0, 1fr) 54px; }
+.extension-workspace .organizer-shell > .current-tabs-sheet { grid-column: 3; grid-row: 1; max-height: none; }
+@media (max-width: 1000px) {
+  .extension-workspace .organizer-shell { grid-template-columns: 210px minmax(0, 1fr) 300px; }
+  .extension-workspace .organizer-shell:has(.organizer-space-rail.collapsed) { grid-template-columns: 68px minmax(0, 1fr) 300px; }
+  .extension-workspace .organizer-shell:has(> .current-tabs-sheet.collapsed) { grid-template-columns: 210px minmax(0, 1fr) 48px; }
+  .extension-workspace .organizer-shell:has(.organizer-space-rail.collapsed):has(> .current-tabs-sheet.collapsed) { grid-template-columns: 68px minmax(0, 1fr) 48px; }
+}

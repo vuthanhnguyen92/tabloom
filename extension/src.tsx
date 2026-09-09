@@ -7,28 +7,28 @@ import "@fontsource/poppins/latin-700.css";
 import { X } from "lucide-react";
 import { BROWSER_BOOKMARKS_SPACE_ID } from "../shared/bookmarks";
 import { CombinedWorkspaceRepository, SupabaseBookmarkRepository, copyBookmarkToCollection, type BookmarkRepository } from "../shared/bookmark-repository";
-import { findDuplicateLink, type SavedLink, type WorkspaceSnapshot } from "../shared/domain";
+import { findDuplicateLink, type SavedLink } from "../shared/domain";
 import type { WorkspaceRepository } from "../shared/repository";
 import type { WorkspaceMergePlan } from "../shared/workspace-merge";
 import { SupabaseWorkspaceSyncRepository } from "../shared/workspace-sync-repository";
-import { TabloomMark } from "../shared/TabloomMark";
+import type { WorkspaceTrashRepository } from "../shared/trash-repository";
+import { WorkspaceOrganizerView } from "../shared/organizer/WorkspaceOrganizer";
+import { useWorkspaceController } from "../shared/organizer/useWorkspaceController";
+import type { OrganizerCapabilities } from "../shared/organizer/capabilities";
+import { createExtensionPreferenceStore } from "./organizer-preference-store";
 import { SupabaseCollectionShareRepository, type CollectionShareClient, type ShareAvailability } from "../shared/collection-sharing";
 import { openCollectionTabs, type CaptureTab } from "./chrome-api";
 import { ChromeSnapshotCache, createLocalWorkspaceRepository, openLocalWorkspaceRepository } from "./storage";
 import { extensionSupabase, recoverExtensionSessionSilently, signInExtensionWithGoogle } from "./supabase";
-import { CollectionRows } from "./CollectionRows";
+import { browserTabDropAdapter } from "./CollectionRows";
 import { BrowserBookmarksPanel } from "./BrowserBookmarksPanel";
 import { CurrentTabsSheet } from "./CurrentTabsSheet";
 import { saveDroppedTab } from "./dropped-tab";
-import { SpaceSidebar } from "./SpaceSidebar";
 import { browserAdapter, browserTarget } from "./browser";
 import { callbackForTarget, isSilentOAuthMiss, type ExtensionOAuthSession } from "./auth/oauth";
 import { AuthRecoveryPreference } from "./auth/recovery-preference";
 import { SyncLoginPrompt, type SyncUser } from "./SyncLoginPrompt";
-import { CreateCollectionPrompt } from "./CreateCollectionPrompt";
 import { WorkspaceSyncPrompt } from "./WorkspaceSyncPrompt";
-import { ToastRegion } from "./ToastRegion";
-import { GlobalSearch } from "./GlobalSearch";
 import { advanceFirstSync, FirstSyncCoordinator, FirstSyncPreviewChangedError } from "./first-sync";
 import { LocalFirstStorage } from "./local-first-storage";
 import { LocalFirstWorkspaceRepository } from "./local-first-repository";
@@ -36,8 +36,6 @@ import { WorkspaceSyncCoordinator, type WorkspaceSyncState } from "./workspace-s
 import { WorkspaceSyncLock } from "./workspace-sync-lock";
 import { SupabaseWorkspaceSyncTransport } from "./workspace-sync-transport";
 import { registerWorkspaceSyncLifecycle } from "./workspace-sync-lifecycle";
-import { SelectedSpacePreference } from "./selected-space-preference";
-import { CollectionCollapsePreference } from "./collection-collapse-preference";
 import { mergeAccountWorkspaceIntoLocal } from "./logout-workspace";
 import { WorkspaceBootBoundary } from "./WorkspaceBootBoundary";
 import { bootstrapWorkspace } from "./workspace-bootstrap";
@@ -46,8 +44,6 @@ import "./style.css";
 
 const cache = new ChromeSnapshotCache();
 const oauthCallbackUrl = callbackForTarget(browserTarget, browserAdapter.identity);
-const selectedSpacePreference = new SelectedSpacePreference(browserAdapter.storage);
-const collectionCollapsePreference = new CollectionCollapsePreference(browserAdapter.storage);
 const authRecoveryPreference = new AuthRecoveryPreference(browserAdapter.storage);
 const LOCAL_SPACE_SCOPE = "local";
 const accountSpaceScope = (userId: string) => `account:${userId}`;
@@ -68,32 +64,22 @@ function waitForStorageKey(key: string, expiresAt: number): Promise<void> {
   });
 }
 
-function Mark() { return <span className="ext-brand"><TabloomMark className="ext-brand-mark" />tabloom</span>; }
-
-export function ExtensionApp() {
+function useExtensionRuntime() {
   const [bootstrapReady, setBootstrapReady] = useState(false);
   const [repository, setRepository] = useState<WorkspaceRepository | null>(null);
   const [bookmarkRepository, setBookmarkRepository] = useState<BookmarkRepository | null>(null);
-  const [snapshot, setSnapshot] = useState<WorkspaceSnapshot | null>(null);
-  const [selectedSpace, setSelectedSpace] = useState("");
+  const [refreshVersion, setRefreshVersion] = useState(0);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
-  const [user, setUser] = useState<SyncUser | null>(null);
+  const [user, setUser] = useState<(SyncUser & { id: string }) | null>(null);
   const [syncStatus, setSyncStatus] = useState<"local" | "checking" | "pending" | "synced" | "error">("local");
   const [workspaceSync, setWorkspaceSync] = useState<{ coordinator: FirstSyncCoordinator; preview: WorkspaceMergePlan; generation: number } | null>(null);
   const [workspaceSyncBusy, setWorkspaceSyncBusy] = useState(false);
   const [workspaceSyncError, setWorkspaceSyncError] = useState<string | null>(null);
-  const [tabsExpanded, setTabsExpanded] = useState(true);
-  const [tabsRefreshVersion, setTabsRefreshVersion] = useState(0);
-  const [pendingTab, setPendingTab] = useState<{ tab: CaptureTab; collectionId: string; duplicate?: SavedLink } | null>(null);
-  const [pendingBookmark, setPendingBookmark] = useState<{ link: SavedLink; collectionId: string; duplicate: SavedLink } | null>(null);
-  const [savingDroppedTab, setSavingDroppedTab] = useState(false);
-  const [browserTabDrag, setBrowserTabDrag] = useState({ active: false, session: 0 });
   const [workspaceScope, setWorkspaceScope] = useState(LOCAL_SPACE_SCOPE);
   const [recoverySuggested, setRecoverySuggested] = useState(false);
   const [signInOpenRequest, setSignInOpenRequest] = useState(0);
   const online = useOnlineStatus();
-  const savingDroppedTabRef = useRef(false);
   const silentRecoveryBusyRef = useRef(false);
   const localRepositoryRef = useRef<WorkspaceRepository | null>(null);
   const syncUserIdRef = useRef<string | null>(null);
@@ -101,7 +87,6 @@ export function ExtensionApp() {
   const coordinatorRef = useRef<WorkspaceSyncCoordinator | null>(null);
   const coordinatorCleanupRef = useRef<(() => void) | null>(null);
   const activationGenerationRef = useRef(0);
-  const selectionScopeRef = useRef(LOCAL_SPACE_SCOPE);
   const [coordinatorState, setCoordinatorState] = useState<WorkspaceSyncState | null>(null);
   const shareRepository = useMemo(
     () => extensionSupabase && user
@@ -117,42 +102,6 @@ export function ExtensionApp() {
         ? "ready"
         : "sync-required";
 
-  async function preferredSpaceId(next: WorkspaceSnapshot, scope: string): Promise<string> {
-    try {
-      return await selectedSpacePreference.reconcile(scope, next.spaces);
-    } catch {
-      return next.spaces[0]?.id ?? "";
-    }
-  }
-
-  function selectSpace(spaceId: string) {
-    setSelectedSpace(spaceId);
-    void selectedSpacePreference.select(selectionScopeRef.current, spaceId).catch(() => undefined);
-  }
-
-  async function load(repo: WorkspaceRepository, scope = selectionScopeRef.current) {
-    try {
-      const next = await repo.load();
-      const preferred = await preferredSpaceId(next, scope);
-      if (selectionScopeRef.current !== scope) return;
-      setSnapshot(next);
-      setSelectedSpace(preferred);
-      setError("");
-    } catch {
-      const cached = syncUserIdRef.current
-        ? (await cache.loadCloud(syncUserIdRef.current))?.snapshot ?? null
-        : await cache.read();
-      if (cached) {
-        const preferred = await preferredSpaceId(cached, scope);
-        if (selectionScopeRef.current !== scope) return;
-        setSnapshot(cached);
-        setSelectedSpace(preferred);
-        setMessage("Offline · showing your last synced workspace");
-      }
-      else setError("Connect to the internet to load your workspace.");
-    }
-  }
-
   function stopActiveCoordinator() {
     coordinatorCleanupRef.current?.();
     coordinatorCleanupRef.current = null;
@@ -165,7 +114,6 @@ export function ExtensionApp() {
   async function activateCanonical(userId: string, generation: number) {
     if (!extensionSupabase || activationGenerationRef.current !== generation) return;
     const selectionScope = accountSpaceScope(userId);
-    selectionScopeRef.current = selectionScope;
     setWorkspaceScope(selectionScope);
     stopActiveCoordinator();
     const storage = new LocalFirstStorage(browserAdapter.storage, userId, {
@@ -181,13 +129,9 @@ export function ExtensionApp() {
         waitForLeaseChange: waitForStorageKey,
       }),
       onActionRequired: setError,
-      onSnapshotCommitted: (next) => {
+      onSnapshotCommitted: () => {
         if (coordinatorRef.current !== coordinator || syncUserIdRef.current !== userId || activationGenerationRef.current !== generation) return;
-        void preferredSpaceId(next, selectionScope).then((preferred) => {
-          if (coordinatorRef.current !== coordinator || syncUserIdRef.current !== userId || activationGenerationRef.current !== generation || selectionScopeRef.current !== selectionScope) return;
-          setSnapshot(next);
-          setSelectedSpace(preferred);
-        });
+        setRefreshVersion((value) => value + 1);
       },
     });
     coordinatorRef.current = coordinator;
@@ -210,18 +154,6 @@ export function ExtensionApp() {
       unregisterLifecycle();
     };
     setRepository(localFirst);
-    const activated = await localFirst.load();
-    if (activationGenerationRef.current !== generation || coordinatorRef.current !== coordinator) {
-      coordinator.stop();
-      return;
-    }
-    const preferred = await preferredSpaceId(activated, selectionScope);
-    if (activationGenerationRef.current !== generation || coordinatorRef.current !== coordinator || selectionScopeRef.current !== selectionScope) {
-      coordinator.stop();
-      return;
-    }
-    setSnapshot(activated);
-    setSelectedSpace(preferred);
     setError("");
     void coordinator.start().catch((reason) => {
       if (coordinatorRef.current === coordinator) setError(reason instanceof Error ? reason.message : "Could not refresh the synced workspace.");
@@ -330,7 +262,6 @@ export function ExtensionApp() {
         const local = result.localRepository;
         localRepositoryRef.current = local;
         setRepository(local);
-        await load(local);
         if (!active || activationGenerationRef.current !== generation) return;
         setBootstrapReady(true);
 
@@ -393,80 +324,6 @@ export function ExtensionApp() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [recoverySuggested]);
 
-  const activeSpace = snapshot?.spaces.find((space) => space.id === selectedSpace) ?? snapshot?.spaces[0];
-  const collections = snapshot?.collections.filter((collection) => collection.space_id === activeSpace?.id) ?? [];
-  const savedCollections = snapshot?.collections.filter((collection) => collection.origin === "saved" && !collection.read_only) ?? [];
-
-  async function confirmDroppedTab(closeAfterSave: boolean) {
-    if (!repository || !pendingTab || savingDroppedTabRef.current) return;
-    savingDroppedTabRef.current = true;
-    setSavingDroppedTab(true);
-    try {
-      const result = await saveDroppedTab({ tab: pendingTab.tab, collectionId: pendingTab.collectionId, closeAfterSave, repository, closeTabs: browserAdapter.tabs.close });
-      await load(repository);
-      if (closeAfterSave && !result.closeError) setTabsRefreshVersion((value) => value + 1);
-      setMessage(result.closeError ? "1 saved · tab could not be closed" : closeAfterSave ? "1 saved · tab closed" : "1 saved · tab kept open");
-      if (result.closeError) setError(result.closeError.message);
-      setPendingTab(null);
-    } catch (reason) { setError(reason instanceof Error ? reason.message : "Could not save this tab."); }
-    finally { savingDroppedTabRef.current = false; setSavingDroppedTab(false); }
-  }
-
-  function keepDuplicateTabOpen() {
-    setMessage("Already saved · tab kept open");
-    setPendingTab(null);
-  }
-
-  async function closeDuplicateTab() {
-    if (!pendingTab?.duplicate || savingDroppedTabRef.current || typeof pendingTab.tab.id !== "number") return;
-    savingDroppedTabRef.current = true;
-    setSavingDroppedTab(true);
-    try {
-      await browserAdapter.tabs.close([pendingTab.tab.id]);
-      setTabsRefreshVersion((value) => value + 1);
-      setMessage("Already saved · tab closed");
-      setPendingTab(null);
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Could not close this tab.");
-    } finally {
-      savingDroppedTabRef.current = false;
-      setSavingDroppedTab(false);
-    }
-  }
-
-  async function openCollection(name: string, urls: string[]) {
-    try {
-      const result = await openCollectionTabs(name, urls);
-      const tabLabel = `${result.opened} tab${result.opened === 1 ? "" : "s"}`;
-      setMessage(result.grouped ? `${tabLabel} opened in ${name}` : `${tabLabel} opened without a group`);
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Could not open this collection.");
-    }
-  }
-
-  async function handleBookmarkDrop(link: SavedLink, collectionId: string) {
-    if (!repository) throw new Error("Sign in before copying browser bookmarks.");
-    const duplicate = findDuplicateLink((snapshot?.links ?? []).filter((item) => item.origin === "saved"), collectionId, link.url);
-    if (duplicate) {
-      setPendingBookmark({ link, collectionId, duplicate });
-      return;
-    }
-    await copyBookmarkToCollection(repository, link, collectionId);
-    setMessage("Bookmark copied to your saved collection");
-  }
-
-  async function confirmBookmarkCopy() {
-    if (!repository || !pendingBookmark) return;
-    try {
-      await copyBookmarkToCollection(repository, pendingBookmark.link, pendingBookmark.collectionId);
-      setPendingBookmark(null);
-      setMessage("Another copy was saved");
-      await load(repository);
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Could not copy this bookmark.");
-    }
-  }
-
   async function signIn() {
     const generation = ++activationGenerationRef.current;
     const session = await signInExtensionWithGoogle();
@@ -509,9 +366,7 @@ export function ExtensionApp() {
     setSyncStatus("local");
     setUser(null);
     setRepository(nextLocal);
-    selectionScopeRef.current = LOCAL_SPACE_SCOPE;
     setWorkspaceScope(LOCAL_SPACE_SCOPE);
-    await load(nextLocal, LOCAL_SPACE_SCOPE);
     setMessage("Logged out · workspace kept on this device");
   }
 
@@ -593,24 +448,175 @@ export function ExtensionApp() {
     },
   };
 
+
+  return {
+    bootstrapReady, repository, bookmarkRepository, workspaceScope, refreshVersion,
+    message, setMessage, error, setError, user, syncStatus, coordinatorState,
+    workspaceSync, workspaceSyncBusy, workspaceSyncError, confirmWorkspaceSync, cancelWorkspaceSync,
+    signIn, logout, retryWorkspaceSync, recoverySuggested, signInOpenRequest, setSignInOpenRequest,
+    shareAvailability, shareRepository, bookmarkCache,
+    retryFailed: () => coordinatorRef.current?.retryFailed() ?? retryWorkspaceSync(),
+  };
+}
+
+type ExtensionRuntime = ReturnType<typeof useExtensionRuntime>;
+
+export function ExtensionApp({ trashRepository }: { trashRepository?: WorkspaceTrashRepository } = {}) {
+  const runtime = useExtensionRuntime();
+  return <WorkspaceBootBoundary ready={runtime.bootstrapReady} label="Restoring workspace">
+    {runtime.repository && <ExtensionOrganizer runtime={runtime} repository={runtime.repository} trashRepository={trashRepository} />}
+    {!runtime.repository && runtime.error && <p role="alert">{runtime.error}</p>}
+  </WorkspaceBootBoundary>;
+}
+
+function ExtensionOrganizer({ runtime, repository, trashRepository }: { runtime: ExtensionRuntime; repository: WorkspaceRepository; trashRepository?: WorkspaceTrashRepository }) {
+  const { bookmarkRepository, workspaceScope, user, message, error, setMessage, setError, syncStatus, coordinatorState, signIn, logout, retryWorkspaceSync, recoverySuggested, signInOpenRequest, setSignInOpenRequest, shareAvailability, shareRepository, bookmarkCache, workspaceSync, workspaceSyncBusy, workspaceSyncError, confirmWorkspaceSync, cancelWorkspaceSync } = runtime;
+  const [tabsExpanded, setTabsExpanded] = useState(true);
+  const [tabsRefreshVersion, setTabsRefreshVersion] = useState(0);
+  const [pendingTab, setPendingTab] = useState<{ tab: CaptureTab; collectionId: string; duplicate?: SavedLink } | null>(null);
+  const [pendingBookmark, setPendingBookmark] = useState<{ link: SavedLink; collectionId: string; duplicate: SavedLink } | null>(null);
+  const [savingDroppedTab, setSavingDroppedTab] = useState(false);
+  const [browserTabDrag, setBrowserTabDrag] = useState({ active: false, session: 0 });
+
+  const savingDroppedTabRef = useRef(false);
+  const preferenceStore = useMemo(() => createExtensionPreferenceStore(browserAdapter.storage), []);
+  const capabilities = useMemo<OrganizerCapabilities>(() => ({
+    currentTabs: {
+      async list() { return (await browserAdapter.tabs.listCurrentWindow()).filter((tab) => !tab.active); },
+      async activate(tabId) {
+        const result = await browserAdapter.tabs.activateExisting(tabId);
+        if (result.cleanupError) setError(result.cleanupError);
+      },
+    },
+    ...(browserAdapter.capabilities.bookmarks ? { bookmarks: { supported: true as const } } : {}),
+    async openLink({ url, newTab }) { if (newTab) window.open(url, "_blank", "noopener,noreferrer"); else window.location.assign(url); },
+    openCollection,
+    async resolveFavicon(url, capturedUrl) { return browserAdapter.favicons.resolve({ pageUrl: url, capturedUrl, size: 32 }); },
+  // Native callbacks only depend on React's stable notification setters.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }), [setError, setMessage]);
+  const organizerOptions = {
+    repository, trashRepository, deleteSource: "extension" as const, userId: user?.id ?? "local-user",
+    preferenceStore, preferenceScope: workspaceScope, capabilities,
+    mutationPolicy: "preserveLocalOnFailure" as const, onRetry: runtime.retryFailed,
+  };
+  const controller = useWorkspaceController(organizerOptions);
+  const { snapshot, activeSpace } = controller;
+  useEffect(() => {
+    if (!controller.ready || (!message && !error)) return;
+    let active = true;
+    queueMicrotask(() => {
+      if (!active) return;
+      if (message) { controller.notify(message); setMessage((current) => current === message ? "" : current); }
+      if (error) { controller.notify(error, "error"); setError((current) => current === error ? "" : current); }
+    });
+    return () => { active = false; };
+  // Browser status is handed to the organizer's single notification queue once ready.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [controller.ready, message, error, setMessage, setError]);
+  const refreshSeen = useRef(runtime.refreshVersion);
+  useEffect(() => {
+    if (refreshSeen.current === runtime.refreshVersion) return;
+    refreshSeen.current = runtime.refreshVersion;
+    void controller.reload();
+  // Coordinator commits request a canonical reload through the sole organizer owner.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [runtime.refreshVersion]);
+  const load = () => controller.reload();
+  async function confirmDroppedTab(closeAfterSave: boolean) {
+    if (!repository || !pendingTab || savingDroppedTabRef.current) return;
+    savingDroppedTabRef.current = true;
+    setSavingDroppedTab(true);
+    try {
+      const result = await saveDroppedTab({ tab: pendingTab.tab, collectionId: pendingTab.collectionId, closeAfterSave, repository, closeTabs: browserAdapter.tabs.close });
+      await load();
+      if (closeAfterSave && !result.closeError) setTabsRefreshVersion((value) => value + 1);
+      setMessage(result.closeError ? "1 saved · tab could not be closed" : closeAfterSave ? "1 saved · tab closed" : "1 saved · tab kept open");
+      if (result.closeError) setError(result.closeError.message);
+      setPendingTab(null);
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "Could not save this tab."); }
+    finally { savingDroppedTabRef.current = false; setSavingDroppedTab(false); }
+  }
+
+  function keepDuplicateTabOpen() {
+    setMessage("Already saved · tab kept open");
+    setPendingTab(null);
+  }
+
+  async function closeDuplicateTab() {
+    if (!pendingTab?.duplicate || savingDroppedTabRef.current || typeof pendingTab.tab.id !== "number") return;
+    savingDroppedTabRef.current = true;
+    setSavingDroppedTab(true);
+    try {
+      await browserAdapter.tabs.close([pendingTab.tab.id]);
+      setTabsRefreshVersion((value) => value + 1);
+      setMessage("Already saved · tab closed");
+      setPendingTab(null);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Could not close this tab.");
+    } finally {
+      savingDroppedTabRef.current = false;
+      setSavingDroppedTab(false);
+    }
+  }
+
+  async function openCollection(name: string, urls: string[]) {
+    try {
+      const result = await openCollectionTabs(name, urls);
+      const tabLabel = `${result.opened} tab${result.opened === 1 ? "" : "s"}`;
+      setMessage(result.grouped ? `${tabLabel} opened in ${name}` : `${tabLabel} opened without a group`);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Could not open this collection.");
+    }
+  }
+
+  async function handleBookmarkDrop(link: SavedLink, collectionId: string) {
+    if (!repository) throw new Error("Sign in before copying browser bookmarks.");
+    const duplicate = findDuplicateLink((snapshot?.links ?? []).filter((item) => item.origin === "saved"), collectionId, link.url);
+    if (duplicate) {
+      setPendingBookmark({ link, collectionId, duplicate });
+      return;
+    }
+    await copyBookmarkToCollection(repository, link, collectionId);
+    setMessage("Bookmark copied to your saved collection");
+  }
+
+  async function confirmBookmarkCopy() {
+    if (!repository || !pendingBookmark) return;
+    try {
+      await copyBookmarkToCollection(repository, pendingBookmark.link, pendingBookmark.collectionId);
+      setPendingBookmark(null);
+      setMessage("Another copy was saved");
+      await load();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Could not copy this bookmark.");
+    }
+  }
+
   const bookmarkWorkspace = repository && bookmarkRepository
     ? new CombinedWorkspaceRepository(repository, bookmarkRepository)
     : null;
 
-  return <WorkspaceBootBoundary ready={bootstrapReady} label="Restoring workspace"><main className={`ext-shell ${tabsExpanded ? "sheet-open" : "sheet-collapsed"}`}>
-    {snapshot ? <SpaceSidebar activeSpaceId={activeSpace?.id ?? ""} brand={<Mark />} repository={repository} snapshot={snapshot} onError={setError} onMessage={setMessage} onReload={() => repository ? load(repository) : Promise.resolve()} onSelect={selectSpace} /> : <aside className="ext-sidebar collapsed"><div className="sidebar-top" /></aside>}
-    <section className="ext-main"><header><div><h1>{activeSpace?.name || "Your workspace"}</h1></div><div className="ext-header-tools">{repository && <CreateCollectionPrompt activeSpaceId={activeSpace?.origin === "saved" && !activeSpace.read_only ? activeSpace.id : undefined} repository={repository} onCreated={() => load(repository)} onError={setError} />}{user && !coordinatorState && (syncStatus === "pending" || syncStatus === "error") && <button className="sync-login-trigger sync-retry-trigger" onClick={() => void retryWorkspaceSync()}>Retry sync</button>}{snapshot && <GlobalSearch listCurrentTabs={() => browserAdapter.tabs.listCurrentWindow()} onActivateCurrentTab={async (tabId) => { const result = await browserAdapter.tabs.activateExisting(tabId); if (result.cleanupError) setError(result.cleanupError); }} onError={setError} resolveFavicon={browserAdapter.favicons.resolve} snapshot={snapshot} />}<SyncLoginPrompt callbackUrl={oauthCallbackUrl} configured={Boolean(extensionSupabase)} onSignIn={signIn} onLogout={logout} onRetrySync={() => coordinatorRef.current?.retryFailed() ?? Promise.resolve()} openRequest={signInOpenRequest} recoverySuggested={recoverySuggested} syncState={coordinatorState ?? undefined} target={browserTarget} user={user} /></div></header>
-      {activeSpace?.id === BROWSER_BOOKMARKS_SPACE_ID && bookmarkRepository && repository && bookmarkWorkspace && browserAdapter.capabilities.bookmarks
-        ? <BrowserBookmarksPanel repository={bookmarkRepository} workspace={bookmarkWorkspace} cache={bookmarkCache} onWorkspaceReload={() => load(repository)} />
-        : null}
-      {repository && snapshot && <CollectionRows bookmarkDropCollections={savedCollections} browserTabDragSession={browserTabDrag.active ? browserTabDrag.session : 0} collapsePreference={collectionCollapsePreference} collapseScope={workspaceScope} collections={collections} links={snapshot.links} allLinks={snapshot.links} highlightedLinkId={pendingTab?.duplicate?.id ?? pendingBookmark?.duplicate.id} repository={repository} resolveFavicon={browserAdapter.favicons.resolve} onError={setError} onMessage={setMessage} onReload={() => load(repository)} onOpenCollection={(collection, collectionLinks) => openCollection(collection.name, collectionLinks.map((link) => link.url))} onBookmarkDrop={handleBookmarkDrop} onBrowserTabDrop={(tab, collectionId) => { setBrowserTabDrag((current) => ({ ...current, active: false })); setPendingTab({ tab, collectionId, duplicate: findDuplicateLink(snapshot.links.filter((item) => item.origin === "saved"), collectionId, tab.url ?? "") }); }} share={{ availability: shareAvailability, repository: shareRepository, siteUrl: tabloomSiteUrl, onRequestSignIn: () => setSignInOpenRequest((value) => value + 1), onRequestSyncRetry: () => { void retryWorkspaceSync(); }, onToast: setMessage }} />}
-    </section>
-    <CurrentTabsSheet activeSpaceId={activeSpace?.origin === "saved" ? activeSpace.id : undefined} collections={snapshot?.collections.filter((item) => item.origin === "saved" && item.space_id === activeSpace?.id) ?? []} expanded={tabsExpanded} repository={repository} refreshVersion={tabsRefreshVersion} resolveFavicon={browserAdapter.favicons.resolve} subscribeToTabChanges={browserAdapter.tabChanges.subscribe} onError={setError} onExpandedChange={setTabsExpanded} onMessage={setMessage} onTabDragChange={(dragging) => setBrowserTabDrag((current) => dragging ? { active: true, session: current.session + 1 } : { ...current, active: false })} onWorkspaceReload={() => repository ? load(repository) : Promise.resolve()} />
+  return <div className="extension-workspace">
+    <WorkspaceOrganizerView {...organizerOptions} controller={controller} savedLinkNewTab={false}
+      highlightedLinkId={pendingTab?.duplicate?.id ?? pendingBookmark?.duplicate.id}
+      resolveFavicon={browserAdapter.favicons.resolve}
+      mainContentBefore={activeSpace?.id === BROWSER_BOOKMARKS_SPACE_ID && bookmarkRepository && bookmarkWorkspace && browserAdapter.capabilities.bookmarks
+        ? <BrowserBookmarksPanel repository={bookmarkRepository} workspace={bookmarkWorkspace} cache={bookmarkCache} onWorkspaceReload={load} /> : null}
+      headerActions={user && !coordinatorState && (syncStatus === "pending" || syncStatus === "error") ? <button className="sync-login-trigger sync-retry-trigger" onClick={() => void retryWorkspaceSync()}>Retry sync</button> : null}
+      accountControls={<SyncLoginPrompt callbackUrl={oauthCallbackUrl} configured={Boolean(extensionSupabase)} onSignIn={signIn} onLogout={logout} onRetrySync={controller.retry} openRequest={signInOpenRequest} recoverySuggested={recoverySuggested} syncState={coordinatorState ?? undefined} target={browserTarget} user={user} />}
+      currentTabs={<CurrentTabsSheet activeSpaceId={activeSpace?.origin === "saved" ? activeSpace.id : undefined} collections={snapshot?.collections.filter((item) => item.origin === "saved" && item.space_id === activeSpace?.id) ?? []} expanded={tabsExpanded} repository={repository} refreshVersion={tabsRefreshVersion} resolveFavicon={browserAdapter.favicons.resolve} subscribeToTabChanges={browserAdapter.tabChanges.subscribe} onError={setError} onExpandedChange={setTabsExpanded} onMessage={setMessage} onTabDragChange={(dragging) => setBrowserTabDrag((current) => dragging ? { active: true, session: current.session + 1 } : { ...current, active: false })} onWorkspaceReload={() => load()} />}
+      externalDrop={browserTabDropAdapter(browserTabDrag.active ? browserTabDrag.session : 0, (tab, collectionId) => {
+        setBrowserTabDrag((current) => ({ ...current, active: false }));
+        setPendingTab({ tab, collectionId, duplicate: findDuplicateLink(snapshot.links.filter((item) => item.origin === "saved"), collectionId, tab.url ?? "") });
+      })}
+      onBookmarkDrop={handleBookmarkDrop}
+      share={{ availability: shareAvailability, repository: shareRepository, siteUrl: tabloomSiteUrl, onRequestSignIn: () => setSignInOpenRequest((value) => value + 1), onRequestSyncRetry: () => { void retryWorkspaceSync(); }, onToast: setMessage }}
+    />
     {pendingTab && <div className="drop-confirm-backdrop"><section className="drop-confirm" role="dialog" aria-modal="true" aria-label={pendingTab.duplicate ? "Duplicate current tab" : "Save dropped tab"}><button className="dialog-close" aria-label="Cancel dropped tab" disabled={savingDroppedTab} onClick={() => setPendingTab(null)}><X size={18} /></button>{pendingTab.duplicate ? <><small>DUPLICATE LINK</small><h2>Already saved in {snapshot?.collections.find((item) => item.id === pendingTab.collectionId)?.name ?? "this collection"}</h2><p>The existing saved card is highlighted. Keep or close the current tab without creating a duplicate, or save another copy.</p><div><button disabled={savingDroppedTab} onClick={keepDuplicateTabOpen}>Keep tab open</button><button disabled={savingDroppedTab || typeof pendingTab.tab.id !== "number"} onClick={() => void closeDuplicateTab()}>Close tab</button><button className="close-after-save" disabled={savingDroppedTab} onClick={() => void confirmDroppedTab(false)}>Save another copy</button></div></> : <><small>SAVE CURRENT TAB</small><h2>{pendingTab.tab.title || "Untitled tab"}</h2><p>Save this tab and keep it open, or close it after Tabloom confirms the link was saved?</p><div><button disabled={savingDroppedTab} onClick={() => setPendingTab(null)}>Cancel</button><button disabled={savingDroppedTab} onClick={() => void confirmDroppedTab(false)}>Save and keep tab open</button><button className="close-after-save" disabled={savingDroppedTab} onClick={() => void confirmDroppedTab(true)}>Save and close tab</button></div></>}</section></div>}
     {pendingBookmark && <div className="drop-confirm-backdrop"><section className="drop-confirm" role="dialog" aria-modal="true" aria-label="Duplicate browser bookmark"><button className="dialog-close" aria-label="Cancel bookmark copy" onClick={() => setPendingBookmark(null)}><X size={18} /></button><small>DUPLICATE LINK</small><h2>Already saved in this collection</h2><p>The existing saved card is highlighted. Keep the Chrome bookmark unchanged, or save another Tabloom copy.</p><div><button onClick={() => setPendingBookmark(null)}>Cancel</button><button className="close-after-save" onClick={() => void confirmBookmarkCopy()}>Save another copy</button></div></section></div>}
     {workspaceSync && <WorkspaceSyncPrompt plan={workspaceSync.preview} busy={workspaceSyncBusy} error={workspaceSyncError} onConfirm={confirmWorkspaceSync} onCancel={cancelWorkspaceSync} />}
-    <ToastRegion error={error} message={message} onDismissError={() => setError("")} onDismissMessage={() => setMessage("")} />
-  </main></WorkspaceBootBoundary>;
+  </div>;
 }
 
 const rootElement = document.getElementById("root");

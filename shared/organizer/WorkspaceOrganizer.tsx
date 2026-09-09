@@ -20,6 +20,7 @@ export type WorkspaceOrganizerProps = WorkspaceControllerOptions & {
   accountControls?: ReactNode;
   currentTabs?: ReactNode;
   headerActions?: ReactNode;
+  mainContentBefore?: ReactNode;
   railBeforeSpaces?: ReactNode;
   status?: OrganizerStatus;
   share?: CollectionListProps["share"];
@@ -27,6 +28,7 @@ export type WorkspaceOrganizerProps = WorkspaceControllerOptions & {
   onBookmarkDrop?: CollectionListProps["onBookmarkDrop"];
   resolveFavicon?: OrganizerFaviconResolver;
   savedLinkNewTab?: boolean;
+  highlightedLinkId?: string;
 };
 
 export function WorkspaceOrganizer(props: WorkspaceOrganizerProps) {
@@ -50,10 +52,11 @@ export function WorkspaceOrganizerView({ controller: c, accountControls, current
         {props.trashRepository && <button aria-label={`Delete ${space.name}`} onClick={() => { void c.requestDelete("space", space.id); }}><Trash2 size={14} /></button>}
       </div> : null}
     />} sidePanel={currentTabs} header={<WorkspaceHeader title={active?.name ?? "Your workspace"} status={status} actions={<>
-      {active && isWritable(active) && !c.isPending(active.id) && <button onClick={() => c.openDialog({ type: "create-collection", spaceId: active.id })}>New collection</button>}
+      {active && isWritable(active) && !c.isPending(active.id) && <button className="organizer-new-collection" onClick={() => c.openDialog({ type: "create-collection", spaceId: active.id })}><Plus size={15} />New collection</button>}
       <GlobalSearch snapshot={c.snapshot} capabilities={props.capabilities} open={c.searchOpen} onOpenChange={c.setSearchOpen} savedLinkNewTab={props.savedLinkNewTab} resolveFavicon={props.resolveFavicon} onError={(message) => c.notify(message, "error")} />
       {headerActions}{accountControls}
     </>} />}>
+      {props.mainContentBefore}
       <ControllerCollections {...props} controller={c} />
       {!active && <p>Create a space to start organizing your links.</p>}
     </WorkspaceShell>
@@ -74,7 +77,7 @@ function ControllerCard({ capabilities, resolveFavicon, link, ...props }: React.
   return <SavedLinkCard {...props} link={link} favicon={src} />;
 }
 
-function ControllerCollections({ controller: c, capabilities, resolveFavicon, share, externalDrop, onBookmarkDrop, trashRepository }: WorkspaceOrganizerProps & { controller: WorkspaceController }) {
+function ControllerCollections({ controller: c, capabilities, resolveFavicon, share, externalDrop, onBookmarkDrop, trashRepository, highlightedLinkId }: WorkspaceOrganizerProps & { controller: WorkspaceController }) {
   const [sharingCollection, setSharingCollection] = useState<Collection | null>(null);
   const collections = c.snapshot.collections.filter((item) => item.space_id === c.selectedSpaceId).sort((a, b) => a.position - b.position);
   const drag = c.drag;
@@ -161,7 +164,7 @@ function ControllerCollections({ controller: c, capabilities, resolveFavicon, sh
               const canonicalIndex = canonicalLinks.findIndex((item) => item.id === link.id);
               return <Fragment key={link.id}>
                 {preview && sourceLink && linkSlot(collection, index)}
-                <ControllerCard capabilities={capabilities} resolveFavicon={resolveFavicon} link={link} writable={writable && !c.isPending(link.id)} dragging={sourceLink} previewSource={sourceLink && preview} copyable={link.origin === "browser-bookmark" && !!onBookmarkDrop}
+                <ControllerCard capabilities={capabilities} resolveFavicon={resolveFavicon} link={link} highlighted={link.id === highlightedLinkId} writable={writable && !c.isPending(link.id)} dragging={sourceLink} previewSource={sourceLink && preview} copyable={link.origin === "browser-bookmark" && !!onBookmarkDrop}
                   moveDestinations={c.snapshot.collections.filter(canWrite)}
                   actions={{ onEdit: () => c.openDialog({ type: "edit-link", link }), onDelete: trashRepository ? () => { void c.deleteLink(link.id); } : undefined,
                     onMoveEarlier: canonicalIndex > 0 ? () => { void c.moveLink(link.id, collection.id, canonicalIndex - 1); } : undefined,
