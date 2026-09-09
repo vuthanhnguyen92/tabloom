@@ -42,15 +42,15 @@ export function WorkspaceOrganizerView({ controller: c, accountControls, current
   </>;
   const active = c.activeSpace;
   return <div data-testid="shared-workspace-organizer">
-    <WorkspaceShell rail={<SpaceRail spaces={[...c.snapshot.spaces].sort((a, b) => a.position - b.position)} activeSpaceId={c.selectedSpaceId} collapsed={c.railCollapsed} onCollapsedChange={c.setRailCollapsed} onSelect={c.selectSpace}
+    <WorkspaceShell rail={<SpaceRail spaces={[...c.snapshot.spaces].sort((a, b) => a.position - b.position)} activeSpaceId={c.selectedSpaceId} collapsed={c.railCollapsed} onCollapsedChange={c.setRailCollapsed} onSelect={c.selectSpace} isPending={(space) => c.isPending(space.id)}
       brand={<TabloomMark />} beforeSpaces={railBeforeSpaces}
       actions={<button aria-label="New space" onClick={() => c.openDialog({ type: "create-space" })}><Plus size={16} /></button>}
-      spaceActions={(space) => isWritable(space) ? <div className="space-row-actions">
+      spaceActions={(space) => isWritable(space) && !c.isPending(space.id) ? <div className="space-row-actions">
         <button aria-label={`Edit ${space.name}`} onClick={() => c.openDialog({ type: "edit-space", space })}><Pencil size={14} /></button>
         {props.trashRepository && <button aria-label={`Delete ${space.name}`} onClick={() => { void c.requestDelete("space", space.id); }}><Trash2 size={14} /></button>}
       </div> : null}
     />} sidePanel={currentTabs} header={<WorkspaceHeader title={active?.name ?? "Your workspace"} status={status} actions={<>
-      {active && isWritable(active) && <button onClick={() => c.openDialog({ type: "create-collection", spaceId: active.id })}>New collection</button>}
+      {active && isWritable(active) && !c.isPending(active.id) && <button onClick={() => c.openDialog({ type: "create-collection", spaceId: active.id })}>New collection</button>}
       <GlobalSearch snapshot={c.snapshot} capabilities={props.capabilities} open={c.searchOpen} onOpenChange={c.setSearchOpen} savedLinkNewTab={props.savedLinkNewTab} resolveFavicon={props.resolveFavicon} onError={(message) => c.notify(message, "error")} />
       {headerActions}{accountControls}
     </>} />}>
@@ -80,7 +80,7 @@ function ControllerCollections({ controller: c, capabilities, resolveFavicon, sh
   const drag = c.drag;
   const displayed = drag?.kind === "collection" ? previewCollectionDrop(collections, drag.id, drag.overIndex) : collections;
   const links = drag?.kind === "saved-link" ? previewLinkTransfer(c.snapshot.links, drag.id, drag.targetCollectionId, drag.overIndex) : c.snapshot.links;
-  const canWrite = (collection: Collection) => isWritable(collection) && isWritable(c.snapshot.spaces.find((space) => space.id === collection.space_id));
+  const canWrite = (collection: Collection) => !c.isPending(collection.id) && isWritable(collection) && isWritable(c.snapshot.spaces.find((space) => space.id === collection.space_id));
   function clearDrag() { c.setDrag(null); c.setExternalDropTarget(null); }
   function accept(event: DragEvent, collection: Collection) {
     if (!canWrite(collection)) return false;
@@ -145,7 +145,7 @@ function ControllerCollections({ controller: c, capabilities, resolveFavicon, sh
             }} onDrop={(event) => { void drop(event, collection, true); }}
             header={<div className="ext-col-head"><div className="collection-title-group">
               {writable && <button aria-label={`Drag ${collection.name} collection`} className="collection-drag-handle" draggable onDragStart={(event) => { event.stopPropagation(); event.dataTransfer.effectAllowed = "move"; c.setDrag({ kind: "collection", id: collection.id, overIndex: canonicalIndex }); }} onDragEnd={clearDrag}><GripVertical size={14} /></button>}
-              <button aria-label={`${collapsed ? "Expand" : "Collapse"} ${collection.name}`} aria-controls={`collection-body-${collection.id}`} aria-expanded={!collapsed} className="collection-collapse-toggle" onClick={() => c.toggleCollection(collection.id)}><ChevronRight size={17} /></button>
+              <button aria-label={`${collapsed ? "Expand" : "Collapse"} ${collection.name}`} aria-controls={`collection-body-${collection.id}`} aria-expanded={!collapsed} disabled={c.isPending(collection.id)} className="collection-collapse-toggle" onClick={() => c.toggleCollection(collection.id)}><ChevronRight size={17} /></button>
               {writable ? <button aria-label={`Rename ${collection.name}`} className="collection-name-edit" onClick={() => c.openDialog({ type: "edit-collection", collection })}><b>{collection.name}</b><Pencil size={13} /></button> : <b>{collection.name}</b>}
             </div><div className="ext-col-meta">
               {writable && <>
@@ -161,8 +161,8 @@ function ControllerCollections({ controller: c, capabilities, resolveFavicon, sh
               const canonicalIndex = canonicalLinks.findIndex((item) => item.id === link.id);
               return <Fragment key={link.id}>
                 {preview && sourceLink && linkSlot(collection, index)}
-                <ControllerCard capabilities={capabilities} resolveFavicon={resolveFavicon} link={link} writable={writable} dragging={sourceLink} previewSource={sourceLink && preview} copyable={link.origin === "browser-bookmark" && !!onBookmarkDrop}
-                  moveDestinations={c.snapshot.collections.filter((item) => isWritable(item) && isWritable(c.snapshot.spaces.find((space) => space.id === item.space_id)))}
+                <ControllerCard capabilities={capabilities} resolveFavicon={resolveFavicon} link={link} writable={writable && !c.isPending(link.id)} dragging={sourceLink} previewSource={sourceLink && preview} copyable={link.origin === "browser-bookmark" && !!onBookmarkDrop}
+                  moveDestinations={c.snapshot.collections.filter(canWrite)}
                   actions={{ onEdit: () => c.openDialog({ type: "edit-link", link }), onDelete: trashRepository ? () => { void c.deleteLink(link.id); } : undefined,
                     onMoveEarlier: canonicalIndex > 0 ? () => { void c.moveLink(link.id, collection.id, canonicalIndex - 1); } : undefined,
                     onMoveLater: canonicalIndex < canonicalLinks.length - 1 ? () => { void c.moveLink(link.id, collection.id, canonicalIndex + 1); } : undefined,

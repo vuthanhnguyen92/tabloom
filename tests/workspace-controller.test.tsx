@@ -10,6 +10,8 @@ import { createWebPreferenceStore } from "../shared/organizer/preferences";
 import { applyMutationFailure, reduceWorkspaceSnapshot } from "../shared/organizer/mutation-policy";
 import { useWorkspaceController } from "../shared/organizer/useWorkspaceController";
 import { WorkspaceOrganizer } from "../shared/organizer/WorkspaceOrganizer";
+import { SupabaseTrashRepository } from "../shared/trash-repository";
+import type { SupabaseClient } from "@supabase/supabase-js";
 
 const snapshot = createDemoSnapshot();
 const link = snapshot.links[0];
@@ -61,6 +63,25 @@ describe("workspace mutation policy", () => {
     expect(() => reduceWorkspaceSnapshot(snapshot, { type: "reorder-collections", spaceId: "space-launch", ids: ["collection-plan"] })).toThrow();
     const protectedSibling = { ...snapshot, links: snapshot.links.map((item) => item.id === "link-3" ? { ...item, read_only: true } : item) };
     expect(() => reduceWorkspaceSnapshot(protectedSibling, { type: "move-link", id: link.id, collectionId: "collection-design", index: 0 })).toThrow(/read.only/i);
+  });
+
+  it("restores only affected writable groups and preserves protected and unrelated positions", () => {
+    const before = { ...snapshot, links: snapshot.links.filter((item) => item.id !== link.id).map((item) => item.id === "link-3" ? { ...item, position: 17, read_only: true } : item) };
+    const restored = reduceWorkspaceSnapshot(before, { type: "restore", snapshot: { spaces: [], collections: [], links: [link] } });
+    expect(restored.spaces).toBe(before.spaces);
+    expect(restored.collections).toBe(before.collections);
+    expect(restored.links.find((item) => item.id === "link-3")).toBe(before.links.find((item) => item.id === "link-3"));
+    expect(restored.links.filter((item) => item.collection_id === "collection-plan").map((item) => item.position)).toEqual([0, 1, 2]);
+  });
+
+  it("rejects restored trees with missing or protected ancestors and preserves protected siblings", () => {
+    const restored = { spaces: [], collections: [], links: [link] };
+    const before = { ...snapshot, links: snapshot.links.filter((item) => item.id !== link.id) };
+    expect(() => reduceWorkspaceSnapshot({ ...before, spaces: [] }, { type: "restore", snapshot: restored })).toThrow();
+    expect(() => reduceWorkspaceSnapshot({ ...before, collections: before.collections.map((item) => ({ ...item, read_only: true })) }, { type: "restore", snapshot: restored })).toThrow(/read.only/i);
+    const protectedSibling = { ...before.links[0], read_only: true, position: 17 };
+    const withProtected = { ...before, links: before.links.map((item) => item.id === protectedSibling.id ? protectedSibling : item) };
+    expect(reduceWorkspaceSnapshot(withProtected, { type: "restore", snapshot: restored }).links.find((item) => item.id === protectedSibling.id)).toBe(protectedSibling);
   });
 });
 
@@ -188,6 +209,143 @@ describe("workspace controller", () => {
     await waitFor(() => expect(result.current.ready).toBe(true));
     await act(async () => { await result.current.moveLink(link.id, "collection-design", 0); });
     expect((await options.repository.load()).links.filter((item) => item.collection_id === "collection-plan").map((item) => item.position)).toEqual([0, 1]);
+  });
+
+  it("uses one atomic move write and leaves server and UI unchanged on rejection", async () => {
+    const { options } = setup();
+    options.repository.moveLink = async () => { throw new Error("atomic rejection"); };
+    const { result } = renderHook(() => useWorkspaceController(options));
+    await waitFor(() => expect(result.current.ready).toBe(true));
+    await act(async () => { await result.current.moveLink(link.id, "collection-design", 0); });
+    expect(await options.repository.load()).toEqual(snapshot);
+    expect(result.current.snapshot).toEqual(snapshot);
+    expect(result.current.toasts.at(-1)?.message).toMatch(/could not be saved/i);
+  });
+
+  it("resolves queued moves from the current source and keeps both vacated collections normalized", async () => {
+    const { options } = setup();
+    const firstRead = deferred<ReturnType<typeof createDemoSnapshot>>();
+    const load = options.repository.load.bind(options.repository);
+    const { result } = renderHook(() => useWorkspaceController(options));
+    await waitFor(() => expect(result.current.ready).toBe(true));
+    let reads = 0;
+    options.repository.load = () => reads++ === 0 ? firstRead.promise : load();
+    let second!: Promise<unknown>;
+    act(() => {
+      void result.current.moveLink(link.id, "collection-design", 0);
+      second = result.current.moveLink(link.id, "collection-learn", 0);
+    });
+    await waitFor(async () => expect((await load()).links.find((item) => item.id === link.id)?.collection_id).toBe("collection-design"));
+    await act(async () => { firstRead.resolve(await load()); await second; });
+    expect((await load()).links.filter((item) => item.collection_id === "collection-design").map((item) => item.position)).toEqual([0, 1, 2]);
+    expect((await load()).links.find((item) => item.id === link.id)?.collection_id).toBe("collection-learn");
+  });
+
+  it("holds Add link interactions until an optimistic collection receives its canonical ID", async () => {
+    const { options } = setup();
+    const gate = deferred<void>();
+    const create = options.repository.createCollection.bind(options.repository);
+    options.repository.createCollection = async (input) => { await gate.promise; return create(input); };
+    render(<WorkspaceOrganizer {...options} />);
+    await userEvent.click(await screen.findByRole("button", { name: "New collection" }));
+    await userEvent.type(screen.getByLabelText("Name"), "New notes");
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+    await screen.findByRole("group", { name: "New notes collection" });
+    expect(screen.queryByRole("button", { name: "Add link to New notes" })).not.toBeInTheDocument();
+    await act(async () => gate.resolve());
+    await userEvent.click(await screen.findByRole("button", { name: "Add link to New notes" }));
+    await userEvent.type(screen.getByLabelText("Title"), "Correct parent");
+    await userEvent.clear(screen.getByLabelText("URL"));
+    await userEvent.type(screen.getByLabelText("URL"), "https://example.com/canonical");
+    await userEvent.click(screen.getByRole("button", { name: "Save link" }));
+    await waitFor(async () => {
+      const saved = await options.repository.load();
+      expect(saved.links.find((item) => item.title === "Correct parent")?.collection_id).toBe(saved.collections.find((item) => item.name === "New notes")?.id);
+    });
+  });
+
+  it("disables selecting a temporary space until its canonical record arrives", async () => {
+    const { options } = setup();
+    const gate = deferred<void>();
+    const create = options.repository.createSpace.bind(options.repository);
+    options.repository.createSpace = async (input) => { await gate.promise; return create(input); };
+    render(<WorkspaceOrganizer {...options} />);
+    await userEvent.click(await screen.findByRole("button", { name: "New space" }));
+    await userEvent.type(screen.getByLabelText("Name"), "Pending space");
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+    expect(await screen.findByRole("button", { name: "Open Pending space" })).toBeDisabled();
+    await act(async () => gate.resolve());
+    await waitFor(() => expect(screen.getByRole("button", { name: "Open Pending space" })).toBeEnabled());
+  });
+
+  it("keeps the mutation queue usable after an atomic move rejection", async () => {
+    const { options } = setup();
+    options.repository.moveLink = async () => { throw new Error("rejected"); };
+    const { result } = renderHook(() => useWorkspaceController(options));
+    await waitFor(() => expect(result.current.ready).toBe(true));
+    await act(async () => {
+      const move = result.current.moveLink(link.id, "collection-design", 0);
+      const edit = result.current.submitDialog({ type: "edit-link", id: link.id, title: "Still editable", url: link.url, description: "" });
+      await Promise.all([move, edit]);
+    });
+    expect(result.current.snapshot.links[0]).toMatchObject({ title: "Still editable", collection_id: "collection-plan" });
+    expect((await options.repository.load()).links[0].title).toBe("Still editable");
+  });
+
+  it("keeps local create identity-dependent actions pending until Retry reconciles canonical IDs", async () => {
+    const { options } = setup();
+    const create = options.repository.createCollection.bind(options.repository);
+    options.repository.createCollection = async (input) => { await create(input); throw new Error("sync failed after local commit"); };
+    const onRetry = vi.fn(async () => undefined);
+    const { result } = renderHook(() => useWorkspaceController({ ...options, mutationPolicy: "preserveLocalOnFailure", onRetry }));
+    await waitFor(() => expect(result.current.ready).toBe(true));
+    await act(async () => { await result.current.submitDialog({ type: "create-collection", spaceId: "space-launch", name: "Local notes" }); });
+    const temporary = result.current.snapshot.collections.find((item) => item.name === "Local notes")!;
+    expect(result.current.retryRequired).toBe(true);
+    expect(result.current.isPending(temporary.id)).toBe(true);
+    act(() => result.current.openDialog({ type: "create-link", collectionId: temporary.id }));
+    expect(result.current.dialog).toBeNull();
+    await act(async () => { await result.current.retry(); });
+    const canonical = result.current.snapshot.collections.find((item) => item.name === "Local notes")!;
+    expect(canonical.id).not.toBe(temporary.id);
+    expect(result.current.isPending(canonical.id)).toBe(false);
+    expect(result.current.retryRequired).toBe(false);
+    expect(onRetry).toHaveBeenCalledOnce();
+  });
+
+  it("retains newer manual selection when a create returns its canonical record", async () => {
+    const { options } = setup();
+    const gate = deferred<void>();
+    const create = options.repository.createSpace.bind(options.repository);
+    options.repository.createSpace = async (input) => { await gate.promise; return create(input); };
+    const { result } = renderHook(() => useWorkspaceController(options));
+    await waitFor(() => expect(result.current.ready).toBe(true));
+    let created!: Promise<unknown>;
+    act(() => { created = result.current.submitDialog({ type: "create-space", name: "New", color: "#ffffff" }); });
+    await waitFor(() => expect(result.current.snapshot.spaces).toHaveLength(4));
+    act(() => result.current.selectSpace("space-research"));
+    await act(async () => { gate.resolve(); await created; });
+    expect(result.current.selectedSpaceId).toBe("space-research");
+  });
+
+  it("keeps a committed Supabase restore visible when its canonical read fails", async () => {
+    const { options } = setup();
+    await options.repository.deleteLink(link.id);
+    let restores = 0;
+    const client = { rpc: async (name: string) => {
+      if (name === "restore_workspace_trash") {
+        restores++;
+        return { error: null, data: { status: "restored", trashId: "60000000-0000-4000-8000-000000000001", rootType: "link", rootId: "30000000-0000-4000-8000-000000000001", revision: 8 } };
+      }
+      return { data: null, error: { message: "read unavailable" } };
+    } } as unknown as SupabaseClient;
+    const { result } = renderHook(() => useWorkspaceController({ ...options, trashRepository: new SupabaseTrashRepository(client) }));
+    await waitFor(() => expect(result.current.ready).toBe(true));
+    await act(async () => { await result.current.restore("60000000-0000-4000-8000-000000000001", { spaces: [], collections: [], links: [link] }); });
+    expect(result.current.snapshot.links.some((item) => item.id === link.id)).toBe(true);
+    expect(result.current.toasts.at(-1)?.message).toMatch(/restored.*refresh/i);
+    expect(result.current.toasts.at(-1)?.action?.label).toBe("Refresh");
+    expect(restores).toBe(1);
   });
 
   it("preserves a selection made while the canonical refresh is pending", async () => {

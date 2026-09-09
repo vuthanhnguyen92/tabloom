@@ -61,6 +61,14 @@ export class WorkspaceCommandError extends Error {
 /** Distinguishes a rejected Trash payload from an unexpected runtime failure. */
 export class TrashDecodeError extends Error {}
 
+/** The restore committed; retry only the read, never apply mutation rollback. */
+export class CommittedRestoreRefreshError extends Error {
+  constructor(readonly trashId: string, options?: ErrorOptions) {
+    super("Restored, but the workspace could not be refreshed.", options);
+    this.name = "CommittedRestoreRefreshError";
+  }
+}
+
 const ROOT_TYPES = new Set<TrashRootType>(["space", "collection", "link"]);
 const SOURCES = new Set<TrashSource>(["web", "extension", "mcp"]);
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;

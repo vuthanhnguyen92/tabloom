@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { findDuplicateLink, type Collection, type SavedLink, type WorkspaceSnapshot } from "../domain";
 import type { WebWorkspaceRepository } from "../repository";
 import type { DeleteIntent, DeleteReceipt, TrashSource } from "../trash";
+import { CommittedRestoreRefreshError } from "../trash";
 import type { WorkspaceTrashRepository } from "../trash-repository";
 import type { OrganizerCapabilities } from "./capabilities";
 import { previewCollectionDrop, type OrganizerDragState } from "./drag-model";
@@ -27,7 +28,7 @@ const order = <T extends { position: number }>(items: T[]) => [...items].sort((a
 export function useWorkspaceController(options: WorkspaceControllerOptions) {
   const { repository, preferenceScope: scope, preferenceStore, userId, capabilities, trashRepository, deleteSource = "web", mutationPolicy, onRetry } = options;
   // A new session invalidates all old loads/mutations, including ones settling after account switches.
-  const session = useMemo(() => ({ repository, scope, preferenceStore, userId, active: true, queue: Promise.resolve(), snapshot: emptySnapshot, selected: "", generation: 0, selectionVersion: 0 }), [repository, scope, preferenceStore, userId]);
+  const session = useMemo(() => ({ repository, scope, preferenceStore, userId, active: true, queue: Promise.resolve(), snapshot: emptySnapshot, selected: "", generation: 0, selectionVersion: 0, pendingIds: new Set<string>() }), [repository, scope, preferenceStore, userId]);
   const preferences = useMemo(() => ({ selected: new SelectedSpacePreference(preferenceStore), collapsed: new CollectionCollapsePreference(preferenceStore) }), [preferenceStore]);
   const [state, setState] = useState({ session, snapshot: emptySnapshot, ready: false, selected: "", collapsed: new Set<string>(), railCollapsed: true });
   const [dialog, setDialog] = useState<WorkspaceDialogState>(null);
@@ -37,6 +38,7 @@ export function useWorkspaceController(options: WorkspaceControllerOptions) {
   const [toasts, setToasts] = useState<OrganizerToast[]>([]);
   const [busy, setBusy] = useState(false);
   const [retryRequired, setRetryRequired] = useState(false);
+  const [refreshRequired, setRefreshRequired] = useState(false);
   const [bootError, setBootError] = useState(false);
   const intent = useRef<DeleteIntent | null>(null);
   const dialogGeneration = useRef(0);
@@ -61,7 +63,7 @@ export function useWorkspaceController(options: WorkspaceControllerOptions) {
     void (async () => {
       await Promise.resolve();
       if (!session.active || generation !== session.generation) return;
-      setDialog(null); setSearchOpen(false); setDrag(null); setExternalDropTarget(null); setToasts([]); setBusy(false); setRetryRequired(false); setBootError(false);
+      setDialog(null); setSearchOpen(false); setDrag(null); setExternalDropTarget(null); setToasts([]); setBusy(false); setRetryRequired(false); setRefreshRequired(false); setBootError(false);
       try {
         const [snapshot, rail] = await Promise.all([repository.load(), preferenceStore.get(railKey)]);
         const [selected, collapsed] = await Promise.all([
@@ -85,7 +87,11 @@ export function useWorkspaceController(options: WorkspaceControllerOptions) {
   }
   async function reload() {
     await enqueue(async () => {
-      try { const canonical = await repository.load(); publish(canonical); }
+      try {
+        const canonical = await repository.load();
+        publish(canonical);
+        if (session.active) { setRefreshRequired(false); setToasts((items) => items.filter((toast) => toast.id !== "workspace-refresh")); }
+      }
       catch { notify("Workspace could not be refreshed.", "error"); }
     });
   }
@@ -96,7 +102,7 @@ export function useWorkspaceController(options: WorkspaceControllerOptions) {
         await onRetry();
         const canonical = await repository.load();
         if (!session.active) return;
-        publish(canonical); setRetryRequired(false);
+        session.pendingIds.clear(); publish(canonical); setRetryRequired(false);
         setToasts((items) => items.filter((toast) => toast.id !== "sync-retry"));
       } catch { if (session.active) setRetryRequired(true); }
     });
@@ -110,24 +116,40 @@ export function useWorkspaceController(options: WorkspaceControllerOptions) {
     } else notify("Changes could not be saved. Please try again.", "error");
   }
   /** Serialize writes and their canonical reads so rollback cannot erase a later mutation. */
-  function mutate<T>(mutation: WorkspaceMutation | ((snapshot: WorkspaceSnapshot) => WorkspaceMutation), write: (optimistic: WorkspaceSnapshot) => Promise<T>, message = "Saved", resultOptions?: { select?: (result: T) => string; reconcile?: (result: T, optimistic: WorkspaceSnapshot) => WorkspaceSnapshot; canonical?: (result: T) => WorkspaceSnapshot }): Promise<T | undefined> {
+  function mutate<T>(mutation: WorkspaceMutation | ((snapshot: WorkspaceSnapshot) => WorkspaceMutation), write: (optimistic: WorkspaceSnapshot, before: WorkspaceSnapshot) => Promise<T>, message = "Saved", resultOptions?: { select?: (result: T) => string; reconcile?: (result: T, optimistic: WorkspaceSnapshot) => WorkspaceSnapshot; canonical?: (result: T) => WorkspaceSnapshot }): Promise<T | undefined> {
     return enqueue(async () => {
       const before = session.snapshot;
       const selected = session.selected;
       const selectionVersion = session.selectionVersion;
       let optimistic: WorkspaceSnapshot;
-      try { optimistic = reduceWorkspaceSnapshot(before, typeof mutation === "function" ? mutation(before) : mutation); }
+      let pendingId: string | undefined;
+      try {
+        const operation = typeof mutation === "function" ? mutation(before) : mutation;
+        optimistic = reduceWorkspaceSnapshot(before, operation);
+        if (operation.type === "create-space") pendingId = operation.space.id;
+        if (operation.type === "create-collection") pendingId = operation.collection.id;
+        if (operation.type === "create-link") pendingId = operation.link.id;
+        if (pendingId) session.pendingIds.add(pendingId);
+      }
       catch { notify("This change is unavailable for this item.", "error"); return; }
       setBusy(true); publish(optimistic); setDrag(null);
       try {
         let result: T;
-        try { result = await write(optimistic); }
-        catch {
-          if (session.active) failure(mutationPolicy, before, optimistic, session.selectionVersion === selectionVersion ? selected : session.selected);
+        try { result = await write(optimistic, before); }
+        catch (error) {
+          if (!session.active) return;
+          if (error instanceof CommittedRestoreRefreshError) {
+            setRefreshRequired(true);
+            setToasts((items) => [...items.filter((toast) => toast.id !== "workspace-refresh"), { id: "workspace-refresh", message: "Restored, but the workspace needs a refresh.", tone: "error", persistent: true, action: { label: "Refresh", onAction: () => { void reload(); } } }]);
+          } else {
+            if (pendingId && mutationPolicy === "rollbackOnFailure") session.pendingIds.delete(pendingId);
+            failure(mutationPolicy, before, optimistic, session.selectionVersion === selectionVersion ? selected : session.selected);
+          }
           return;
         }
         if (!session.active) return;
-        const nextSelected = resultOptions?.select?.(result) ?? session.selected;
+        if (pendingId) session.pendingIds.delete(pendingId);
+        const nextSelected = session.selectionVersion === selectionVersion ? resultOptions?.select?.(result) ?? session.selected : session.selected;
         if (resultOptions?.reconcile) publish(resultOptions.reconcile(result, optimistic), nextSelected);
         // A committed write must not be rolled back merely because the follow-up read fails.
         try {
@@ -140,6 +162,7 @@ export function useWorkspaceController(options: WorkspaceControllerOptions) {
     });
   }
   function selectSpace(id: string) {
+    if (isPending(id)) return;
     if (!session.snapshot.spaces.some((space) => space.id === id)) return;
     session.selectionVersion++; publish(session.snapshot, id); setDrag(null); setExternalDropTarget(null);
   }
@@ -148,13 +171,24 @@ export function useWorkspaceController(options: WorkspaceControllerOptions) {
     void preferenceStore.set(railKey, String(value)).catch(() => notify("Could not remember the sidebar layout.", "error"));
   }
   function toggleCollection(id: string) {
+    if (isPending(id)) return;
     const collapsed = !current.collapsed.has(id);
     setState((previous) => { const next = new Set(previous.collapsed); if (collapsed) next.add(id); else next.delete(id); return { ...previous, collapsed: next }; });
     void preferences.collapsed.setCollapsed(scope, id, collapsed).catch(() => notify("Could not remember the collection layout.", "error"));
   }
   function closeDialog() { dialogGeneration.current++; intent.current = null; duplicateAction.current = null; setDialog(null); }
-  function openDialog(value: WorkspaceDialogState) { closeDialog(); setDrag(null); setDialog(value); }
+  function isPending(id: string): boolean {
+    const link = session.snapshot.links.find((item) => item.id === id);
+    const collection = session.snapshot.collections.find((item) => item.id === (link?.collection_id ?? id));
+    return session.pendingIds.has(id) || !!link && session.pendingIds.has(link.collection_id) || !!collection && session.pendingIds.has(collection.space_id);
+  }
+  function hasPendingDialogReference(value: NonNullable<WorkspaceDialogState> | WorkspaceDialogCommand): boolean {
+    const id = "id" in value ? value.id : "spaceId" in value ? value.spaceId : "collectionId" in value ? value.collectionId : "space" in value ? value.space.id : "collection" in value ? value.collection.id : "link" in value ? value.link.id : undefined;
+    return !!id && isPending(id);
+  }
+  function openDialog(value: WorkspaceDialogState) { if (value && hasPendingDialogReference(value)) return; closeDialog(); setDrag(null); setDialog(value); }
   async function requestDelete(type: "space" | "collection", id: string) {
+    if (isPending(id)) return;
     if (!trashRepository) return;
     try { assertWritable(session.snapshot, type, id); } catch { return; }
     closeDialog();
@@ -168,7 +202,7 @@ export function useWorkspaceController(options: WorkspaceControllerOptions) {
     } catch { notify("Deletion could not be prepared. Please try again.", "error"); }
   }
   function deleteLink(id: string): Promise<DeleteReceipt | undefined> {
-    if (!trashRepository) return Promise.resolve(undefined);
+    if (!trashRepository || isPending(id)) return Promise.resolve(undefined);
     const operationId = globalThis.crypto.randomUUID();
     return mutate({ type: "delete", rootType: "link", id }, () => trashRepository.deleteEntity("link", id, deleteSource, operationId), "Moved to Trash");
   }
@@ -178,6 +212,7 @@ export function useWorkspaceController(options: WorkspaceControllerOptions) {
   }
   function meta(position: number) { const timestamp = new Date().toISOString(); return { id: globalThis.crypto.randomUUID(), user_id: userId, position, created_at: timestamp, updated_at: timestamp, origin: "saved" as const, read_only: false }; }
   async function submitDialog(command: WorkspaceDialogCommand): Promise<unknown> {
+    if (hasPendingDialogReference(command)) return;
     if (command.type === "duplicate-link") { const action = duplicateAction.current; closeDialog(); return action?.(); }
     if (command.type === "delete-space" || command.type === "delete-collection") {
       const prepared = intent.current;
@@ -218,17 +253,20 @@ export function useWorkspaceController(options: WorkspaceControllerOptions) {
     else void openUrls(collection.name, urls);
   }
   function moveLink(id: string, collectionId: string, index: number) {
-    const source = session.snapshot.links.find((item) => item.id === id);
-    if (!source) return Promise.resolve(undefined);
-    const run = () => mutate({ type: "move-link", id, collectionId, index }, async (optimistic) => {
-      await repository.reorderLinks(collectionId, order(optimistic.links.filter((item) => item.collection_id === collectionId)).map((item) => item.id));
-      if (source.collection_id !== collectionId) await repository.reorderLinks(source.collection_id, order(optimistic.links.filter((item) => item.collection_id === source.collection_id)).map((item) => item.id));
+    const link = session.snapshot.links.find((item) => item.id === id);
+    if (!link || isPending(id) || isPending(collectionId)) return Promise.resolve(undefined);
+    const run = () => mutate({ type: "move-link", id, collectionId, index }, async (optimistic, before) => {
+      const source = before.links.find((item) => item.id === id)!;
+      const destinationOrderedIds = order(optimistic.links.filter((item) => item.collection_id === collectionId)).map((item) => item.id);
+      if (source.collection_id === collectionId) await repository.reorderLinks(collectionId, destinationOrderedIds);
+      else await repository.moveLink({ id, sourceCollectionId: source.collection_id, destinationCollectionId: collectionId, destinationOrderedIds, sourceOrderedIds: order(optimistic.links.filter((item) => item.collection_id === source.collection_id)).map((item) => item.id) });
     }, "Link moved");
-    const duplicate = findDuplicateLink(session.snapshot.links, collectionId, source.url, id);
-    if (source.collection_id !== collectionId && duplicate) { openDialog({ type: "duplicate-link", title: duplicate.title, actionLabel: "Move anyway" }); duplicateAction.current = run; return Promise.resolve(undefined); }
+    const duplicate = findDuplicateLink(session.snapshot.links, collectionId, link.url, id);
+    if (link.collection_id !== collectionId && duplicate) { openDialog({ type: "duplicate-link", title: duplicate.title, actionLabel: "Move anyway" }); duplicateAction.current = run; return Promise.resolve(undefined); }
     return run();
   }
   function moveCollection(id: string, index: number) {
+    if (isPending(id)) return Promise.resolve(undefined);
     const source = session.snapshot.collections.find((item) => item.id === id);
     if (!source) return Promise.resolve(undefined);
     return mutate((snapshot) => ({ type: "reorder-collections", spaceId: source.space_id, ids: previewCollectionDrop(snapshot.collections.filter((item) => item.space_id === source.space_id), id, index).map((item) => item.id) }), (optimistic) => repository.reorderCollections(source.space_id, order(optimistic.collections.filter((item) => item.space_id === source.space_id)).map((item) => item.id)), "Collection moved");
@@ -242,10 +280,13 @@ export function useWorkspaceController(options: WorkspaceControllerOptions) {
     ready: current.ready, bootError, snapshot: current.snapshot, selectedSpaceId: current.selected,
     activeSpace: current.snapshot.spaces.find((space) => space.id === current.selected),
     collapsedCollections: current.collapsed, railCollapsed: current.railCollapsed,
-    dialog, searchOpen, drag, externalDropTarget, toasts, busy, retryRequired,
+    dialog, searchOpen, drag, externalDropTarget, toasts, busy, retryRequired, refreshRequired, isPending,
     selectSpace, setRailCollapsed, toggleCollection, openDialog, closeDialog, submitDialog,
     requestDelete, deleteLink, restore, reload, retry, mutate, notify, openCollection, moveLink, moveCollection,
-    setSearchOpen, setDrag, setExternalDropTarget, commitDrag,
+    setSearchOpen, setDrag: (value: OrganizerDragState) => {
+      if (value?.kind === "collection" && isPending(value.id) || value?.kind === "saved-link" && (isPending(value.id) || isPending(value.targetCollectionId))) return;
+      setDrag(value);
+    }, setExternalDropTarget, commitDrag,
     dismissToast: (id: string) => setToasts((items) => items.filter((toast) => toast.id !== id)),
   };
 }

@@ -11,6 +11,7 @@ export type SpaceRailProps = {
   collapsed: boolean;
   onCollapsedChange?: (collapsed: boolean) => void;
   onSelect: (spaceId: string) => void;
+  isPending?: (space: Space) => boolean;
   renderSpace?: (space: Space, defaultRow: ReactNode) => ReactNode;
   spaceActions?: (space: Space) => ReactNode;
   selectionLabel?: (space: Space) => string;
@@ -26,6 +27,7 @@ export function SpaceRail({
   collapsed,
   onCollapsedChange,
   onSelect,
+  isPending,
   renderSpace,
   spaceActions,
   selectionLabel = (space) => `Open ${space.name}`,
@@ -45,7 +47,7 @@ export function SpaceRail({
     <nav aria-label="Spaces" className="organizer-space-list space-list">
       {spaces.map((space) => {
         const defaultRow = <div className={`organizer-space-row space-row ${space.id === activeSpaceId ? "active" : ""}`} key={space.id}>
-          <button aria-label={selectionLabel(space)} aria-current={space.id === activeSpaceId ? "page" : undefined} className="organizer-space-select space-select" title={space.name} type="button" onClick={() => onSelect(space.id)}>
+          <button aria-label={selectionLabel(space)} aria-current={space.id === activeSpaceId ? "page" : undefined} disabled={isPending?.(space)} className="organizer-space-select space-select" title={space.name} type="button" onClick={() => onSelect(space.id)}>
             <i aria-hidden="true" style={{ background: space.color }}>{space.name.trim().charAt(0).toUpperCase() || "•"}</i>
             {!collapsed && <span>{space.name}</span>}
           </button>

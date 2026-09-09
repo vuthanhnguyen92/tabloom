@@ -25,6 +25,7 @@ export function createSyncedRepositories(client: NonNullable<ReturnType<typeof g
     createCollection: combined.createCollection.bind(combined), updateCollection: combined.updateCollection.bind(combined),
     createLink: combined.createLink.bind(combined), createLinks: combined.createLinks.bind(combined), updateLink: combined.updateLink.bind(combined),
     reorderCollections: combined.reorderCollections.bind(combined), reorderLinks: combined.reorderLinks.bind(combined),
+    moveLink: combined.moveLink.bind(combined),
   };
   return { repository, trashRepository: new SupabaseTrashRepository(client) };
 }

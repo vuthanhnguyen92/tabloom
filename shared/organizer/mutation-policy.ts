@@ -45,14 +45,17 @@ function reorder<T extends { id: string; position: number }>(items: T[], ids: st
   return items.map((item) => ({ ...item, position: ids.indexOf(item.id) }));
 }
 
-function mergeRestored<T extends { id: string; position: number }>(existing: T[], restored: T[], parent: (item: T) => string): T[] {
-  if (restored.some((item) => existing.some((live) => live.id === item.id))) throw new Error("An item with this ID already exists.");
+function mergeRestored<T extends WorkspaceRecordMeta & { id: string; position: number }>(existing: T[], restored: T[], parent: (item: T) => string): T[] {
+  if (!restored.length) return existing;
+  if (new Set(restored.map((item) => item.id)).size !== restored.length || restored.some((item) => existing.some((live) => live.id === item.id))) throw new Error("An item with this ID already exists.");
+  const affected = new Set(restored.map(parent));
   const groups = new Map<string, T[]>();
-  for (const item of [...restored, ...existing]) {
+  const affectedWritable = (item: T) => affected.has(parent(item)) && isWritable(item);
+  for (const item of [...restored, ...existing.filter(affectedWritable)]) {
     const key = parent(item);
     groups.set(key, [...(groups.get(key) ?? []), item]);
   }
-  return [...groups.values()].flatMap((items) => items.sort((a, b) => a.position - b.position).map((item, position) => ({ ...item, position })));
+  return [...existing.filter((item) => !affectedWritable(item)), ...[...groups.values()].flatMap((items) => items.sort((a, b) => a.position - b.position).map((item, position) => ({ ...item, position })))];
 }
 
 /** Pure reducers only. Persistence, identity reconciliation, and retry belong to the controller. */
@@ -105,10 +108,16 @@ export function reduceWorkspaceSnapshot(snapshot: WorkspaceSnapshot, mutation: W
         links: snapshot.links.filter((item) => !collectionIds.has(item.collection_id) && (mutation.rootType !== "link" || item.id !== mutation.id)),
       };
     }
-    case "restore": return {
-      spaces: mergeRestored(snapshot.spaces, mutation.snapshot.spaces, () => "spaces"),
-      collections: mergeRestored(snapshot.collections, mutation.snapshot.collections, (item) => item.space_id),
-      links: mergeRestored(snapshot.links, mutation.snapshot.links, (item) => item.collection_id),
-    };
+    case "restore": {
+      const combined = { spaces: [...snapshot.spaces, ...mutation.snapshot.spaces], collections: [...snapshot.collections, ...mutation.snapshot.collections], links: [...snapshot.links, ...mutation.snapshot.links] };
+      mutation.snapshot.spaces.forEach((item) => assertWritable(combined, "space", item.id));
+      mutation.snapshot.collections.forEach((item) => assertWritable(combined, "collection", item.id));
+      mutation.snapshot.links.forEach((item) => assertWritable(combined, "link", item.id));
+      return {
+        spaces: mergeRestored(snapshot.spaces, mutation.snapshot.spaces, () => "spaces"),
+        collections: mergeRestored(snapshot.collections, mutation.snapshot.collections, (item) => item.space_id),
+        links: mergeRestored(snapshot.links, mutation.snapshot.links, (item) => item.collection_id),
+      };
+    }
   }
 }

@@ -12,6 +12,13 @@ import {
 export type CreateSpaceInput = Pick<Space, "name" | "color">;
 export type CreateCollectionInput = Pick<Collection, "space_id" | "name">;
 export type CreateLinkInput = Pick<SavedLink, "collection_id" | "url" | "title" | "description" | "favicon_url">;
+export type MoveLinkInput = {
+  id: string;
+  sourceCollectionId: string;
+  destinationCollectionId: string;
+  sourceOrderedIds: string[];
+  destinationOrderedIds: string[];
+};
 
 export interface WorkspaceRepository {
   load(): Promise<WorkspaceSnapshot>;
@@ -27,6 +34,8 @@ export interface WorkspaceRepository {
   deleteLink(id: string): Promise<void>;
   reorderCollections(spaceId: string, orderedIds: string[]): Promise<void>;
   reorderLinks(collectionId: string, orderedIds: string[]): Promise<void>;
+  /** Commit both collections together. Reject before persistence on invalid/stale input. */
+  moveLink(input: MoveLinkInput): Promise<void>;
 }
 
 export type WebWorkspaceRepository = Omit<WorkspaceRepository, "deleteSpace" | "deleteCollection" | "deleteLink">;
@@ -35,6 +44,28 @@ const stamp = () => new Date().toISOString();
 const id = () => globalThis.crypto.randomUUID();
 const clone = <T>(value: T): T => structuredClone(value);
 const markSaved = <T extends object>(value: T): T & WorkspaceRecordMeta => ({ ...value, origin: "saved", read_only: false });
+
+function movedLinks(snapshot: WorkspaceSnapshot, input: MoveLinkInput): SavedLink[] {
+  const source = snapshot.links.find((item) => item.id === input.id);
+  if (!source || source.collection_id !== input.sourceCollectionId || input.sourceCollectionId === input.destinationCollectionId) throw new Error("Move source changed.");
+  for (const id of [input.sourceCollectionId, input.destinationCollectionId]) {
+    const collection = snapshot.collections.find((item) => item.id === id);
+    const space = snapshot.spaces.find((item) => item.id === collection?.space_id);
+    if (!collection || !space || [collection, space].some((item) => item.origin !== "saved" || item.read_only)) throw new Error("Missing or read-only move destination.");
+  }
+  const affected = snapshot.links.filter((item) => item.collection_id === input.sourceCollectionId || item.collection_id === input.destinationCollectionId);
+  if (affected.some((item) => item.origin !== "saved" || item.read_only)) throw new Error("Cannot reorder read-only links.");
+  const sourceIds = affected.filter((item) => item.collection_id === input.sourceCollectionId && item.id !== input.id).map((item) => item.id);
+  const targetIds = [...affected.filter((item) => item.collection_id === input.destinationCollectionId).map((item) => item.id), input.id];
+  for (const [expected, actual] of [[sourceIds, input.sourceOrderedIds], [targetIds, input.destinationOrderedIds]]) {
+    if (expected.length !== actual.length || new Set(actual).size !== actual.length || expected.some((id) => !actual.includes(id))) throw new Error("Move order changed.");
+  }
+  const timestamp = stamp();
+  return affected.map((item) => {
+    const destination = input.destinationOrderedIds.includes(item.id);
+    return { ...item, collection_id: destination ? input.destinationCollectionId : input.sourceCollectionId, position: (destination ? input.destinationOrderedIds : input.sourceOrderedIds).indexOf(item.id), updated_at: timestamp };
+  });
+}
 
 export function decodeWorkspaceSnapshot(value: unknown): WorkspaceSnapshot {
   if (!value || typeof value !== "object") throw new Error("invalid workspace snapshot");
@@ -71,6 +102,10 @@ export class MemoryWorkspaceRepository implements WorkspaceRepository {
   async deleteLink(linkId: string) { this.snapshot.links = this.snapshot.links.filter((item) => item.id !== linkId); }
   async reorderCollections(spaceId: string, orderedIds: string[]) { const positions = new Map(orderedIds.map((item, index) => [item, index])); const reordered = normalizePositions(this.snapshot.collections.filter((item) => item.space_id === spaceId).map((item) => positions.has(item.id) ? { ...item, position: positions.get(item.id)! } : item)); this.snapshot.collections = this.snapshot.collections.map((item) => reordered.find((candidate) => candidate.id === item.id) ?? item); }
   async reorderLinks(collectionId: string, orderedIds: string[]) { const positions = new Map(orderedIds.map((item, index) => [item, index])); this.snapshot.links = this.snapshot.links.map((item) => positions.has(item.id) ? { ...item, collection_id: collectionId, position: positions.get(item.id)!, updated_at: stamp() } : item); }
+  async moveLink(input: MoveLinkInput) {
+    const moved = new Map(movedLinks(this.snapshot, input).map((link) => [link.id, link]));
+    this.snapshot = { ...this.snapshot, links: this.snapshot.links.map((link) => moved.get(link.id) ?? link) };
+  }
 }
 
 function throwIfError(error: { message: string } | null) { if (error) throw new Error(error.message); }
@@ -114,4 +149,10 @@ export class SupabaseWorkspaceRepository implements WorkspaceRepository {
   async deleteLink(linkId: string): Promise<void> { throw new Error(`Use WorkspaceTrashRepository.deleteEntity to delete link ${linkId} with a recoverable receipt.`); }
   async reorderCollections(spaceId: string, orderedIds: string[]) { const snapshot = await this.load(); const rows = snapshot.collections.filter((item) => item.origin === "saved" && item.space_id === spaceId && orderedIds.includes(item.id)).map((item) => ({ id: item.id, user_id: item.user_id, space_id: item.space_id, name: item.name, position: orderedIds.indexOf(item.id), created_at: item.created_at, updated_at: stamp() })); const result = await this.client.from("collections").upsert(rows); throwIfError(result.error); }
   async reorderLinks(collectionId: string, orderedIds: string[]) { const snapshot = await this.load(); const rows = snapshot.links.filter((item) => item.origin === "saved" && orderedIds.includes(item.id)).map((item) => ({ id: item.id, user_id: item.user_id, collection_id: collectionId, url: item.url, title: item.title, description: item.description, favicon_url: item.favicon_url, position: orderedIds.indexOf(item.id), created_at: item.created_at, updated_at: stamp() })); const result = await this.client.from("links").upsert(rows); throwIfError(result.error); }
+  async moveLink(input: MoveLinkInput) {
+    const rows = movedLinks(await this.load(), input).map((item) => ({ id: item.id, user_id: item.user_id, collection_id: item.collection_id, url: item.url, title: item.title, description: item.description, favicon_url: item.favicon_url, position: item.position, created_at: item.created_at, updated_at: item.updated_at }));
+    // One PostgREST upsert is one PostgreSQL statement/transaction, including both parents.
+    const result = await this.client.from("links").upsert(rows);
+    throwIfError(result.error);
+  }
 }

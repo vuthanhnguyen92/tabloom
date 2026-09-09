@@ -2,7 +2,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import type { WorkspaceSnapshot } from "./domain";
 import { SupabaseWorkspaceSyncRepository, throwWorkspaceSyncError, type WorkspaceSyncRpcError } from "./workspace-sync-repository";
 import {
-  decodeDeleteIntent, decodeDeleteReceipt, decodeTrashEntry, WorkspaceCommandError,
+  decodeDeleteIntent, decodeDeleteReceipt, decodeTrashEntry, WorkspaceCommandError, CommittedRestoreRefreshError,
   type DeleteIntent, type DeleteReceipt, type TrashRootType, type TrashSource, type WorkspaceTrashEntry,
 } from "./trash";
 
@@ -10,6 +10,7 @@ export interface WorkspaceTrashRepository {
   list(): Promise<WorkspaceTrashEntry[]>;
   prepareDelete(rootType: "space" | "collection", rootId: string): Promise<DeleteIntent>;
   deleteEntity(rootType: TrashRootType, rootId: string, source: TrashSource, operationId: string, confirmationIntentId?: string): Promise<DeleteReceipt>;
+  /** CommittedRestoreRefreshError means restore succeeded but its canonical read failed. */
   restore(trashId: string, destinationId?: string): Promise<WorkspaceSnapshot>;
 }
 
@@ -64,6 +65,7 @@ export class SupabaseTrashRepository implements WorkspaceTrashRepository {
       throw new WorkspaceCommandError("destination_required", "Choose a destination to restore this item.", { destinationType: data.destinationType });
     }
     if (data.status !== "restored" || !Number.isSafeInteger(data.revision) || data.revision < 0) throw new Error("invalid trash restore response");
-    return (await new SupabaseWorkspaceSyncRepository(this.client).loadVersioned()).snapshot;
+    try { return (await new SupabaseWorkspaceSyncRepository(this.client).loadVersioned()).snapshot; }
+    catch (cause) { throw new CommittedRestoreRefreshError(trashId, { cause }); }
   }
 }
