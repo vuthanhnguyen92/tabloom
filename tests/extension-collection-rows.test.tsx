@@ -8,7 +8,7 @@ import { mergeBookmarkEntries, toBookmarkWorkspace } from "../shared/bookmarks";
 import { MemoryWorkspaceRepository } from "../shared/repository";
 import type { CollectionShareRepository } from "../shared/collection-sharing";
 import type { FaviconResolver } from "../extension/browser/types";
-const extensionStyles = readFileSync("extension/style.css", "utf8");
+const extensionStyles = readFileSync("shared/organizer/organizer.css", "utf8") + readFileSync("extension/style.css", "utf8");
 
 let styleElement: HTMLStyleElement;
 beforeAll(() => {
@@ -86,21 +86,24 @@ describe("CollectionRows", () => {
     setup();
 
     const card = screen.getByRole("link", { name: /Product roadmap/i });
-    const indicator = card.querySelector(".card-drag-indicator");
+    const indicator = screen.getByRole("button", { name: "Drag Product roadmap" });
     expect(getComputedStyle(card).cursor).toBe("pointer");
     expect(indicator).toBeInTheDocument();
-    expect(getComputedStyle(indicator!).pointerEvents).toBe("none");
+    expect(getComputedStyle(indicator).pointerEvents).toBe("auto");
+    expect(getComputedStyle(indicator).cursor).toBe("grab");
   });
 
-  it("shows the grabbing cursor after a saved-link drag starts", () => {
+  it("shows grabbing only on the handle after a saved-link drag starts", () => {
     setup();
     const card = screen.getByRole("link", { name: /Product roadmap/i });
 
     expect(getComputedStyle(card).cursor).toBe("pointer");
-    fireEvent.dragStart(card, { dataTransfer: createDataTransfer() });
+    const handle = screen.getByRole("button", { name: "Drag Product roadmap" });
+    fireEvent.dragStart(handle, { dataTransfer: createDataTransfer() });
 
     expect(card).toHaveClass("dragging");
-    expect(getComputedStyle(card).cursor).toBe("grabbing");
+    expect(getComputedStyle(card).cursor).toBe("pointer");
+    expect(getComputedStyle(handle).cursor).toBe("grabbing");
   });
 
   it("restores and toggles a collection's locally remembered collapsed state", async () => {

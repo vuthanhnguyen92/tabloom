@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { expect, test } from "@playwright/test";
 
-const extensionCss = readFileSync("extension/style.css", "utf8");
+const extensionCss = readFileSync("shared/organizer/organizer.css", "utf8") + readFileSync("extension/style.css", "utf8");
 const poppinsFaces = [400, 500, 600, 700].map((weight) => {
   const data = readFileSync(`node_modules/@fontsource/poppins/files/poppins-latin-${weight}-normal.woff2`).toString("base64");
   return `@font-face { font-family: "Poppins"; font-style: normal; font-display: block; font-weight: ${weight}; src: url(data:font/woff2;base64,${data}) format("woff2"); }`;
