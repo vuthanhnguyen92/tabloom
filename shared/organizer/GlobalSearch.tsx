@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useId, useRef, useState, type Keyboard
 import { hostnameFor, isSaveableUrl, searchWorkspace, type SavedLink, type WorkspaceSearchResult, type WorkspaceSnapshot } from "../domain";
 import type { BrowserTabSummary, OrganizerCapabilities } from "./capabilities";
 import { ModalBoundary } from "./ModalBoundary";
+import { canUseModalShortcut } from "./modal-stack";
 import { FaviconTile } from "./FaviconTile";
 import type { OrganizerFaviconResolver as FaviconResolver } from "./SavedLinkCard";
 
@@ -156,6 +157,7 @@ export function GlobalSearch({ snapshot, capabilities, open: controlledOpen, onO
   useEffect(() => {
     function handleShortcut(event: globalThis.KeyboardEvent) {
       if (event.key.toLocaleLowerCase() !== "f" || (!event.metaKey && !event.ctrlKey)) return;
+      if (!canUseModalShortcut(document, resultId)) return;
       event.preventDefault();
       event.stopPropagation();
       if (open) closeSearch();
@@ -163,7 +165,7 @@ export function GlobalSearch({ snapshot, capabilities, open: controlledOpen, onO
     }
     window.addEventListener("keydown", handleShortcut, { capture: true });
     return () => window.removeEventListener("keydown", handleShortcut, { capture: true });
-  }, [closeSearch, open, showSearch]);
+  }, [closeSearch, open, resultId, showSearch]);
 
   useEffect(() => {
     if (!open) return;
@@ -178,7 +180,7 @@ export function GlobalSearch({ snapshot, capabilities, open: controlledOpen, onO
       <span>Search</span>
       <kbd>⌘ F</kbd>
     </button>
-    {open && <ModalBoundary label="Search Tabloom" className="global-search-overlay" onClose={closeSearch} initialFocus='input[type="search"]'>
+    {open && <ModalBoundary label="Search Tabloom" className="global-search-overlay" owner={resultId} onClose={closeSearch} initialFocus='input[type="search"]'>
       <button aria-label="Close search backdrop" className="global-search-backdrop" tabIndex={-1} onClick={closeSearch} />
       <div className="global-search-shell">
         <header>

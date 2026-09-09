@@ -3,6 +3,7 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { GlobalSearch } from "../shared/organizer/GlobalSearch";
+import { WorkspaceDialogs } from "../shared/organizer/WorkspaceDialogs";
 import { createDemoSnapshot } from "../shared/domain";
 import { webOrganizerCapabilities } from "../shared/organizer/capabilities";
 
@@ -25,11 +26,18 @@ describe("shared organizer search", () => {
 
   it("searches across spaces by collection and space names with full context", async () => {
     const user = userEvent.setup();
-    render(<GlobalSearch snapshot={snapshot} capabilities={capabilities} open />);
+    const anotherSpace = { ...snapshot.spaces[0], id: "research-space", name: "Research archive" };
+    const anotherCollection = { ...snapshot.collections[0], id: "research-collection", space_id: anotherSpace.id, name: "Reading list" };
+    const anotherLink = { ...snapshot.links[0], id: "research-link", collection_id: anotherCollection.id, title: "Distributed systems reference" };
+    const crossSpaceSnapshot = { spaces: [...snapshot.spaces, anotherSpace], collections: [...snapshot.collections, anotherCollection], links: [...snapshot.links, anotherLink] };
+    render(<GlobalSearch snapshot={crossSpaceSnapshot} capabilities={capabilities} open />);
     const input = screen.getByRole("searchbox");
-    for (const link of [snapshot.links[0], snapshot.links.at(-1)!]) {
-      const collection = snapshot.collections.find((item) => item.id === link.collection_id)!;
-      const space = snapshot.spaces.find((item) => item.id === collection.space_id)!;
+    for (const link of [snapshot.links[0], anotherLink]) {
+      const collection = crossSpaceSnapshot.collections.find((item) => item.id === link.collection_id)!;
+      const space = crossSpaceSnapshot.spaces.find((item) => item.id === collection.space_id)!;
+      await user.clear(input);
+      await user.type(input, link.title);
+      expect(screen.getByRole("link", { name: `${link.title}, ${space.name}, ${collection.name}` })).toHaveTextContent(`${space.name} › ${collection.name}`);
       await user.clear(input);
       await user.type(input, space.name);
       expect(screen.getByRole("link", { name: `${link.title}, ${space.name}, ${collection.name}` })).toHaveTextContent(`${space.name} › ${collection.name}`);
@@ -39,6 +47,38 @@ describe("shared organizer search", () => {
     }
     expect(screen.queryByText(/current tabs/i)).not.toBeInTheDocument();
     expect(input).toHaveAttribute("autocomplete", "off");
+  });
+
+  it.each([{ metaKey: true }, { ctrlKey: true }])("does not open search behind an active workspace dialog for %j", (modifier) => {
+    render(<><GlobalSearch snapshot={snapshot} capabilities={capabilities} /><WorkspaceDialogs dialog={{ type: "create-space" }} onClose={vi.fn()} onSubmit={vi.fn()} /></>);
+    const form = screen.getByRole("dialog", { name: "New space" });
+    fireEvent.keyDown(window, { key: "f", ...modifier });
+    expect(screen.queryByRole("dialog", { name: "Search Tabloom" })).not.toBeInTheDocument();
+    expect(form).not.toHaveAttribute("inert");
+    expect(screen.getByLabelText("Name")).toHaveFocus();
+  });
+
+  it("allows the search owner to toggle its own top modal with the shortcut", async () => {
+    const user = userEvent.setup();
+    render(<GlobalSearch snapshot={snapshot} capabilities={capabilities} />);
+    await user.click(screen.getByRole("button", { name: "Search all links" }));
+    fireEvent.keyDown(window, { key: "f", ctrlKey: true });
+    expect(screen.queryByRole("dialog", { name: "Search Tabloom" })).not.toBeInTheDocument();
+    fireEvent.keyDown(window, { key: "f", ctrlKey: true });
+    expect(screen.getByRole("searchbox")).toHaveFocus();
+  });
+
+  it("leaves controlled search unchanged while another modal is above it", () => {
+    const onOpenChange = vi.fn();
+    const search = <GlobalSearch snapshot={snapshot} capabilities={capabilities} open onOpenChange={onOpenChange} />;
+    const { rerender } = render(<>{search}</>);
+    rerender(<>{search}<WorkspaceDialogs dialog={{ type: "create-space" }} onClose={vi.fn()} onSubmit={vi.fn()} /></>);
+    fireEvent.keyDown(window, { key: "f", metaKey: true });
+    expect(onOpenChange).not.toHaveBeenCalled();
+    expect(screen.getByLabelText("Name")).toHaveFocus();
+    rerender(<>{search}</>);
+    fireEvent.keyDown(window, { key: "f", metaKey: true });
+    expect(onOpenChange).toHaveBeenCalledWith(false);
   });
 
   it("uses native web anchors for pointer navigation and the web capability for Enter", async () => {
