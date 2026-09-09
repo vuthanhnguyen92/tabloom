@@ -1,5 +1,5 @@
 import { CircleAlert, CircleCheck, X } from "lucide-react";
-import { useEffect, useRef } from "react";
+import { useLayoutEffect, useRef } from "react";
 
 export type OrganizerToast = {
   action?: { label: string; onAction: () => void };
@@ -21,6 +21,13 @@ type ToastSemantics = {
   tone: "success" | "error";
 };
 
+type ToastTimer = {
+  deadline: number;
+  generation: number;
+  handle: ReturnType<typeof globalThis.setTimeout>;
+  semantics: ToastSemantics;
+};
+
 function semanticsFor(toast: OrganizerToast): ToastSemantics {
   return {
     actionLabel: toast.action?.label,
@@ -40,13 +47,14 @@ function hasSameSemantics(left: ToastSemantics, right: ToastSemantics): boolean 
 export function ToastRegion({ onDismiss, toasts }: ToastRegionProps) {
   const onDismissRef = useRef(onDismiss);
   const dismissedToastSemanticsRef = useRef(new Map<string, ToastSemantics>());
-  const timersRef = useRef(new Map<string, { deadline: number; handle: ReturnType<typeof globalThis.setTimeout>; semantics: ToastSemantics }>());
+  const nextTimerGenerationRef = useRef(0);
+  const timersRef = useRef(new Map<string, ToastTimer>());
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     onDismissRef.current = onDismiss;
   }, [onDismiss]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const transientToasts = toasts.filter((toast) => !toast.persistent && !toast.action);
     const transientIds = new Set(transientToasts.map((toast) => toast.id));
 
@@ -80,16 +88,19 @@ export function ToastRegion({ onDismiss, toasts }: ToastRegionProps) {
         continue;
       }
       const deadline = Date.now() + 3_000;
+      const generation = ++nextTimerGenerationRef.current;
       const handle = globalThis.setTimeout(() => {
+        if (timersRef.current.get(toast.id)?.generation !== generation) return;
         timersRef.current.delete(toast.id);
         dismissedToastSemanticsRef.current.set(toast.id, semantics);
         onDismissRef.current(toast.id);
       }, deadline - Date.now());
-      timersRef.current.set(toast.id, { deadline, handle, semantics });
+      const timer = { deadline, generation, handle, semantics };
+      timersRef.current.set(toast.id, timer);
     }
   });
 
-  useEffect(() => () => {
+  useLayoutEffect(() => () => {
     for (const timer of timersRef.current.values()) globalThis.clearTimeout(timer.handle);
     timersRef.current.clear();
     dismissedToastSemanticsRef.current.clear();

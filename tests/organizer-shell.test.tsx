@@ -20,7 +20,10 @@ const SPACE: Space = {
 };
 
 describe("shared organizer shell", () => {
-  afterEach(() => vi.useRealTimers());
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
 
   it("renders the same collapsed, accessible space rail for web and extension", () => {
     const onSelect = vi.fn();
@@ -109,6 +112,27 @@ describe("shared organizer shell", () => {
     expect(latestDismiss).not.toHaveBeenCalled();
 
     act(() => vi.advanceTimersByTime(2_500));
+    expect(latestDismiss).toHaveBeenCalledWith("message");
+  });
+
+  it("ignores an old timeout queued at the replacement deadline boundary", () => {
+    vi.useFakeTimers();
+    const setTimeoutSpy = vi.spyOn(globalThis, "setTimeout");
+    const firstDismiss = vi.fn();
+    const latestDismiss = vi.fn();
+    const { rerender } = render(<ToastRegion onDismiss={firstDismiss} toasts={[{ id: "message", message: "First save", tone: "success" }]} />);
+    const oldCallback = setTimeoutSpy.mock.calls[0]?.[0] as () => void;
+
+    act(() => vi.advanceTimersByTime(2_999));
+    rerender(<ToastRegion onDismiss={latestDismiss} toasts={[{ id: "message", message: "Second save", tone: "success" }]} />);
+    act(() => oldCallback());
+
+    expect(screen.getByRole("status")).toHaveTextContent("Second save");
+    expect(firstDismiss).not.toHaveBeenCalled();
+    expect(latestDismiss).not.toHaveBeenCalled();
+
+    act(() => vi.advanceTimersByTime(3_000));
+    expect(latestDismiss).toHaveBeenCalledTimes(1);
     expect(latestDismiss).toHaveBeenCalledWith("message");
   });
 

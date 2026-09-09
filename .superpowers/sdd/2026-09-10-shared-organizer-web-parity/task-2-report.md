@@ -83,3 +83,23 @@
 - `npx tsc --noEmit` — pass.
 - `npm run lint` — pass.
 - `npm run build` — pass for Chromium, Firefox, Safari extension bundles and the web app.
+
+## Review round 3/5
+
+### RED
+
+- Added a fake-timer boundary test that replaces a same-ID toast at 2999ms, manually invokes the stale queued callback, and requires the replacement to remain for its own full three-second lifetime.
+- Ran `npx vitest run tests/organizer-shell.test.tsx tests/toast-region.test.tsx`; observed the expected failure: the stale callback called the newest dismiss handler immediately.
+
+### GREEN
+
+- Moved callback/timer reconciliation and cleanup into `useLayoutEffect`, so committed client replacements reconcile before passive work and paint.
+- Added a monotonic timer generation to each record. Every timeout verifies it still owns the ID before it deletes state or calls dismiss, preventing a cleared/queued old callback from affecting a replacement.
+- The full web build completed successfully, confirming the layout-phase hook remains SSR/build-safe.
+
+### Verification
+
+- `npx vitest run tests/organizer-shell.test.tsx tests/toast-region.test.tsx` — pass (14 tests).
+- `npx tsc --noEmit` — pass.
+- `npm run lint` — pass.
+- `npm run build` — pass for Chromium, Firefox, Safari extension bundles and the web app.
