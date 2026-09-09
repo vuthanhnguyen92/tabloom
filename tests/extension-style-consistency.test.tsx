@@ -2,12 +2,13 @@ import { readFileSync } from "node:fs";
 import { render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it } from "vitest";
 
+const organizerCss = readFileSync("shared/organizer/organizer.css", "utf8");
 const extensionCss = readFileSync("extension/style.css", "utf8");
 
 describe("extension cross-browser visual baseline", () => {
   beforeEach(() => {
     const style = document.createElement("style");
-    style.textContent = extensionCss;
+    style.textContent = `${organizerCss}\n${extensionCss}`;
     document.head.appendChild(style);
   });
 
@@ -60,6 +61,18 @@ describe("extension cross-browser visual baseline", () => {
     expect(getComputedStyle(shell).height).toBe(`${window.innerHeight}px`);
     expect(getComputedStyle(shell).overflow).toBe("hidden");
     expect(getComputedStyle(sidebar).overflowY).toBe("auto");
+    expect(getComputedStyle(workspace).overflowY).toBe("auto");
+  });
+
+  it("keeps the shared rail fixed while the workspace content scrolls", () => {
+    render(<main className="organizer-shell">
+      <aside className="organizer-space-rail collapsed" />
+      <section className="organizer-main" />
+    </main>);
+
+    const rail = document.querySelector<HTMLElement>(".organizer-space-rail")!;
+    const workspace = document.querySelector<HTMLElement>(".organizer-main")!;
+    expect(getComputedStyle(rail).overflowY).toBe("auto");
     expect(getComputedStyle(workspace).overflowY).toBe("auto");
   });
 

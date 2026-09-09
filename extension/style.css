@@ -1,4 +1,6 @@
-:root { color-scheme: light dark; font-family: "Poppins", sans-serif; color: var(--text-primary); background: var(--surface-page); font-synthesis: none; -webkit-text-size-adjust: 100%; text-size-adjust: 100%; --surface-page: #f6f3ee; --surface-panel: #ffffff; --surface-muted: #f1eee9; --surface-accent: #f3f0ff; --text-primary: #25233a; --text-muted: #716f82; --border-default: #e3ded7; --accent: #7157d9; --accent-strong: #6249c8; --accent-soft: #eeeaff; --danger: #d94f5a; --sidebar: #29263e; --scroll-thumb: #b8b1c5; --scroll-track: transparent; --focus-ring: rgba(113,87,217,.35); --search-backdrop: rgba(246,243,238,.82); --control-height: 42px; --motion-fast: 140ms; --motion-base: 200ms; --motion-slow: 260ms; --ease-out: cubic-bezier(.22,1,.36,1); --ease-standard: cubic-bezier(.2,0,0,1); scrollbar-color: var(--scroll-thumb) var(--scroll-track); scrollbar-width: thin; }
+@import "../shared/organizer/organizer.css";
+
+:root { font-family: "Poppins", sans-serif; color: var(--text-primary); background: var(--surface-page); font-synthesis: none; -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
 html, body, #root { height: 100%; min-height: 100%; overflow: hidden; }
 *, *::before, *::after { box-sizing: border-box; scrollbar-color: var(--scroll-thumb) var(--scroll-track); scrollbar-width: thin; }
 body { margin: 0; color: var(--text-primary); background: var(--surface-page); }
