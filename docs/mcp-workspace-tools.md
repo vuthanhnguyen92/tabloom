@@ -37,10 +37,21 @@ Trash entries. All IDs and idempotency keys in tool arguments are UUIDs.
 ## Retry and concurrency contract
 
 Supply a new `idempotencyKey` for each logical create, update, move, reorder,
-or immediate link-deletion request. If delivery is uncertain, retry the same
-tool with the same key and exactly the same arguments. Tabloom returns the
-original committed result instead of applying the operation twice. Reusing a
-key for different arguments returns `conflict`.
+or immediate link-deletion request. Never reuse a key across commands. If
+delivery is uncertain, retry the same tool with the same key and exactly the
+same arguments.
+
+Create, update, move, and reorder commands fingerprint the command and its
+arguments. An exact retry returns the original committed result instead of
+applying the operation twice; different arguments or another fingerprinted
+command with that key return `conflict`.
+
+Immediate link deletion uses a separate Trash receipt scoped to the
+authenticated user and bound to the original `itemId`, `rootType: "link"`, and
+`source: "mcp"`. A replay for that item may return the original receipt even if
+the retry supplies a different `expectedUpdatedAt`; using the key for another
+item conflicts. This recovery behavior does not make the key reusable, so
+always retry the exact original arguments.
 
 Update, move, and link-deletion tools also require `expectedUpdatedAt`. Copy
 this value exactly from the target's latest `updated_at` field. If another

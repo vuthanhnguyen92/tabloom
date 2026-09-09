@@ -316,6 +316,16 @@ raw authorization headers.
 
 ### 5. Roll back safely
 
+Before enabling mutations, preselect and record a reviewed deployment ID or
+URL that passed the disabled-flag acceptance above or predates mutation-tool
+registration. Do not use an arbitrary earlier deployment. Keep its non-secret
+identifier available to the rollback shell without placing credentials in the
+command:
+
+```bash
+export TABLOOM_MCP_ROLLBACK_DEPLOYMENT='dpl_REPLACE_WITH_REVIEWED_DISABLED_DEPLOYMENT_ID'
+```
+
 If acceptance fails, disable mutation tools first and redeploy immediately:
 
 ```bash
@@ -326,14 +336,32 @@ vercel deploy --prod --cwd services/tabloom-mcp --yes
 ```
 
 Confirm `mutationsEnabled: false`, read tools remain available, mutation tools
-are absent, and no unexpected workspace revision changed. If the new service
-itself is unhealthy, keep the flag false and roll back to the reviewed
-known-good deployment:
+are absent, and the dedicated fixture's workspace revision and data are
+unchanged. Capture that redacted comparison as the post-disable baseline. If
+the new service itself is unhealthy, keep the flag false and roll back only to
+the preselected deployment:
 
 ```bash
-vercel rollback <known-good-deployment-url> \
+vercel rollback "$TABLOOM_MCP_ROLLBACK_DEPLOYMENT" \
   --cwd services/tabloom-mcp --yes
 ```
+
+After rollback completes, repeat the checks rather than relying on the target
+deployment's history:
+
+- `get_service_status` succeeds. A flag-aware deployment must report
+  `mutationsEnabled: false`; a pre-mutation deployment may omit that field only
+  when the next check proves that mutation tools do not exist.
+- `tools/list` contains no mutation tools, and a direct mutation call by name
+  fails without changing data.
+- The authenticated read tools remain available.
+- The dedicated fixture's workspace revision and data exactly match the
+  post-disable baseline. If the unhealthy service prevented that capture, use
+  the most recent approved baseline and reconcile only already recorded
+  acceptance mutations; any unexplained difference is a failure.
+
+Treat any failed or ambiguous post-rollback check as an incident and keep
+mutations disabled.
 
 Leave migrations 001 through 004 in place: they are the forward-compatible
 Trash and receipt foundation. Do not restore unsafe direct hard deletes or
