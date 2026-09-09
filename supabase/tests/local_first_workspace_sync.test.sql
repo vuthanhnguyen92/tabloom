@@ -155,41 +155,45 @@ delete from public.collections
 where user_id = '00000000-0000-0000-0000-00000000000a'
   and id = '20000000-0000-4000-8000-000000000003';
 
+-- Direct fixture writes also advance the revision through normal row triggers.
+select set_config('test.recovery_revision', public.get_workspace_revision()->>'revision', true);
+
 select is(
   public.apply_workspace_operations(
     '[{"operationId":"40000000-0000-4000-8000-000000000015","deviceId":"50000000-0000-4000-8000-000000000001","sequence":15,"entity":"collection","entityId":"20000000-0000-4000-8000-000000000003","action":"delete","payload":{},"createdAt":"2026-08-31T00:00:00Z","baseRevision":4}]'::jsonb,
-    4
+    (public.get_workspace_revision()->>'revision')::bigint
   ) #>> '{outcomes,0,status}',
   'deleted',
   'a legacy-missing collection delete is acknowledged'
 );
-select is((select revision from public.workspace_sync_state), 5::bigint, 'a recovery tombstone advances the revision');
+select is((select revision from public.workspace_sync_state), current_setting('test.recovery_revision')::bigint + 1, 'a recovery tombstone advances the revision');
 select is((select count(*) from public.workspace_tombstones where entity_type = 'collection' and entity_id = '20000000-0000-4000-8000-000000000003'), 1::bigint, 'legacy-missing collection receives a recovery tombstone');
 select is((select count(*) from public.workspace_operations where operation_id = '40000000-0000-4000-8000-000000000015'), 1::bigint, 'legacy-missing delete operation is recorded');
 
 select is(
   public.apply_workspace_operations(
     '[{"operationId":"40000000-0000-4000-8000-000000000016","deviceId":"50000000-0000-4000-8000-000000000001","sequence":16,"entity":"collection","entityId":"20000000-0000-4000-8000-000000000003","action":"delete","payload":{},"createdAt":"2026-08-31T00:00:00Z","baseRevision":5}]'::jsonb,
-    5
+    (public.get_workspace_revision()->>'revision')::bigint
   ) #>> '{outcomes,0,status}',
   'deleted',
   'a repeated missing delete is idempotent'
 );
-select is((select revision from public.workspace_sync_state), 5::bigint, 'a repeated missing delete does not advance the revision');
+select is((select revision from public.workspace_sync_state), current_setting('test.recovery_revision')::bigint + 1, 'a repeated missing delete does not advance the revision');
 
 insert into public.collections(id, user_id, space_id, name, position)
 values ('20000000-0000-4000-8000-000000000004', '00000000-0000-0000-0000-00000000000a', '10000000-0000-4000-8000-000000000001', 'Existing delete', 0);
+select set_config('test.mixed_revision', public.get_workspace_revision()->>'revision', true);
 select lives_ok(
   $$ select public.apply_workspace_operations(
     '[
       {"operationId":"40000000-0000-4000-8000-000000000017","deviceId":"50000000-0000-4000-8000-000000000001","sequence":17,"entity":"collection","entityId":"20000000-0000-4000-8000-000000000005","action":"delete","payload":{},"createdAt":"2026-08-31T00:00:00Z","baseRevision":5},
       {"operationId":"40000000-0000-4000-8000-000000000018","deviceId":"50000000-0000-4000-8000-000000000001","sequence":18,"entity":"collection","entityId":"20000000-0000-4000-8000-000000000004","action":"delete","payload":{},"createdAt":"2026-08-31T00:00:00Z","baseRevision":5}
     ]'::jsonb,
-    5
+    (public.get_workspace_revision()->>'revision')::bigint
   ) $$,
   'a batch can combine missing and existing deletes'
 );
-select is((select revision from public.workspace_sync_state), 6::bigint, 'mixed recovery and existing deletes advance the batch revision once');
+select is((select revision from public.workspace_sync_state), current_setting('test.mixed_revision')::bigint + 1, 'mixed recovery and existing deletes advance the batch revision once');
 select is((select count(*) from public.collections where id = '20000000-0000-4000-8000-000000000004'), 0::bigint, 'mixed batch deletes the existing collection');
 select is((select count(*) from public.workspace_tombstones where entity_type = 'collection' and entity_id in ('20000000-0000-4000-8000-000000000004', '20000000-0000-4000-8000-000000000005')), 2::bigint, 'mixed batch records both collection tombstones');
 
@@ -204,7 +208,7 @@ set local request.jwt.claim.role = 'authenticated';
 select throws_ok(
   $$ select public.apply_workspace_operations(
     '[{"operationId":"40000000-0000-4000-8000-000000000019","deviceId":"50000000-0000-4000-8000-000000000001","sequence":19,"entity":"collection","entityId":"20000000-0000-4000-8000-00000000000b","action":"delete","payload":{},"createdAt":"2026-08-31T00:00:00Z","baseRevision":7}]'::jsonb,
-    6
+    (public.get_workspace_revision()->>'revision')::bigint
   ) $$,
   '23503',
   'cross-owner workspace id',
