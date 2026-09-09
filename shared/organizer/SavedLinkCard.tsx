@@ -39,7 +39,7 @@ export function SavedLinkCard({ link, writable, favicon, actions = {}, moveDesti
   };
   return <div data-organizer-layout-id={`link:${link.id}`} aria-busy={removing || undefined} aria-hidden={previewSource || undefined} className={`ext-link-card${removing ? " is-removing" : ""}${previewSource ? " drag-preview-source" : ""}`}>
     <a aria-label={`${link.title} · ${subtitle}`} className={[dragging ? "dragging" : "", highlighted ? "duplicate-highlight" : ""].filter(Boolean).join(" ") || undefined}
-      href={link.url} draggable={false} onDragStart={start} onDragEnd={onDragEnd} onDragOver={onDragOver} onDrop={onDrop}>
+      href={link.url} draggable={false} onDragStart={(event) => { event.preventDefault(); event.stopPropagation(); }} onDragEnd={onDragEnd} onDragOver={onDragOver} onDrop={onDrop}>
       <FaviconTile src={favicon} title={link.title} />
       <span><b>{link.title}</b><small>{subtitle}</small>{link.device_label && <small className="bookmark-device-label">{link.device_label}</small>}</span>
     </a>

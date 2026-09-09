@@ -107,6 +107,50 @@ describe("shared collection interactions", () => {
     expect((await repository.load()).links.filter((item) => item.collection_id === "collection-plan").sort((a, b) => a.position - b.position).map((item) => item.title)).toEqual(["Product roadmap", "Launch checklist", "Customer brief"]);
   });
 
+  it("only starts collection dragging from its explicit handle, never from the row or card body", async () => {
+    const { repository, reload } = setup();
+    const row = screen.getByRole("group", { name: "Plan collection" });
+    const anchor = screen.getByRole("link", { name: /Product roadmap/ });
+    const transfer = { effectAllowed: "none", dropEffect: "none", types: [], getData: () => "" };
+    expect(row).toHaveAttribute("draggable", "false");
+    expect(anchor.closest('[draggable="true"]')).toBeNull();
+    expect(fireEvent.dragStart(row, { dataTransfer: transfer })).toBe(false);
+    expect(fireEvent.dragStart(anchor, { dataTransfer: transfer })).toBe(false);
+    expect(row).not.toHaveClass("collection-dragging");
+    expect(anchor).not.toHaveClass("dragging");
+    fireEvent.dragStart(screen.getByRole("button", { name: "Drag Design collection" }), { dataTransfer: transfer });
+    expect(screen.getByRole("group", { name: "Design collection" })).toHaveClass("collection-dragging");
+    fireEvent.drop(row, { dataTransfer: transfer });
+    await waitFor(() => expect(reload).toHaveBeenCalledOnce());
+    expect((await repository.load()).collections.sort((a, b) => a.position - b.position).map((item) => item.name)).toEqual(["Design", "Plan", "Learn"]);
+  });
+
+  it.each([
+    { source: "Launch checklist", target: "Product roadmap", collection: "Plan", expected: ["Launch checklist", "Product roadmap", "Customer brief"] },
+    { source: "Product roadmap", target: "Brand system", collection: "Design", expected: ["Product roadmap", "Brand system", "Homepage explorations", "Prototype"] },
+  ])("drops on the visible $collection insertion slot at its displayed position", async ({ source, target, collection, expected }) => {
+    const { repository, reload } = setup();
+    const transfer = { effectAllowed: "none", dropEffect: "none", types: [], getData: () => "" };
+    fireEvent.dragStart(screen.getByRole("button", { name: `Drag ${source}` }), { dataTransfer: transfer });
+    fireEvent.dragOver(screen.getByRole("link", { name: new RegExp(target) }), { dataTransfer: transfer });
+    const slot = screen.getByRole("group", { name: `${collection} collection` }).querySelector(".ext-link-drop-preview")!;
+    fireEvent.drop(slot, { dataTransfer: transfer });
+    await waitFor(() => expect(reload).toHaveBeenCalledOnce());
+    expect((await repository.load()).links.filter((item) => item.collection_id === `collection-${collection.toLowerCase()}`).sort((a, b) => a.position - b.position).map((item) => item.title)).toEqual(expected);
+  });
+
+  it("keeps an insertion slot hit-testable and stable through repeated hover on its label", () => {
+    setup();
+    const transfer = { effectAllowed: "none", dropEffect: "none", types: [], getData: () => "" };
+    fireEvent.dragStart(screen.getByRole("button", { name: "Drag Launch checklist" }), { dataTransfer: transfer });
+    fireEvent.dragOver(screen.getByRole("link", { name: /Product roadmap/ }), { dataTransfer: transfer });
+    const grid = screen.getByRole("group", { name: "Plan collection" }).querySelector(".ext-link-grid")!;
+    const slot = grid.querySelector(".ext-link-drop-preview")!;
+    for (let hover = 0; hover < 3; hover++) fireEvent.dragOver(slot.firstElementChild!, { dataTransfer: transfer });
+    expect(grid.firstElementChild).toBe(slot);
+    expect(getComputedStyle(slot).pointerEvents).toBe("auto");
+  });
+
   it("moves a saved link into another collection through its keyboard-accessible destination control", async () => {
     const { repository, reload } = setup();
     await userEvent.selectOptions(screen.getByRole("combobox", { name: "Move Product roadmap to collection" }), "collection-design");
@@ -155,6 +199,56 @@ describe("shared collection interactions", () => {
       rect.mockRestore();
       HTMLElement.prototype.animate = originalAnimate;
       globalThis.matchMedia = originalMatchMedia;
+    }
+  });
+
+  it("measures nested layout before animating and does not replay parent displacement on unchanged previews", () => {
+    const repository = new MemoryWorkspaceRepository("demo-user", snapshot);
+    const originalAnimate = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "animate");
+    const activeOffsets = new Map<HTMLElement, number>();
+    const calls: { id: string; frames: Keyframe[] }[] = [];
+    const sequence: string[] = [];
+    let moved = false;
+    const rect = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+      const id = this.dataset.organizerLayoutId ?? "";
+      sequence.push(`measure:${id}`);
+      const collectionName = this.closest("article")?.getAttribute("aria-label");
+      const collectionTop = collectionName === "Plan collection" ? 100 : collectionName === "Design collection" ? 300 : 500;
+      let top = collectionTop + (moved ? 80 : 0);
+      if (this.classList.contains("ext-link-card")) top += 20 + (moved && id === `link:${link.id}` ? 20 : 0);
+      top += activeOffsets.get(this) ?? 0;
+      for (let parent = this.parentElement; parent; parent = parent.parentElement) top += activeOffsets.get(parent) ?? 0;
+      return { x: 0, y: top, left: 0, top, right: 200, bottom: top + 92, width: 200, height: 92, toJSON: () => ({}) };
+    });
+    Object.defineProperty(HTMLElement.prototype, "animate", { configurable: true, writable: true, value: function (this: HTMLElement, frames: Keyframe[]) {
+      const id = this.dataset.organizerLayoutId!;
+      sequence.push(`animate:${id}`);
+      calls.push({ id, frames });
+      const offset = /translate\(0px, (-?\d+)px\)/.exec(String(frames[0].transform));
+      activeOffsets.set(this, Number(offset?.[1] ?? 0));
+      return { cancel: () => activeOffsets.delete(this) };
+    } });
+    try {
+      const view = render(<CollectionList collections={snapshot.collections} links={snapshot.links} repository={repository} onReload={async () => undefined} />);
+      const transfer = { effectAllowed: "none", dropEffect: "none", types: [], getData: () => "" };
+      fireEvent.dragStart(screen.getByRole("button", { name: "Drag Launch checklist" }), { dataTransfer: transfer });
+      sequence.length = 0;
+      moved = true;
+      fireEvent.dragOver(screen.getByRole("link", { name: /Product roadmap/ }), { dataTransfer: transfer });
+      expect(calls.find((call) => call.id === "collection:collection-plan")?.frames[0]).toEqual({ transform: "translate(0px, -80px)" });
+      expect(calls.find((call) => call.id === `link:${link.id}`)?.frames[0]).toEqual({ transform: "translate(0px, -20px)" });
+      expect(calls.filter((call) => call.id.startsWith("link:")).map((call) => call.id)).toEqual([`link:${link.id}`]);
+      const firstAnimation = sequence.findIndex((item) => item.startsWith("animate:"));
+      expect(sequence.slice(firstAnimation).every((item) => item.startsWith("animate:"))).toBe(true);
+      calls.length = 0;
+      view.rerender(<CollectionList collections={snapshot.collections} links={snapshot.links} repository={repository} onReload={async () => undefined} highlightedLinkId={link.id} />);
+      expect(calls).toEqual([]);
+      fireEvent.dragOver(screen.getByRole("link", { name: /Product roadmap/ }), { dataTransfer: transfer });
+      expect(calls).toEqual([]);
+    } finally {
+      rect.mockRestore();
+      if (originalAnimate) Object.defineProperty(HTMLElement.prototype, "animate", originalAnimate);
+      else Reflect.deleteProperty(HTMLElement.prototype, "animate");
     }
   });
 });

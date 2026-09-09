@@ -1,4 +1,4 @@
-import { ArrowDown, ArrowUp, ChevronRight, Pencil, Share2, Trash2, X } from "lucide-react";
+import { ArrowDown, ArrowUp, ChevronRight, GripVertical, Pencil, Share2, Trash2, X } from "lucide-react";
 import { Fragment, useEffect, useLayoutEffect, useRef, useState, type DragEvent } from "react";
 import { CollectionShareDialog } from "../CollectionShareDialog";
 import type { CollectionShareRepository, ShareAvailability } from "../collection-sharing";
@@ -65,14 +65,24 @@ export function CollectionList({ collections, links, allLinks = links, bookmarkD
     const next = new Map<string, { left: number; top: number }>();
     const animations: Animation[] = [];
     const reduceMotion = globalThis.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
-    listRef.current?.querySelectorAll<HTMLElement>("[data-organizer-layout-id]").forEach((node) => {
+    // Read every resting rectangle before starting any animation. A parent's
+    // transform would otherwise alter the descendant rectangles in this pass.
+    const measurements = Array.from(listRef.current?.querySelectorAll<HTMLElement>("[data-organizer-layout-id]") ?? []).map((node) => {
       const id = node.dataset.organizerLayoutId!;
       const bounds = node.getBoundingClientRect();
       next.set(id, { left: bounds.left, top: bounds.top });
       const previous = layoutPositions.current.get(id);
+      return { node, previous, x: previous ? previous.left - bounds.left : 0, y: previous ? previous.top - bounds.top : 0 };
+    });
+    const displacement = new Map(measurements.map((measurement) => [measurement.node, measurement]));
+    measurements.forEach(({ node, previous, x: viewportX, y: viewportY }) => {
       if (!previous || reduceMotion || node.classList.contains("drag-preview-source")) return;
-      const x = previous.left - bounds.left;
-      const y = previous.top - bounds.top;
+      const parent = node.parentElement?.closest<HTMLElement>("[data-organizer-layout-id]");
+      const parentMovement = parent ? displacement.get(parent) : undefined;
+      // The ancestor animation already supplies its viewport displacement;
+      // descendants animate only their remaining movement inside that ancestor.
+      const x = viewportX - (parentMovement?.x ?? 0);
+      const y = viewportY - (parentMovement?.y ?? 0);
       if ((x || y) && node.animate) animations.push(node.animate([
         { transform: `translate(${x}px, ${y}px)` }, { transform: "translate(0px, 0px)" },
       ], { duration: 200, easing: "ease-out" }));
@@ -334,7 +344,24 @@ export function CollectionList({ collections, links, allLinks = links, bookmarkD
   function previewLinkDrop(collection: Collection, targetLinkId?: string) {
     if (!canMutateCollection(collection) || (dragged?.kind !== "saved-link" && dragged?.kind !== "browser-bookmark")) return;
     if (dragged.kind === "saved-link" && targetLinkId === dragged.id) return setLinkDropPreview(null);
-    setLinkDropPreview({ collectionId: collection.id, targetLinkId });
+    setLinkDropPreview((current) => current?.collectionId === collection.id && current.targetLinkId === targetLinkId
+      ? current : { collectionId: collection.id, targetLinkId });
+  }
+
+  function renderLinkDropSlot(collection: Collection, targetLinkId?: string) {
+    return <div aria-hidden="true" className="ext-link-drop-preview" draggable={false}
+      onDragOver={(event) => {
+        event.stopPropagation();
+        allowDrop(event);
+        previewLinkDrop(collection, targetLinkId);
+      }}
+      onDrop={(event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        if (dragged?.kind === "browser-bookmark") void copyBookmark(collection);
+        else void moveLink(collection.id, targetLinkId);
+      }}
+    ><span>Drop here</span></div>;
   }
 
   function acceptBrowserTab(event: DragEvent, collection: Collection) {
@@ -438,13 +465,19 @@ export function CollectionList({ collections, links, allLinks = links, bookmarkD
         aria-label={`${displayName} collection`}
         aria-busy={isRemovingCollection || undefined}
         className={[showsPreview || isBrowserDropTarget ? "drop-target" : "", isBookmarkDropTarget ? "bookmark-drop-target" : "", canMutate ? "" : "read-only", isDraggedCollection ? "collection-dragging" : "", isCollapsed ? "is-collapsed" : "", isRemovingCollection ? "is-removing" : ""].filter(Boolean).join(" ") || undefined}
-        draggable={canMutate && !isRemovingCollection && !isEditingCollection}
+        draggable={false}
         key={collection.id}
-        onDragStart={(event) => { if (!canMutate || isRemovingCollection || isEditingCollection) return event.preventDefault(); event.dataTransfer.effectAllowed = "move"; setLinkDropPreview(null); setBrowserDropTarget(null); setDragged({ kind: "collection", id: collection.id }); }}
+        onDragStart={(event) => { event.preventDefault(); event.stopPropagation(); }}
         onDragEnd={clearDrag}
         onDragOver={(event) => { if (!canMutate) return; allowDrop(event); if (dragged?.kind === "collection") return previewCollectionMove(event, collection.id); if (!previewBrowserTabDrop(event, collection)) previewLinkDrop(collection); }}
         onDrop={(event) => { event.preventDefault(); if (!canMutate) return clearDrag(); if (acceptBrowserTab(event, collection)) return; if (dragged?.kind === "collection") void moveCollection(collection.id); else if (dragged?.kind === "browser-bookmark") void copyBookmark(collection); else void moveLink(collection.id); }}
-        header={<div className="ext-col-head"><div className="collection-title-group"><button aria-controls={`collection-body-${collection.id}`} aria-expanded={!isCollapsed} aria-label={`${isCollapsed ? "Expand" : "Collapse"} ${displayName}`} className="collection-collapse-toggle" draggable={false} onClick={(event) => { event.stopPropagation(); toggleCollection(collection.id); }}><ChevronRight aria-hidden="true" size={17} /></button>{isEditingCollection ? <div className="collection-name-editor"><input
+        header={<div className="ext-col-head"><div className="collection-title-group">
+          {canMutate && !isRemovingCollection && !isEditingCollection && <button aria-label={`Drag ${displayName} collection`} className="collection-drag-handle" draggable
+            onDragStart={(event) => { event.stopPropagation(); event.dataTransfer.effectAllowed = "move"; setLinkDropPreview(null); setBrowserDropTarget(null); setDragged({ kind: "collection", id: collection.id }); }}
+            onDragEnd={clearDrag}
+            onClick={(event) => { event.preventDefault(); event.stopPropagation(); }}
+          ><GripVertical aria-hidden="true" size={14} /></button>}
+          <button aria-controls={`collection-body-${collection.id}`} aria-expanded={!isCollapsed} aria-label={`${isCollapsed ? "Expand" : "Collapse"} ${displayName}`} className="collection-collapse-toggle" draggable={false} onClick={(event) => { event.stopPropagation(); toggleCollection(collection.id); }}><ChevronRight aria-hidden="true" size={17} /></button>{isEditingCollection ? <div className="collection-name-editor"><input
           aria-invalid={Boolean(editingCollection.error)}
           aria-label={`Collection name for ${editingCollection.originalName}`}
           draggable={false}
@@ -472,7 +505,7 @@ export function CollectionList({ collections, links, allLinks = links, bookmarkD
             const linkIndex = canonicalLinks.findIndex((item) => item.id === link.id);
             const isDragged = (dragged?.kind === "saved-link" && dragged.id === link.id) || (dragged?.kind === "browser-bookmark" && dragged.link.id === link.id);
             return <Fragment key={link.id}>
-            {showsPreview && linkDropPreview.targetLinkId === link.id && <div aria-hidden="true" className="ext-link-drop-preview"><span>Drop here</span></div>}
+            {showsPreview && linkDropPreview.targetLinkId === link.id && renderLinkDropSlot(collection, link.id)}
             <SavedLinkCard link={displayLink} writable={canMutate} removing={isRemovingLink}
               dragging={isDragged} previewSource={isDragged && !!linkDropPreview && dragged?.kind === "saved-link"}
               copyable={link.origin === "browser-bookmark" && !!onBookmarkDrop}
@@ -492,7 +525,7 @@ export function CollectionList({ collections, links, allLinks = links, bookmarkD
               onDrop={(event) => { event.preventDefault(); event.stopPropagation(); if (!canMutate) return clearDrag(); if (acceptBrowserTab(event, collection)) return; if (dragged?.kind === "browser-bookmark") void copyBookmark(collection); else void moveLink(collection.id, link.id); }}
             />
           </Fragment>; })}
-          {showsPreview && !linkDropPreview.targetLinkId && <div aria-hidden="true" className="ext-link-drop-preview"><span>Drop here</span></div>}
+          {showsPreview && !linkDropPreview.targetLinkId && renderLinkDropSlot(collection)}
       </CollectionSection>
       </Fragment>;
     })}
