@@ -70,17 +70,27 @@ export class SelectedSpacePreference {
 
 export class CollectionCollapsePreference {
   private readonly stored = new Map<string, Promise<string[]>>();
+  private readonly updates = new Map<string, Promise<void>>();
 
   constructor(private readonly store: OrganizerPreferenceStore) {}
 
   async setCollapsed(scope: string, collectionId: string, collapsed: boolean): Promise<void> {
-    const previous = await this.read(scope);
-    const next = new Set(previous);
-    if (collapsed) next.add(collectionId);
-    else next.delete(collectionId);
-    const sorted = [...next].sort();
-    this.stored.set(scope, Promise.resolve(sorted));
-    await this.store.set(collapsedCollectionsKey(scope), JSON.stringify(sorted));
+    const previousUpdate = this.updates.get(scope) ?? Promise.resolve();
+    const update = previousUpdate.catch(() => undefined).then(async () => {
+      const previous = await this.read(scope);
+      const next = new Set(previous);
+      if (collapsed) next.add(collectionId);
+      else next.delete(collectionId);
+      const sorted = [...next].sort();
+      this.stored.set(scope, Promise.resolve(sorted));
+      await this.store.set(collapsedCollectionsKey(scope), JSON.stringify(sorted));
+    });
+    this.updates.set(scope, update);
+    try {
+      await update;
+    } finally {
+      if (this.updates.get(scope) === update) this.updates.delete(scope);
+    }
   }
 
   async load(scope: string, collectionIds: readonly string[]): Promise<Set<string>> {

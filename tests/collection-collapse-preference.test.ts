@@ -49,4 +49,21 @@ describe("CollectionCollapsePreference", () => {
       [COLLAPSED_COLLECTIONS_STORAGE_KEY]: { local: ["collection-one"] },
     });
   });
+
+  it("persists concurrent updates through the legacy aggregate extension record", async () => {
+    const storage = createStorage();
+    const preference = new CollectionCollapsePreference(storage);
+
+    await Promise.all([
+      preference.setCollapsed("local", "collection-one", true),
+      preference.setCollapsed("local", "collection-two", true),
+    ]);
+
+    const restored = new CollectionCollapsePreference(storage);
+    expect(await restored.reconcile("local", ["collection-one", "collection-two"]))
+      .toEqual(new Set(["collection-one", "collection-two"]));
+    await expect(storage.get(COLLAPSED_COLLECTIONS_STORAGE_KEY)).resolves.toEqual({
+      [COLLAPSED_COLLECTIONS_STORAGE_KEY]: { local: ["collection-one", "collection-two"] },
+    });
+  });
 });

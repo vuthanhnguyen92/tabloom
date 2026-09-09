@@ -45,6 +45,20 @@ describe("organizer preferences", () => {
     await expect(store.get("tabloom:collapsed-collections:account")).resolves.toBe('["collection-kept"]');
   });
 
+  it("preserves concurrent collapse updates after preferences are reconstructed", async () => {
+    const store = memoryPreferenceStore();
+    const preference = new CollectionCollapsePreference(store);
+
+    await Promise.all([
+      preference.setCollapsed("account", "collection-one", true),
+      preference.setCollapsed("account", "collection-two", true),
+    ]);
+
+    const restored = new CollectionCollapsePreference(store);
+    await expect(restored.load("account", ["collection-one", "collection-two"]))
+      .resolves.toEqual(new Set(["collection-one", "collection-two"]));
+  });
+
   it("adapts DOM Storage-compatible persistence without browser globals", async () => {
     const values = new Map<string, string>();
     const storage = {
