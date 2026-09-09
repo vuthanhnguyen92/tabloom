@@ -1,5 +1,5 @@
 import { ArrowDown, ArrowUp, ChevronRight, GripVertical, Pencil, Share2, Trash2, X } from "lucide-react";
-import { Fragment, useEffect, useLayoutEffect, useRef, useState, type DragEvent } from "react";
+import { Fragment, useEffect, useLayoutEffect, useRef, useState, type DragEvent, type HTMLAttributes } from "react";
 import { CollectionShareDialog } from "../CollectionShareDialog";
 import type { CollectionShareRepository, ShareAvailability } from "../collection-sharing";
 import type { Collection, SavedLink } from "../domain";
@@ -57,8 +57,7 @@ const waitForDeleteExit = () => new Promise<void>((resolve) => setTimeout(resolv
   typeof window !== "undefined" && window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ? 0 : DELETE_EXIT_MS,
 ));
 
-export function CollectionList({ collections, links, allLinks = links, bookmarkDropCollections = [], externalDrop, collapsePreference, collapseScope = "local", repository, onReload, onOpenCollection, onBookmarkDrop, onError, onMessage, highlightedLinkId, resolveFavicon = capturedFavicon, share }: CollectionListProps) {
-  const browserTabDragSession = externalDrop?.session ?? 0;
+function useCollectionLayout() {
   const listRef = useRef<HTMLDivElement>(null);
   const layoutPositions = useRef(new Map<string, { left: number; top: number }>());
   useLayoutEffect(() => {
@@ -90,6 +89,18 @@ export function CollectionList({ collections, links, allLinks = links, bookmarkD
     layoutPositions.current = next;
     return () => animations.forEach((animation) => animation.cancel());
   });
+  return listRef;
+}
+
+/** Controlled compositions reuse the same nesting-aware movement animation. */
+export function CollectionLayout(props: HTMLAttributes<HTMLDivElement>) {
+  const ref = useCollectionLayout();
+  return <div {...props} ref={ref} />;
+}
+
+export function CollectionList({ collections, links, allLinks = links, bookmarkDropCollections = [], externalDrop, collapsePreference, collapseScope = "local", repository, onReload, onOpenCollection, onBookmarkDrop, onError, onMessage, highlightedLinkId, resolveFavicon = capturedFavicon, share }: CollectionListProps) {
+  const browserTabDragSession = externalDrop?.session ?? 0;
+  const listRef = useCollectionLayout();
   const [dragged, setDragged] = useState<DraggedItem>(null);
   const [linkDropPreview, setLinkDropPreview] = useState<LinkDropPreview>(null);
   const [collectionDropPreview, setCollectionDropPreview] = useState<CollectionDropPreview>(null);
