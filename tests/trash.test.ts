@@ -3,10 +3,21 @@ import {
   decodeDeleteIntent,
   decodeDeleteReceipt,
   decodeTrashEntry,
+  decodeTrashSnapshot,
   WorkspaceCommandError,
 } from "../shared/trash";
 
 describe("workspace trash contracts", () => {
+  it.each(["spaces", "collections", "links"])("rejects read-only or browser metadata in nested %s instead of normalizing it", (table) => {
+    const meta = { id: crypto.randomUUID(), user_id: crypto.randomUUID(), position: 0, created_at: "2026-09-10T00:00:00Z", updated_at: "2026-09-10T00:00:00Z", origin: "saved", read_only: false };
+    const row = table === "spaces" ? { ...meta, name: "Space", color: "#123456" }
+      : table === "collections" ? { ...meta, space_id: crypto.randomUUID(), name: "Collection" }
+        : { ...meta, collection_id: crypto.randomUUID(), title: "Link", description: "", url: "https://example.com", favicon_url: null };
+    for (const unsafe of [{ origin: "browser-bookmark", read_only: false }, { origin: "saved", read_only: true }]) {
+      expect(() => decodeTrashSnapshot({ version: 1, rootType: "link", spaces: [], collections: [], links: [], [table]: [{ ...row, ...unsafe }] })).toThrow("invalid trash snapshot");
+    }
+  });
+
   it("decodes a recoverable deletion receipt", () => {
     expect(decodeDeleteReceipt({
       operationId: "4e5d908c-bfa2-4fe6-98c8-b178a7780209",

@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { z } from "zod";
+import { z } from "zod";
 import { searchWorkspace, type Collection, type SavedLink, type Space, type WorkspaceRecordMeta, type WorkspaceSnapshot } from "../../../../shared/domain";
 import type { WorkspaceOperation } from "../../../../shared/workspace-operations";
 import type { TabloomRequestContext } from "../auth/request-context";
@@ -12,6 +12,15 @@ type OperationBody = WorkspaceOperation extends infer O ? O extends WorkspaceOpe
 const editable = (item: WorkspaceRecordMeta) => item.origin === "saved" && !item.read_only;
 const ordered = <T extends { position: number; id: string }>(items: T[]): T[] => [...items].sort((a, b) => a.position - b.position || a.id.localeCompare(b.id));
 const fields = <T extends Record<string, unknown>>(value: T, keys: string[]) => Object.fromEntries(keys.filter((key) => value[key] !== undefined).map((key) => [key, value[key]]));
+const commandId = z.string().uuid().transform((value) => value.toLowerCase());
+export const destructiveCommandSchemas = {
+  prepareDeleteSpace: z.strictObject({ spaceId: commandId }),
+  prepareDeleteCollection: z.strictObject({ collectionId: commandId }),
+  confirmDelete: z.strictObject({ intentId: commandId }),
+  deleteCollectionItem: z.strictObject({ itemId: commandId, expectedUpdatedAt: z.string().datetime({ offset: true }), idempotencyKey: commandId }),
+  listTrash: z.strictObject({}),
+  restoreTrashItem: z.strictObject({ trashId: commandId, destinationId: commandId.optional() }),
+};
 
 function uuidFor(value: unknown): string {
   const hex = createHash("sha256").update(JSON.stringify(value)).digest("hex");
@@ -52,6 +61,14 @@ function requireItem(snapshot: WorkspaceSnapshot, id: string, timestamp?: string
   return item;
 }
 
+function requireTree(snapshot: WorkspaceSnapshot, type: "space" | "collection", id: string): void {
+  if (type === "space") requireSpace(snapshot, id);
+  else requireCollection(snapshot, id);
+  const collections = snapshot.collections.filter((item) => type === "space" ? item.space_id === id : item.id === id);
+  const ids = new Set(collections.map((item) => item.id));
+  if ([...collections, ...snapshot.links.filter((item) => ids.has(item.collection_id))].some((item) => !editable(item))) throw commandError("read_only");
+}
+
 export class WorkspaceCommandService {
   private readonly repository: WorkspaceCommandRepository;
 
@@ -86,6 +103,90 @@ export class WorkspaceCommandService {
   }
   searchWorkspace(input: unknown) {
     return this.read(schemas.searchWorkspaceSchema, input, ({ snapshot }, value) => searchWorkspace(visible(snapshot), value.query));
+  }
+
+  prepareDeleteSpace(input: unknown) {
+    return workspaceCommand(async () => {
+      const value = schemas.parseCommand(destructiveCommandSchemas.prepareDeleteSpace, input);
+      requireTree((await this.repository.load()).snapshot, "space", value.spaceId);
+      return this.repository.prepareDelete("space", value.spaceId);
+    });
+  }
+
+  prepareDeleteCollection(input: unknown) {
+    return workspaceCommand(async () => {
+      const value = schemas.parseCommand(destructiveCommandSchemas.prepareDeleteCollection, input);
+      requireTree((await this.repository.load()).snapshot, "collection", value.collectionId);
+      return this.repository.prepareDelete("collection", value.collectionId);
+    });
+  }
+
+  confirmDeleteSpace(input: unknown) { return this.confirmDelete("space", input); }
+  confirmDeleteCollection(input: unknown) { return this.confirmDelete("collection", input); }
+
+  private confirmDelete(type: "space" | "collection", input: unknown) {
+    return workspaceCommand(async () => {
+      const { intentId } = schemas.parseCommand(destructiveCommandSchemas.confirmDelete, input);
+      const id = await this.repository.deleteIntentTarget(intentId, type);
+      const operationId = uuidFor(["tabloom-mcp-delete", this.context.userId, type, intentId]);
+      // The database resolves absent targets and completed retries. Only validate
+      // live metadata here; never replace its locked intent/fingerprint checks.
+      const { snapshot } = await this.repository.load();
+      if ((type === "space" ? snapshot.spaces : snapshot.collections).some((item) => item.id === id)) requireTree(snapshot, type, id);
+      return this.repository.delete(type, id, operationId, intentId);
+    });
+  }
+
+  deleteCollectionItem(input: unknown) {
+    return workspaceCommand(async () => {
+      const value = schemas.parseCommand(destructiveCommandSchemas.deleteCollectionItem, input);
+      const previous = await this.repository.replayDelete(value.idempotencyKey, value.itemId);
+      if (previous) return previous;
+      try {
+        requireItem((await this.repository.load()).snapshot, value.itemId, value.expectedUpdatedAt);
+        return await this.repository.deleteLink(value.itemId, value.expectedUpdatedAt, value.idempotencyKey);
+      } catch (error) {
+        // Receipt and mutation commit atomically in the Trash RPC. Recover a
+        // lost response or a concurrent identical deletion before reporting failure.
+        const completed = await this.repository.replayDelete(value.idempotencyKey, value.itemId);
+        if (completed) return completed;
+        throw error;
+      }
+    });
+  }
+
+  listTrash(input: unknown = {}) {
+    return workspaceCommand(async () => {
+      schemas.parseCommand(destructiveCommandSchemas.listTrash, input);
+      return this.repository.listTrash();
+    });
+  }
+
+  restoreTrashItem(input: unknown) {
+    return workspaceCommand(async () => {
+      const value = schemas.parseCommand(destructiveCommandSchemas.restoreTrashItem, input);
+      const trash = await this.repository.getTrash(value.trashId);
+      if (trash.restoredAt === null) {
+        if (trash.rootType === "space") {
+          if (value.destinationId) throw commandError("validation_failed");
+        } else {
+          const { snapshot } = await this.repository.load();
+          if (trash.rootType === "collection") {
+            const root = trash.snapshot.collections.find((item) => item.id === trash.rootId)!;
+            const parentId = value.destinationId ?? root.space_id;
+            if (value.destinationId || snapshot.spaces.some((item) => item.id === parentId)) requireSpace(snapshot, parentId);
+          } else {
+            const root = trash.snapshot.links.find((item) => item.id === trash.rootId)!;
+            const parentId = value.destinationId ?? root.collection_id;
+            if (value.destinationId || snapshot.collections.some((item) => item.id === parentId)) requireCollection(snapshot, parentId);
+          }
+        }
+      }
+      const result = await this.repository.restore(trash, value.destinationId);
+      if (result.status === "destination_required") return result;
+      const current = await this.repository.load();
+      return { ...result, revision: current.revision, snapshot: visible(current.snapshot) };
+    });
   }
 
   private mutate<I extends { idempotencyKey: string }, O>(

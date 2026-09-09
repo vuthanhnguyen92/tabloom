@@ -78,9 +78,10 @@ function timestamp(value: unknown): value is string { return string(value) && Nu
 function fail(kind: string): never { throw new Error(`invalid ${kind}`); }
 function enumValue<T extends string>(value: unknown, values: Set<T>): value is T { return string(value) && values.has(value as T); }
 
-const ORIGINS = new Set(["saved", "browser-bookmark"]);
 function domainMeta(value: Record<string, unknown>): boolean {
-  return enumValue(value.origin, ORIGINS) && typeof value.read_only === "boolean";
+  // Trash contains only writable saved records. Reject browser/read-only data
+  // before the saved-workspace decoder can normalize away that metadata.
+  return value.origin === "saved" && value.read_only === false;
 }
 function domainBase(value: Record<string, unknown>): boolean {
   return string(value.id) && string(value.user_id)

@@ -21,6 +21,251 @@ const SPACE = { ...META, id: SPACE_ID, name: "Research", color: "#7357e6" };
 const COLLECTION = { ...META, id: COLLECTION_ID, space_id: SPACE_ID, name: "Reading" };
 const LINK = { ...META, id: ITEM_ID, collection_id: COLLECTION_ID, title: "Tabloom notes", description: "Useful", url: "https://example.com", favicon_url: null, device_label: null };
 const INITIAL = { spaces: [SPACE], collections: [COLLECTION], links: [LINK] };
+const INTENT_ID = "60000000-0000-4000-8000-000000000001";
+const TRASH_ID = "70000000-0000-4000-8000-000000000001";
+const EXPIRES = "2099-09-10T00:10:00.000Z";
+const RESTORE_UNTIL = "2099-10-10T00:00:00.000Z";
+
+function trashSetup(initial: WorkspaceSnapshot = INITIAL) {
+  const base = setup(initial);
+  const trash = { id: TRASH_ID, user_id: USER, root_type: "link", root_id: ITEM_ID, root_name: LINK.title,
+    source: "mcp", deleted_at: NOW, expires_at: RESTORE_UNTIL, restored_at: null as string | null,
+    created_operation_id: KEY, snapshot: { version: 1, rootType: "link", spaces: [], collections: [], links: [LINK] } };
+  let intent: Record<string, unknown> | null = { id: INTENT_ID, user_id: USER, target_type: "collection", target_id: COLLECTION_ID };
+  let receipt: typeof trash | null = null;
+  const reads: Array<{ table: string; filters: Record<string, unknown> }> = [];
+  const from = vi.fn((table: string) => {
+    const filters: Record<string, unknown> = {};
+    reads.push({ table, filters });
+    const query = { select: () => query, eq: (key: string, value: unknown) => { filters[key] = value; return query; },
+      maybeSingle: async () => ({ data: structuredClone(table === "workspace_delete_intents" ? intent
+        : table === "workspace_trash" ? (filters.created_operation_id ? receipt : trash) : null), error: null }) };
+    return query;
+  });
+  const originalRpc = base.rpc.getMockImplementation()!;
+  base.rpc.mockImplementation(async (name, args) => {
+    if (name === "prepare_workspace_delete") return { data: { intentId: INTENT_ID, targetType: args?.p_target_type,
+      targetId: args?.p_target_id, targetName: args?.p_target_type === "space" ? SPACE.name : COLLECTION.name,
+      collectionCount: 1, linkCount: 1, expiresAt: EXPIRES }, error: null };
+    if (name === "trash_workspace_entity") return { data: { operationId: args?.p_operation_id, trashId: TRASH_ID,
+      rootType: args?.p_root_type, rootId: args?.p_root_id, restoreUntil: RESTORE_UNTIL }, error: null };
+    if (name === "trash_workspace_link_if_unchanged") return { data: { operationId: args?.p_operation_id, trashId: TRASH_ID,
+      rootType: "link", rootId: args?.p_link_id, restoreUntil: RESTORE_UNTIL }, error: null };
+    if (name === "list_workspace_trash") return { data: [{ id: TRASH_ID, rootType: "link", rootId: ITEM_ID,
+      rootName: LINK.title, source: "mcp", deletedAt: NOW, expiresAt: RESTORE_UNTIL, restoredAt: null, snapshot: trash.snapshot }], error: null };
+    if (name === "restore_workspace_trash") return { data: { status: "restored", trashId: TRASH_ID, rootType: "link", rootId: ITEM_ID, revision: 8 }, error: null };
+    return originalRpc(name, args);
+  });
+  const context = { ...base.context, supabase: { rpc: base.rpc, from } as unknown as SupabaseClient };
+  return { ...base, service: new WorkspaceCommandService(context), context, trash, reads,
+    setIntent: (value: Record<string, unknown> | null) => { intent = value; },
+    committedReceipt: () => { receipt = structuredClone(trash); },
+  };
+}
+
+describe("recoverable destructive workspace commands", () => {
+  it.each(["space", "collection"] as const)("prepares %s deletion with exact authoritative counts and expiry", async (type) => {
+    const { service, rpc } = trashSetup();
+    const result = type === "space" ? await service.prepareDeleteSpace({ spaceId: SPACE_ID }) : await service.prepareDeleteCollection({ collectionId: COLLECTION_ID });
+    expect(result).toEqual({ intentId: INTENT_ID, targetType: type, targetId: type === "space" ? SPACE_ID : COLLECTION_ID,
+      targetName: type === "space" ? "Research" : "Reading", collectionCount: 1, linkCount: 1, expiresAt: EXPIRES });
+    expect(rpc).toHaveBeenCalledWith("prepare_workspace_delete", { p_target_type: type, p_target_id: type === "space" ? SPACE_ID : COLLECTION_ID });
+    expect(rpc.mock.calls.some(([name]) => name === "trash_workspace_entity")).toBe(false);
+  });
+
+  it.each(["space", "collection"] as const)("confirms %s by owner-scoped intent and uses a stable operation for retries", async (type) => {
+    const { service, context, rpc, reads, setIntent } = trashSetup();
+    setIntent({ id: INTENT_ID, user_id: USER, target_type: type, target_id: type === "space" ? SPACE_ID : COLLECTION_ID });
+    const call = (command: WorkspaceCommandService) => type === "space" ? command.confirmDeleteSpace({ intentId: INTENT_ID }) : command.confirmDeleteCollection({ intentId: INTENT_ID });
+    const first = await call(service);
+    expect(first).toMatchObject({ rootType: type, rootId: type === "space" ? SPACE_ID : COLLECTION_ID, trashId: TRASH_ID, restoreUntil: RESTORE_UNTIL });
+    expect(await call(new WorkspaceCommandService(context))).toEqual(first);
+    expect(reads).toContainEqual({ table: "workspace_delete_intents", filters: { user_id: USER, id: INTENT_ID } });
+    const calls = rpc.mock.calls.filter(([name]) => name === "trash_workspace_entity");
+    expect(calls).toHaveLength(2);
+    expect(calls[0][1]).toEqual({ p_root_type: type, p_root_id: first.rootId, p_source: "mcp", p_operation_id: first.operationId, p_intent_id: INTENT_ID });
+    expect(calls[1][1]).toEqual(calls[0][1]);
+  });
+
+  it.each([{}, { intentId: INTENT_ID, collectionId: COLLECTION_ID }, { intentId: INTENT_ID, source: "web" }, { intentId: "fabricated" }])("rejects invalid confirmation input %# before database access", async (input) => {
+    const { service, rpc, reads } = trashSetup();
+    await expect(service.confirmDeleteCollection(input)).rejects.toMatchObject({ code: "validation_failed" });
+    expect(rpc).not.toHaveBeenCalled();
+    expect(reads).toEqual([]);
+  });
+
+  it.each([null, { id: INTENT_ID, user_id: KEY, target_type: "collection", target_id: COLLECTION_ID },
+    { id: INTENT_ID, user_id: USER, target_type: "space", target_id: SPACE_ID }])("rejects fabricated, foreign, or wrong-kind intents %#", async (intent) => {
+    const { service, rpc, setIntent } = trashSetup();
+    setIntent(intent);
+    await expect(service.confirmDeleteCollection({ intentId: INTENT_ID })).rejects.toMatchObject({ code: "confirmation_required" });
+    expect(rpc.mock.calls.some(([name]) => name === "trash_workspace_entity")).toBe(false);
+  });
+
+  it.each([["P0001", "confirmation_expired", "confirmation_expired"], ["P0001", "confirmation_required", "confirmation_required"],
+    ["40001", "workspace delete target changed SQL secret", "conflict"]])("preserves authoritative rejection %s/%s without retrying deletion", async (code, message, expected) => {
+    const { service, rpc } = trashSetup();
+    const original = rpc.getMockImplementation()!;
+    rpc.mockImplementation((name, args) => name === "trash_workspace_entity" ? Promise.resolve({ data: null, error: { code, message } }) : original(name, args));
+    const error = await service.confirmDeleteCollection({ intentId: INTENT_ID }).catch((value: unknown) => value);
+    expect(error).toMatchObject({ code: expected });
+    expect(String(error)).not.toContain("secret");
+    expect(rpc.mock.calls.filter(([name]) => name === "trash_workspace_entity")).toHaveLength(1);
+  });
+
+  it("deletes a saved link immediately through the caller RPC with recovery metadata", async () => {
+    const { service, rpc } = trashSetup();
+    expect(await service.deleteCollectionItem({ itemId: ITEM_ID, expectedUpdatedAt: NOW, idempotencyKey: KEY }))
+      .toEqual({ operationId: KEY, trashId: TRASH_ID, rootType: "link", rootId: ITEM_ID, restoreUntil: RESTORE_UNTIL });
+    expect(rpc).toHaveBeenCalledWith("trash_workspace_link_if_unchanged", { p_link_id: ITEM_ID, p_expected_updated_at: NOW, p_operation_id: KEY });
+    expect(rpc.mock.calls.some(([name]) => name === "trash_workspace_entity")).toBe(false);
+  });
+
+  it("replays the original link receipt after target absence", async () => {
+    const { service, committedReceipt, rpc } = trashSetup({ ...INITIAL, links: [] });
+    committedReceipt();
+    expect(await service.deleteCollectionItem({ itemId: ITEM_ID, expectedUpdatedAt: NOW, idempotencyKey: KEY }))
+      .toMatchObject({ operationId: KEY, trashId: TRASH_ID, rootId: ITEM_ID });
+    expect(rpc.mock.calls.some(([name]) => name === "trash_workspace_entity")).toBe(false);
+  });
+
+  it("recovers the committed link receipt when the deleting RPC response is lost", async () => {
+    const { service, committedReceipt, rpc } = trashSetup();
+    const original = rpc.getMockImplementation()!;
+    rpc.mockImplementation((name, args) => {
+      if (name !== "trash_workspace_link_if_unchanged") return original(name, args);
+      committedReceipt();
+      return Promise.resolve({ data: null, error: { code: "XX000", message: "connection lost after commit token=secret" } });
+    });
+    expect(await service.deleteCollectionItem({ itemId: ITEM_ID, expectedUpdatedAt: NOW, idempotencyKey: KEY }))
+      .toEqual({ operationId: KEY, trashId: TRASH_ID, rootType: "link", rootId: ITEM_ID, restoreUntil: RESTORE_UNTIL });
+    expect(rpc.mock.calls.filter(([name]) => name === "trash_workspace_link_if_unchanged")).toHaveLength(1);
+  });
+
+  it.each([{ itemId: ITEM_ID, expectedUpdatedAt: NOW }, { itemId: ITEM_ID, idempotencyKey: KEY },
+    { itemId: ITEM_ID, expectedUpdatedAt: NOW, idempotencyKey: KEY, source: "web" }])("rejects incomplete or spoofed immediate deletion input %#", async (input) => {
+    const { service, rpc, reads } = trashSetup();
+    await expect(service.deleteCollectionItem(input)).rejects.toMatchObject({ code: "validation_failed" });
+    expect(rpc).not.toHaveBeenCalled();
+    expect(reads).toEqual([]);
+  });
+
+  it("does not replay a different operation after a link disappeared", async () => {
+    const { service } = trashSetup({ ...INITIAL, links: [] });
+    await expect(service.deleteCollectionItem({ itemId: ITEM_ID, expectedUpdatedAt: NOW, idempotencyKey: OTHER_ITEM_ID })).rejects.toMatchObject({ code: "not_found" });
+  });
+
+  it("rejects reusing a deletion operation for a different target", async () => {
+    const { service, committedReceipt } = trashSetup();
+    committedReceipt();
+    await expect(service.deleteCollectionItem({ itemId: OTHER_ITEM_ID, expectedUpdatedAt: NOW, idempotencyKey: KEY })).rejects.toMatchObject({ code: "conflict" });
+  });
+
+  it("rejects stale link deletion without writing", async () => {
+    const { service, rpc } = trashSetup();
+    await expect(service.deleteCollectionItem({ itemId: ITEM_ID, expectedUpdatedAt: OLD, idempotencyKey: KEY })).rejects.toMatchObject({ code: "conflict" });
+    expect(rpc.mock.calls.some(([name]) => name === "trash_workspace_entity")).toBe(false);
+  });
+
+  it.each(["space", "collection", "link"] as const)("rejects destructive operations with read-only %s membership", async (type) => {
+    const initial: WorkspaceSnapshot = structuredClone(INITIAL);
+    if (type === "space") initial.spaces[0].read_only = true;
+    if (type === "collection") initial.collections[0].read_only = true;
+    if (type === "link") initial.links[0] = { ...initial.links[0], origin: "browser-bookmark", read_only: true };
+    const { service, rpc } = trashSetup(initial);
+    await expect(service.prepareDeleteSpace({ spaceId: SPACE_ID })).rejects.toMatchObject({ code: "read_only" });
+    await expect(service.prepareDeleteCollection({ collectionId: COLLECTION_ID })).rejects.toMatchObject({ code: "read_only" });
+    await expect(service.deleteCollectionItem({ itemId: ITEM_ID, expectedUpdatedAt: NOW, idempotencyKey: KEY })).rejects.toMatchObject({ code: "read_only" });
+    expect(rpc.mock.calls.every(([name]) => name === "load_workspace_snapshot")).toBe(true);
+  });
+
+  it("lists decoded Trash entries using the request client", async () => {
+    const { service, rpc } = trashSetup();
+    expect(await service.listTrash()).toMatchObject([{ id: TRASH_ID, rootType: "link", rootId: ITEM_ID, restoredAt: null, snapshot: { links: [LINK] } }]);
+    expect(rpc).toHaveBeenCalledWith("list_workspace_trash");
+  });
+
+  it("excludes expired and restored Trash entries", async () => {
+    const { service, rpc } = trashSetup();
+    const original = rpc.getMockImplementation()!;
+    rpc.mockImplementation(async (name, args) => {
+      const response = await original(name, args);
+      if (name !== "list_workspace_trash") return response;
+      const [entry] = response.data as Array<Record<string, unknown>>;
+      return { data: [entry, { ...entry, restoredAt: NOW }, { ...entry, expiresAt: OLD }], error: null };
+    });
+    expect(await service.listTrash()).toHaveLength(1);
+  });
+
+  it("does not expose another owner's Trash snapshot", async () => {
+    const { service, trash } = trashSetup();
+    trash.snapshot.links = [{ ...LINK, user_id: KEY }];
+    await expect(service.listTrash()).rejects.toMatchObject({ code: "validation_failed" });
+  });
+
+  it("rejects foreign Trash rows before restoration", async () => {
+    const { service, trash, rpc, reads } = trashSetup();
+    trash.user_id = KEY;
+    await expect(service.restoreTrashItem({ trashId: TRASH_ID })).rejects.toMatchObject({ code: "not_found" });
+    expect(reads).toContainEqual({ table: "workspace_trash", filters: { user_id: USER, id: TRASH_ID } });
+    expect(rpc).not.toHaveBeenCalled();
+  });
+
+  it("rejects browser data in a recovery snapshot before writing", async () => {
+    const { service, trash, rpc } = trashSetup();
+    trash.snapshot.links = [{ ...LINK, read_only: true }];
+    await expect(service.restoreTrashItem({ trashId: TRASH_ID })).rejects.toMatchObject({ code: "validation_failed" });
+    expect(rpc).not.toHaveBeenCalled();
+  });
+
+  it("surfaces an expired Trash rejection without leaking database details", async () => {
+    const { service, rpc } = trashSetup();
+    const original = rpc.getMockImplementation()!;
+    rpc.mockImplementation((name, args) => name === "restore_workspace_trash"
+      ? Promise.resolve({ data: null, error: { code: "P0002", message: "expired trash private SQL token=secret" } }) : original(name, args));
+    const error = await service.restoreTrashItem({ trashId: TRASH_ID }).catch((value: unknown) => value);
+    expect(error).toMatchObject({ code: "not_found" });
+    expect(String(error)).not.toContain("secret");
+  });
+
+  it("returns structured destination_required when the original collection is missing", async () => {
+    const { service, rpc } = trashSetup({ ...INITIAL, collections: [], links: [] });
+    const original = rpc.getMockImplementation()!;
+    rpc.mockImplementation((name, args) => name === "restore_workspace_trash" ? Promise.resolve({ data: { status: "destination_required", trashId: TRASH_ID, rootType: "link", rootId: ITEM_ID, destinationType: "collection" }, error: null }) : original(name, args));
+    expect(await service.restoreTrashItem({ trashId: TRASH_ID })).toEqual({ status: "destination_required", trashId: TRASH_ID, rootType: "link", rootId: ITEM_ID, destinationType: "collection" });
+    expect(rpc).toHaveBeenCalledWith("restore_workspace_trash", { p_trash_id: TRASH_ID, p_destination_id: null });
+  });
+
+  it("restores into an alternate owned destination and returns stable IDs and server order", async () => {
+    const restored = { ...INITIAL, collections: [{ ...COLLECTION, id: DESTINATION_ID }], links: [{ ...LINK, collection_id: DESTINATION_ID, position: 2 }] };
+    const { service, rpc } = trashSetup(restored);
+    expect(await service.restoreTrashItem({ trashId: TRASH_ID, destinationId: DESTINATION_ID }))
+      .toMatchObject({ status: "restored", trashId: TRASH_ID, snapshot: { links: [{ id: ITEM_ID, collection_id: DESTINATION_ID, position: 2 }] } });
+    expect(rpc).toHaveBeenCalledWith("restore_workspace_trash", { p_trash_id: TRASH_ID, p_destination_id: DESTINATION_ID });
+  });
+
+  it("lets the database replay already-restored entries even if the old destination is gone", async () => {
+    const { service, trash, rpc } = trashSetup({ ...INITIAL, collections: [], links: [] });
+    trash.restored_at = LATER;
+    expect(await service.restoreTrashItem({ trashId: TRASH_ID, destinationId: DESTINATION_ID })).toMatchObject({ status: "restored", trashId: TRASH_ID });
+    expect(rpc).toHaveBeenCalledWith("restore_workspace_trash", { p_trash_id: TRASH_ID, p_destination_id: DESTINATION_ID });
+  });
+
+  it.each(["missing", "read_only"])("rejects a %s alternate restore destination before writing", async (kind) => {
+    const { service, rpc } = trashSetup({ ...INITIAL, collections: kind === "missing" ? [COLLECTION] : [COLLECTION, { ...COLLECTION, id: DESTINATION_ID, read_only: true }] });
+    await expect(service.restoreTrashItem({ trashId: TRASH_ID, destinationId: DESTINATION_ID })).rejects.toMatchObject({ code: kind === "missing" ? "not_found" : "read_only" });
+    expect(rpc.mock.calls.some(([name]) => name === "restore_workspace_trash")).toBe(false);
+  });
+
+  it.each(["list_workspace_trash", "prepare_workspace_delete", "trash_workspace_entity", "restore_workspace_trash"])("rejects malformed %s responses", async (badRpc) => {
+    const { service, rpc } = trashSetup();
+    const original = rpc.getMockImplementation()!;
+    rpc.mockImplementation((name, args) => name === badRpc ? Promise.resolve({ data: { secret: "private" }, error: null }) : original(name, args));
+    const call = badRpc === "list_workspace_trash" ? service.listTrash() : badRpc === "prepare_workspace_delete" ? service.prepareDeleteCollection({ collectionId: COLLECTION_ID })
+      : badRpc === "trash_workspace_entity" ? service.confirmDeleteCollection({ intentId: INTENT_ID }) : service.restoreTrashItem({ trashId: TRASH_ID });
+    await expect(call).rejects.toMatchObject({ code: "validation_failed" });
+  });
+});
 
 // Only the external database boundary is substituted. Commands, validation,
 // ownership filtering, replay handling, and concurrency decisions stay real.
