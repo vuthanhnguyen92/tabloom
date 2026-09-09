@@ -1,44 +1,51 @@
 import type { BrowserAdapter } from "./browser/types";
-
-type CollapsedByScope = Record<string, string[]>;
+import {
+  CollectionCollapsePreference as SharedCollectionCollapsePreference,
+  type OrganizerPreferenceStore,
+} from "../shared/organizer/preferences";
 
 const STORAGE_KEY = "tabloom:collapsed-collections:v1";
+const KEY_PREFIX = "tabloom:collapsed-collections:";
 
-function parseCollapsedByScope(value: unknown): CollapsedByScope {
+function parseCollapsedByScope(value: unknown): Record<string, string[]> {
   if (!value || typeof value !== "object" || Array.isArray(value)) return {};
   return Object.fromEntries(Object.entries(value).flatMap(([scope, ids]) =>
     Array.isArray(ids) ? [[scope, ids.filter((id): id is string => typeof id === "string")]] : [],
   ));
 }
 
-export class CollectionCollapsePreference {
-  private stored: Promise<CollapsedByScope> | null = null;
+function extensionCollectionCollapseStore(storage: BrowserAdapter["storage"]): OrganizerPreferenceStore {
+  let loaded: Promise<Record<string, string[]>> | null = null;
+  const collapsed = () => loaded ??= storage.get(STORAGE_KEY).then((result) => parseCollapsedByScope(result[STORAGE_KEY]));
+  const scopeFor = (key: string) => key.startsWith(KEY_PREFIX) ? key.slice(KEY_PREFIX.length) : key;
+  return {
+    async get(key) {
+      const value = (await collapsed())[scopeFor(key)];
+      return value ? JSON.stringify(value) : null;
+    },
+    async set(key, value) {
+      const next = await collapsed();
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(value);
+      } catch {
+        parsed = [];
+      }
+      next[scopeFor(key)] = Array.isArray(parsed)
+        ? parsed.filter((id): id is string => typeof id === "string")
+        : [];
+      await storage.set({ [STORAGE_KEY]: next });
+    },
+    async remove(key) {
+      const next = await collapsed();
+      delete next[scopeFor(key)];
+      await storage.set({ [STORAGE_KEY]: next });
+    },
+  };
+}
 
-  constructor(private readonly storage: BrowserAdapter["storage"]) {}
-
-  async setCollapsed(scope: string, collectionId: string, collapsed: boolean): Promise<void> {
-    const stored = await this.load();
-    const next = new Set(stored[scope] ?? []);
-    if (collapsed) next.add(collectionId);
-    else next.delete(collectionId);
-    stored[scope] = [...next].sort();
-    await this.storage.set({ [STORAGE_KEY]: stored });
-  }
-
-  async reconcile(scope: string, collectionIds: string[]): Promise<Set<string>> {
-    const stored = await this.load();
-    const available = new Set(collectionIds);
-    const previous = stored[scope] ?? [];
-    const next = previous.filter((id) => available.has(id));
-    if (next.length !== previous.length) {
-      stored[scope] = next;
-      await this.storage.set({ [STORAGE_KEY]: stored });
-    }
-    return new Set(next);
-  }
-
-  private load(): Promise<CollapsedByScope> {
-    this.stored ??= this.storage.get(STORAGE_KEY).then((result) => parseCollapsedByScope(result[STORAGE_KEY]));
-    return this.stored;
+export class CollectionCollapsePreference extends SharedCollectionCollapsePreference {
+  constructor(storage: BrowserAdapter["storage"]) {
+    super(extensionCollectionCollapseStore(storage));
   }
 }

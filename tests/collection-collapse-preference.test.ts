@@ -13,6 +13,8 @@ function createStorage() {
   };
 }
 
+const COLLAPSED_COLLECTIONS_STORAGE_KEY = "tabloom:collapsed-collections:v1";
+
 describe("CollectionCollapsePreference", () => {
   it("remembers collapsed collections separately for local and signed-in workspaces", async () => {
     const storage = createStorage();
@@ -36,5 +38,15 @@ describe("CollectionCollapsePreference", () => {
 
     const restored = new CollectionCollapsePreference(storage);
     expect(await restored.reconcile("local", ["collection-deleted", "collection-kept"])).toEqual(new Set(["collection-kept"]));
+  });
+
+  it("keeps the existing extension storage key and value shape", async () => {
+    const storage = createStorage();
+
+    await new CollectionCollapsePreference(storage).setCollapsed("local", "collection-one", true);
+
+    await expect(storage.get(COLLAPSED_COLLECTIONS_STORAGE_KEY)).resolves.toEqual({
+      [COLLAPSED_COLLECTIONS_STORAGE_KEY]: { local: ["collection-one"] },
+    });
   });
 });

@@ -1,42 +1,40 @@
 import type { BrowserAdapter } from "./browser/types";
-
-type SpaceIdentity = { id: string };
-type Selections = Record<string, string>;
+import {
+  SelectedSpacePreference as SharedSelectedSpacePreference,
+  type OrganizerPreferenceStore,
+} from "../shared/organizer/preferences";
 
 const STORAGE_KEY = "tabloom:selected-spaces:v1";
+const KEY_PREFIX = "tabloom:selected-space:";
 
-function parseSelections(value: unknown): Selections {
+function parseSelections(value: unknown): Record<string, string> {
   if (!value || typeof value !== "object" || Array.isArray(value)) return {};
   return Object.fromEntries(Object.entries(value).filter((entry): entry is [string, string] => typeof entry[1] === "string"));
 }
 
-export class SelectedSpacePreference {
-  private readonly selected = new Map<string, string>();
-  private stored: Promise<Selections> | null = null;
+function extensionSelectedSpaceStore(storage: BrowserAdapter["storage"]): OrganizerPreferenceStore {
+  let loaded: Promise<Record<string, string>> | null = null;
+  const selections = () => loaded ??= storage.get(STORAGE_KEY).then((result) => parseSelections(result[STORAGE_KEY]));
+  const scopeFor = (key: string) => key.startsWith(KEY_PREFIX) ? key.slice(KEY_PREFIX.length) : key;
+  return {
+    async get(key) {
+      return (await selections())[scopeFor(key)] ?? null;
+    },
+    async set(key, value) {
+      const next = await selections();
+      next[scopeFor(key)] = value;
+      await storage.set({ [STORAGE_KEY]: next });
+    },
+    async remove(key) {
+      const next = await selections();
+      delete next[scopeFor(key)];
+      await storage.set({ [STORAGE_KEY]: next });
+    },
+  };
+}
 
-  constructor(private readonly storage: BrowserAdapter["storage"]) {}
-
-  async select(scope: string, spaceId: string): Promise<void> {
-    this.selected.set(scope, spaceId);
-    const selections = await this.load();
-    selections[scope] = this.selected.get(scope) ?? spaceId;
-    await this.storage.set({ [STORAGE_KEY]: selections });
-  }
-
-  async reconcile(scope: string, spaces: SpaceIdentity[]): Promise<string> {
-    const selections = await this.load();
-    const preferred = this.selected.get(scope) ?? selections[scope] ?? "";
-    const resolved = spaces.some((space) => space.id === preferred) ? preferred : spaces[0]?.id ?? "";
-    this.selected.set(scope, resolved);
-    if (selections[scope] !== resolved) {
-      selections[scope] = resolved;
-      await this.storage.set({ [STORAGE_KEY]: selections });
-    }
-    return resolved;
-  }
-
-  private load(): Promise<Selections> {
-    this.stored ??= this.storage.get(STORAGE_KEY).then((result) => parseSelections(result[STORAGE_KEY]));
-    return this.stored;
+export class SelectedSpacePreference extends SharedSelectedSpacePreference {
+  constructor(storage: BrowserAdapter["storage"]) {
+    super(extensionSelectedSpaceStore(storage));
   }
 }
