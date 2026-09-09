@@ -1,5 +1,5 @@
 import { decodeWorkspaceSnapshot } from "./repository";
-import type { Collection, SavedLink, Space, WorkspaceSnapshot } from "./domain";
+import { isSaveableUrl, type Collection, type SavedLink, type Space, type WorkspaceSnapshot } from "./domain";
 
 export type TrashRootType = "space" | "collection" | "link";
 export type TrashSource = "web" | "extension" | "mcp";
@@ -27,8 +27,7 @@ export type WorkspaceTrashEntry = {
   snapshot: TrashSnapshot;
 };
 
-export type TrashSnapshotDestination = { spaceId?: string; collectionId?: string };
-export type RestoreDestination = TrashSnapshotDestination;
+export type RestoreDestination = { spaceId?: string; collectionId?: string };
 
 export type DeleteReceipt = {
   operationId: string;
@@ -79,11 +78,41 @@ function timestamp(value: unknown): value is string { return string(value) && Nu
 function fail(kind: string): never { throw new Error(`invalid ${kind}`); }
 function enumValue<T extends string>(value: unknown, values: Set<T>): value is T { return string(value) && values.has(value as T); }
 
+const ORIGINS = new Set(["saved", "browser-bookmark"]);
+function domainMeta(value: Record<string, unknown>): boolean {
+  return enumValue(value.origin, ORIGINS) && typeof value.read_only === "boolean";
+}
+function domainBase(value: Record<string, unknown>): boolean {
+  return string(value.id) && string(value.user_id)
+    && Number.isInteger(value.position) && (value.position as number) >= 0
+    && timestamp(value.created_at) && timestamp(value.updated_at) && domainMeta(value);
+}
+function validSpace(value: unknown): value is Space {
+  const item = object(value);
+  return !!item && exact(item, ["id", "user_id", "name", "color", "position", "created_at", "updated_at", "origin", "read_only"])
+    && string(item.name) && string(item.color) && domainBase(item);
+}
+function validCollection(value: unknown): value is Collection {
+  const item = object(value);
+  return !!item && exact(item, ["id", "user_id", "space_id", "name", "position", "created_at", "updated_at", "origin", "read_only"])
+    && string(item.space_id) && string(item.name) && domainBase(item);
+}
+function validLink(value: unknown): value is SavedLink {
+  const item = object(value);
+  const exactKeys = item && (exact(item, ["id", "user_id", "collection_id", "url", "title", "description", "favicon_url", "position", "created_at", "updated_at", "origin", "read_only"])
+    || exact(item, ["id", "user_id", "collection_id", "url", "title", "description", "favicon_url", "position", "created_at", "updated_at", "origin", "read_only", "device_label"]));
+  return !!item && !!exactKeys && string(item.collection_id) && isSaveableUrl(string(item.url) ? item.url : null)
+    && string(item.url) && string(item.title) && string(item.description)
+    && (item.favicon_url === null || string(item.favicon_url))
+    && (item.device_label === undefined || item.device_label === null || string(item.device_label)) && domainBase(item);
+}
+
 export function decodeTrashSnapshot(value: unknown): TrashSnapshot {
   const candidate = object(value);
   if (!candidate || !exact(candidate, ["version", "rootType", "spaces", "collections", "links"])
     || candidate.version !== 1 || !enumValue(candidate.rootType, ROOT_TYPES)
     || !Array.isArray(candidate.spaces) || !Array.isArray(candidate.collections) || !Array.isArray(candidate.links)) fail("trash snapshot");
+  if (!candidate.spaces.every(validSpace) || !candidate.collections.every(validCollection) || !candidate.links.every(validLink)) fail("trash snapshot");
   let snapshot: WorkspaceSnapshot;
   try { snapshot = decodeWorkspaceSnapshot({ spaces: candidate.spaces, collections: candidate.collections, links: candidate.links }); }
   catch { fail("trash snapshot"); }
@@ -97,9 +126,12 @@ export function decodeTrashEntry(value: unknown): WorkspaceTrashEntry {
     || !string(candidate.rootName) || !enumValue(candidate.source, SOURCES)
     || !timestamp(candidate.deletedAt) || !timestamp(candidate.expiresAt)
     || (candidate.restoredAt !== null && !timestamp(candidate.restoredAt))) fail("trash entry");
+  const snapshot = decodeTrashSnapshot(candidate.snapshot);
+  const roots = snapshot.rootType === "space" ? snapshot.spaces : snapshot.rootType === "collection" ? snapshot.collections : snapshot.links;
+  if (candidate.rootType !== snapshot.rootType || !roots.some((item) => item.id === candidate.rootId)) fail("trash entry");
   return { id: candidate.id, rootType: candidate.rootType, rootId: candidate.rootId, rootName: candidate.rootName,
     source: candidate.source, deletedAt: candidate.deletedAt, expiresAt: candidate.expiresAt,
-    restoredAt: candidate.restoredAt, snapshot: decodeTrashSnapshot(candidate.snapshot) };
+    restoredAt: candidate.restoredAt, snapshot };
 }
 
 export function decodeDeleteReceipt(value: unknown): DeleteReceipt {

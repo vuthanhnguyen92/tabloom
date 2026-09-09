@@ -41,3 +41,27 @@ The public contract fields match the task brief. Runtime decoders return newly s
 ## Concerns
 
 The brief did not specify the fields of `RestoreDestination`; it is represented as an object with optional `spaceId` and `collectionId` fields so future restore flows can require the relevant destination without constraining link/collection restoration prematurely. The existing domain snapshot decoder is intentionally reused as required, though its own record-level validation remains permissive.
+
+## Round 1 review fixes
+
+Added a focused valid entry/snapshot fixture and regression coverage for malformed nested space records and inconsistent entry root metadata. The implementation now validates nested Space, Collection, and SavedLink records (including exact keys, metadata, positions, timestamps, and saveable URLs) before delegating to `decodeWorkspaceSnapshot`. Entry decoding also requires the entry root type to equal the snapshot root type and the root ID to exist in the corresponding snapshot array. Removed the redundant `TrashSnapshotDestination` alias.
+
+RED evidence:
+
+```text
+$ rtk npx vitest run tests/trash.test.ts
+Test Files  1 failed (1)
+Tests       1 failed | 6 passed (7)
+Failure: expected [Function] to throw an error
+```
+
+GREEN evidence:
+
+```text
+$ rtk npx vitest run tests/trash.test.ts tests/domain.test.ts
+Test Files  2 passed (2)
+Tests       20 passed (20)
+
+$ rtk npx tsc --noEmit
+TypeScript: No errors found
+```
