@@ -18,7 +18,15 @@ export type MoveLinkInput = {
   destinationCollectionId: string;
   sourceOrderedIds: string[];
   destinationOrderedIds: string[];
+  /** Structural revision captured before the optimistic move, excluding content fields. */
+  expectedSource: Pick<SavedLink, "id" | "position">[];
+  expectedDestination: Pick<SavedLink, "id" | "position">[];
 };
+
+/** An atomic write was rejected because its structural precondition changed. */
+export class WorkspaceConflictError extends Error {
+  constructor() { super("Workspace changed elsewhere."); this.name = "WorkspaceConflictError"; }
+}
 
 export interface WorkspaceRepository {
   load(): Promise<WorkspaceSnapshot>;
@@ -47,7 +55,11 @@ const markSaved = <T extends object>(value: T): T & WorkspaceRecordMeta => ({ ..
 
 function movedLinks(snapshot: WorkspaceSnapshot, input: MoveLinkInput): SavedLink[] {
   const source = snapshot.links.find((item) => item.id === input.id);
-  if (!source || source.collection_id !== input.sourceCollectionId || input.sourceCollectionId === input.destinationCollectionId) throw new Error("Move source changed.");
+  if (!source || source.collection_id !== input.sourceCollectionId || input.sourceCollectionId === input.destinationCollectionId) throw new WorkspaceConflictError();
+  for (const [parent, expected] of [[input.sourceCollectionId, input.expectedSource], [input.destinationCollectionId, input.expectedDestination]] as const) {
+    const current = snapshot.links.filter((item) => item.collection_id === parent);
+    if (current.length !== expected.length || new Set(expected.map((item) => item.id)).size !== expected.length || current.some((item) => !expected.some((entry) => entry.id === item.id && entry.position === item.position))) throw new WorkspaceConflictError();
+  }
   for (const id of [input.sourceCollectionId, input.destinationCollectionId]) {
     const collection = snapshot.collections.find((item) => item.id === id);
     const space = snapshot.spaces.find((item) => item.id === collection?.space_id);
@@ -150,9 +162,12 @@ export class SupabaseWorkspaceRepository implements WorkspaceRepository {
   async reorderCollections(spaceId: string, orderedIds: string[]) { const snapshot = await this.load(); const rows = snapshot.collections.filter((item) => item.origin === "saved" && item.space_id === spaceId && orderedIds.includes(item.id)).map((item) => ({ id: item.id, user_id: item.user_id, space_id: item.space_id, name: item.name, position: orderedIds.indexOf(item.id), created_at: item.created_at, updated_at: stamp() })); const result = await this.client.from("collections").upsert(rows); throwIfError(result.error); }
   async reorderLinks(collectionId: string, orderedIds: string[]) { const snapshot = await this.load(); const rows = snapshot.links.filter((item) => item.origin === "saved" && orderedIds.includes(item.id)).map((item) => ({ id: item.id, user_id: item.user_id, collection_id: collectionId, url: item.url, title: item.title, description: item.description, favicon_url: item.favicon_url, position: orderedIds.indexOf(item.id), created_at: item.created_at, updated_at: stamp() })); const result = await this.client.from("links").upsert(rows); throwIfError(result.error); }
   async moveLink(input: MoveLinkInput) {
-    const rows = movedLinks(await this.load(), input).map((item) => ({ id: item.id, user_id: item.user_id, collection_id: item.collection_id, url: item.url, title: item.title, description: item.description, favicon_url: item.favicon_url, position: item.position, created_at: item.created_at, updated_at: item.updated_at }));
-    // One PostgREST upsert is one PostgreSQL statement/transaction, including both parents.
-    const result = await this.client.from("links").upsert(rows);
+    const result = await this.client.rpc("move_workspace_link", {
+      p_link_id: input.id, p_source_collection_id: input.sourceCollectionId, p_destination_collection_id: input.destinationCollectionId,
+      p_expected_source: input.expectedSource, p_expected_destination: input.expectedDestination,
+      p_source_ordered_ids: input.sourceOrderedIds, p_destination_ordered_ids: input.destinationOrderedIds,
+    });
+    if (result.error && ["40001", "40P01", "P0002"].includes(result.error.code)) throw new WorkspaceConflictError();
     throwIfError(result.error);
   }
 }

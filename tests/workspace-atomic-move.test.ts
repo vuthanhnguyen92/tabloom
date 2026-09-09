@@ -1,10 +1,10 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { createDemoSnapshot } from "../shared/domain";
 import { MemoryWorkspaceRepository, SupabaseWorkspaceRepository } from "../shared/repository";
 
 const initial = createDemoSnapshot();
-const move = { id: "link-0", sourceCollectionId: "collection-plan", destinationCollectionId: "collection-design", sourceOrderedIds: ["link-1", "link-2"], destinationOrderedIds: ["link-3", "link-0", "link-4", "link-5"] };
+const move = { id: "link-0", sourceCollectionId: "collection-plan", destinationCollectionId: "collection-design", sourceOrderedIds: ["link-1", "link-2"], destinationOrderedIds: ["link-3", "link-0", "link-4", "link-5"], expectedSource: initial.links.filter((item) => item.collection_id === "collection-plan").map(({ id, position }) => ({ id, position })), expectedDestination: initial.links.filter((item) => item.collection_id === "collection-design").map(({ id, position }) => ({ id, position })) };
 
 describe("atomic workspace moves", () => {
   it("moves and normalizes both collections in memory and rejects stale source orders without changes", async () => {
@@ -17,26 +17,26 @@ describe("atomic workspace moves", () => {
     expect(await repository.load()).toEqual(snapshot);
   });
 
-  it.each([false, true])("uses one Supabase statement for both collections (reject=%s)", async (reject) => {
-    let saved = structuredClone(initial);
-    const writes: unknown[] = [];
-    const client = { from: () => ({ upsert: async (rows: typeof initial.links) => {
-      writes.push(rows);
-      if (reject) return { error: { message: "row constraint" } };
-      saved = { ...saved, links: saved.links.map((link) => ({ ...link, ...rows.find((row) => row.id === link.id) })) };
-      return { error: null };
-    } }) } as unknown as SupabaseClient;
+  it("rejects a stale structural snapshot without overwriting a concurrent reorder", async () => {
+    const repository = new MemoryWorkspaceRepository("demo-user", initial);
+    await repository.reorderLinks("collection-plan", ["link-2", "link-1", "link-0"]);
+    const reordered = await repository.load();
+    await expect(repository.moveLink(move)).rejects.toThrow(/changed/i);
+    expect(await repository.load()).toEqual(reordered);
+  });
+
+  it.each([null, { code: "40001", message: "workspace move structure changed" }, { code: "40P01", message: "deadlock detected" }, { code: "P0002", message: "workspace collection not found" }])("uses only the conflict-aware RPC with captured structural expectations (error=%s)", async (error) => {
+    const rpc = vi.fn(async () => ({ data: error ? null : 42, error }));
+    const from = vi.fn(() => { throw new Error("Moves must never read/upsert full rows"); });
+    const client = { rpc, from } as unknown as SupabaseClient;
     const repository = new SupabaseWorkspaceRepository(client, "demo-user");
-    repository.load = async () => structuredClone(saved);
-    if (reject) await expect(repository.moveLink(move)).rejects.toThrow("row constraint");
+    if (error) await expect(repository.moveLink(move)).rejects.toMatchObject({ name: "WorkspaceConflictError" });
     else await repository.moveLink(move);
-    expect(writes).toHaveLength(1);
-    expect(writes[0]).toEqual(expect.arrayContaining([
-      expect.objectContaining({ id: "link-0", collection_id: "collection-design", position: 1 }),
-      expect.objectContaining({ id: "link-1", collection_id: "collection-plan", position: 0 }),
-      expect.objectContaining({ id: "link-2", collection_id: "collection-plan", position: 1 }),
-    ]));
-    if (reject) expect(saved).toEqual(initial);
-    else expect(saved.links.find((item) => item.id === "link-0")?.collection_id).toBe("collection-design");
+    expect(from).not.toHaveBeenCalled();
+    expect(rpc).toHaveBeenCalledExactlyOnceWith("move_workspace_link", {
+      p_link_id: move.id, p_source_collection_id: move.sourceCollectionId, p_destination_collection_id: move.destinationCollectionId,
+      p_expected_source: move.expectedSource, p_expected_destination: move.expectedDestination,
+      p_source_ordered_ids: move.sourceOrderedIds, p_destination_ordered_ids: move.destinationOrderedIds,
+    });
   });
 });

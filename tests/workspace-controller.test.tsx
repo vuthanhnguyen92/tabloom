@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 import { createDemoSnapshot } from "../shared/domain";
-import { MemoryWorkspaceRepository } from "../shared/repository";
+import { MemoryWorkspaceRepository, SupabaseWorkspaceRepository } from "../shared/repository";
 import type { WorkspaceTrashRepository } from "../shared/trash-repository";
 import { webOrganizerCapabilities } from "../shared/organizer/capabilities";
 import { createWebPreferenceStore } from "../shared/organizer/preferences";
@@ -239,6 +239,22 @@ describe("workspace controller", () => {
     await act(async () => { firstRead.resolve(await load()); await second; });
     expect((await load()).links.filter((item) => item.collection_id === "collection-design").map((item) => item.position)).toEqual([0, 1, 2]);
     expect((await load()).links.find((item) => item.id === link.id)?.collection_id).toBe("collection-learn");
+  });
+
+  it.each([false, true])("reconciles a concurrent server delete after rejected move (refresh fails=%s)", async (refreshFails) => {
+    const { options } = setup();
+    const repository = new SupabaseWorkspaceRepository({ rpc: async () => ({ data: null, error: { code: "40001", message: "workspace move structure changed" } }) } as unknown as SupabaseClient, "demo-user");
+    const canonical = { ...snapshot, links: snapshot.links.filter((item) => item.id !== link.id) };
+    let reads = 0;
+    repository.load = async () => { if (!reads++) return snapshot; if (refreshFails) throw new Error("offline"); return canonical; };
+    const { result } = renderHook(() => useWorkspaceController({ ...options, repository }));
+    await waitFor(() => expect(result.current.ready).toBe(true));
+    await act(async () => { await result.current.moveLink(link.id, "collection-design", 0); });
+    expect(result.current.snapshot).toEqual(refreshFails ? snapshot : canonical);
+    expect(result.current.toasts.at(-1)?.message).toMatch(/changed elsewhere/i);
+    expect(result.current.refreshRequired).toBe(refreshFails);
+    expect(result.current.retryRequired).toBe(false);
+    if (refreshFails) expect(result.current.toasts.at(-1)?.action?.label).toBe("Refresh");
   });
 
   it("holds Add link interactions until an optimistic collection receives its canonical ID", async () => {

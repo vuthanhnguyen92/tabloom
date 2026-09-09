@@ -43,7 +43,7 @@ describe("LocalFirstWorkspaceRepository", () => {
     const first = await repository.createLink({ collection_id: COLLECTION_ID, title: "First", url: "https://example.com/first", description: "", favicon_url: null });
     const second = await repository.createLink({ collection_id: COLLECTION_ID, title: "Second", url: "https://example.com/second", description: "", favicon_url: null });
     onMutation.mockImplementationOnce(async () => { throw new Error("offline"); });
-    await expect(repository.moveLink({ id: first.id, sourceCollectionId: COLLECTION_ID, destinationCollectionId: target.id, sourceOrderedIds: [second.id], destinationOrderedIds: [first.id] })).rejects.toThrow("offline");
+    await expect(repository.moveLink({ id: first.id, sourceCollectionId: COLLECTION_ID, destinationCollectionId: target.id, sourceOrderedIds: [second.id], destinationOrderedIds: [first.id], expectedSource: [{ id: first.id, position: first.position }, { id: second.id, position: second.position }], expectedDestination: [] })).rejects.toThrow("offline");
     const local = await storage.loadOrThrow();
     expect(local.snapshot.links.find((item) => item.id === first.id)).toMatchObject({ collection_id: target.id, position: 0 });
     expect(local.snapshot.links.find((item) => item.id === second.id)).toMatchObject({ collection_id: COLLECTION_ID, position: 0 });

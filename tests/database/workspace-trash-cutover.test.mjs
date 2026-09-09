@@ -80,6 +80,15 @@ test("operator Trash privilege cutover against local Supabase", async (t) => {
       for (const table of tables) await rejectsSql(`delete from public.${table}`, "42501");
       assert.equal((await client.query("select id from public.links where id=$1", [link])).rowCount, 1);
     });
+    await t.test("atomic structural move still works after direct DELETE is revoked", async () => {
+      const destination = randomUUID();
+      await client.query("insert into public.collections(id,user_id,space_id,name,position) values($1,$2,$3,'Move target',1)", [destination, owner, space]);
+      const move = async (from, to) => client.query("select public.move_workspace_link($1,$2,$3,$4::jsonb,'[]','{}',$5::uuid[])", [link, from, to, JSON.stringify([{ id: link, position: 0 }]), [link]]);
+      await move(collection, destination);
+      assert.equal((await client.query("select collection_id from public.links where id=$1", [link])).rows[0].collection_id, destination);
+      await move(destination, collection);
+      assert.equal((await client.query("select collection_id from public.links where id=$1", [link])).rows[0].collection_id, collection);
+    });
     await t.test("authenticated Trash delete/list/restore and extension sync still work after cutover", async () => {
       const intent = (await client.query("select public.prepare_workspace_delete('collection',$1) as value", [collection])).rows[0].value;
       const receipt = (await client.query("select public.trash_workspace_entity('collection',$1,'web',$2,$3) as value", [collection, randomUUID(), intent.intentId])).rows[0].value;

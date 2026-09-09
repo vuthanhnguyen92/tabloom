@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { findDuplicateLink, type Collection, type SavedLink, type WorkspaceSnapshot } from "../domain";
-import type { WebWorkspaceRepository } from "../repository";
+import { WorkspaceConflictError, type WebWorkspaceRepository } from "../repository";
 import type { DeleteIntent, DeleteReceipt, TrashSource } from "../trash";
 import { CommittedRestoreRefreshError } from "../trash";
 import type { WorkspaceTrashRepository } from "../trash-repository";
@@ -141,6 +141,16 @@ export function useWorkspaceController(options: WorkspaceControllerOptions) {
           if (error instanceof CommittedRestoreRefreshError) {
             setRefreshRequired(true);
             setToasts((items) => [...items.filter((toast) => toast.id !== "workspace-refresh"), { id: "workspace-refresh", message: "Restored, but the workspace needs a refresh.", tone: "error", persistent: true, action: { label: "Refresh", onAction: () => { void reload(); } } }]);
+          } else if (error instanceof WorkspaceConflictError && mutationPolicy === "rollbackOnFailure") {
+            publish(before, session.selectionVersion === selectionVersion ? selected : session.selected);
+            try {
+              publish(await repository.load());
+              notify("Workspace changed elsewhere. Please try the move again.", "error");
+            } catch {
+              if (!session.active) return;
+              setRefreshRequired(true);
+              setToasts((items) => [...items.filter((toast) => toast.id !== "workspace-refresh"), { id: "workspace-refresh", message: "Workspace changed elsewhere. Refresh before trying again.", tone: "error", persistent: true, action: { label: "Refresh", onAction: () => { void reload(); } } }]);
+            }
           } else {
             if (pendingId && mutationPolicy === "rollbackOnFailure") session.pendingIds.delete(pendingId);
             failure(mutationPolicy, before, optimistic, session.selectionVersion === selectionVersion ? selected : session.selected);
@@ -259,7 +269,12 @@ export function useWorkspaceController(options: WorkspaceControllerOptions) {
       const source = before.links.find((item) => item.id === id)!;
       const destinationOrderedIds = order(optimistic.links.filter((item) => item.collection_id === collectionId)).map((item) => item.id);
       if (source.collection_id === collectionId) await repository.reorderLinks(collectionId, destinationOrderedIds);
-      else await repository.moveLink({ id, sourceCollectionId: source.collection_id, destinationCollectionId: collectionId, destinationOrderedIds, sourceOrderedIds: order(optimistic.links.filter((item) => item.collection_id === source.collection_id)).map((item) => item.id) });
+      else await repository.moveLink({
+        id, sourceCollectionId: source.collection_id, destinationCollectionId: collectionId, destinationOrderedIds,
+        sourceOrderedIds: order(optimistic.links.filter((item) => item.collection_id === source.collection_id)).map((item) => item.id),
+        expectedSource: before.links.filter((item) => item.collection_id === source.collection_id).map(({ id, position }) => ({ id, position })),
+        expectedDestination: before.links.filter((item) => item.collection_id === collectionId).map(({ id, position }) => ({ id, position })),
+      });
     }, "Link moved");
     const duplicate = findDuplicateLink(session.snapshot.links, collectionId, link.url, id);
     if (link.collection_id !== collectionId && duplicate) { openDialog({ type: "duplicate-link", title: duplicate.title, actionLabel: "Move anyway" }); duplicateAction.current = run; return Promise.resolve(undefined); }
