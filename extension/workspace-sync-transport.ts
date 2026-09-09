@@ -15,6 +15,8 @@ export type OperationOutcome = {
   operationId: string;
   status: "applied" | "already_applied" | "deleted" | "rejected";
   message?: string;
+  trashId?: string;
+  restoreUntil?: string;
 };
 
 export type ApplyOperationsResult = {
@@ -130,7 +132,10 @@ function isOutcome(value: unknown): value is OperationOutcome {
   return isRecord(value)
     && UUID_PATTERN.test(String(value.operationId))
     && ["applied", "already_applied", "deleted", "rejected"].includes(String(value.status))
-    && (value.message === undefined || typeof value.message === "string");
+    && (value.message === undefined || typeof value.message === "string")
+    && ((value.trashId === undefined && value.restoreUntil === undefined)
+      || (typeof value.trashId === "string" && UUID_PATTERN.test(value.trashId)
+        && typeof value.restoreUntil === "string" && Number.isFinite(Date.parse(value.restoreUntil))));
 }
 
 function isConflict(value: unknown): value is ApplyOperationsResult["conflicts"][number] {

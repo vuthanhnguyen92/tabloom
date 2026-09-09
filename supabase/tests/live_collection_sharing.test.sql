@@ -145,7 +145,9 @@ select lives_ok(
 );
 select set_config('app.cascade_share_token', (select token from public.collection_shares), true);
 select lives_ok(
-  $$ delete from public.collections where id = '20000000-0000-4000-8000-00000000000a' $$,
+  $$ select public.trash_workspace_entity('collection', '20000000-0000-4000-8000-00000000000a', 'web',
+    '40000000-0000-4000-8000-000000000033',
+    (public.prepare_workspace_delete('collection', '20000000-0000-4000-8000-00000000000a')->>'intentId')::uuid) $$,
   'owner can delete a shared collection'
 );
 select is((select count(*) from public.collection_shares), 0::bigint, 'collection deletion cascades to the share');

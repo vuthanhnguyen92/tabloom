@@ -29,6 +29,8 @@ export interface WorkspaceRepository {
   reorderLinks(collectionId: string, orderedIds: string[]): Promise<void>;
 }
 
+export type WebWorkspaceRepository = Omit<WorkspaceRepository, "deleteSpace" | "deleteCollection" | "deleteLink">;
+
 const stamp = () => new Date().toISOString();
 const id = () => globalThis.crypto.randomUUID();
 const clone = <T>(value: T): T => structuredClone(value);
@@ -87,10 +89,10 @@ export class SupabaseWorkspaceRepository implements WorkspaceRepository {
   private async insert<T>(table: string, value: Record<string, unknown>): Promise<T> { const result = await this.client.from(table).insert({ ...value, user_id: this.userId }).select().single(); throwIfError(result.error); return result.data as T; }
   async createSpace(input: CreateSpaceInput) { const count = await this.client.from("spaces").select("id", { count: "exact", head: true }); throwIfError(count.error); return markSaved(await this.insert<Omit<Space, keyof WorkspaceRecordMeta>>("spaces", { ...input, position: count.count ?? 0 })); }
   async updateSpace(spaceId: string, input: Partial<Pick<Space, "name" | "color">>) { const result = await this.client.from("spaces").update({ ...input, updated_at: stamp() }).eq("id", spaceId); throwIfError(result.error); }
-  async deleteSpace(spaceId: string) { const result = await this.client.from("spaces").delete().eq("id", spaceId); throwIfError(result.error); }
+  async deleteSpace(spaceId: string): Promise<void> { throw new Error(`Use WorkspaceTrashRepository.deleteEntity to delete space ${spaceId} with a recoverable receipt.`); }
   async createCollection(input: CreateCollectionInput) { const count = await this.client.from("collections").select("id", { count: "exact", head: true }).eq("space_id", input.space_id); throwIfError(count.error); return markSaved(await this.insert<Omit<Collection, keyof WorkspaceRecordMeta>>("collections", { ...input, position: count.count ?? 0 })); }
   async updateCollection(collectionId: string, input: Partial<Pick<Collection, "name">>) { const result = await this.client.from("collections").update({ ...input, updated_at: stamp() }).eq("id", collectionId); throwIfError(result.error); }
-  async deleteCollection(collectionId: string) { const result = await this.client.from("collections").delete().eq("id", collectionId); throwIfError(result.error); }
+  async deleteCollection(collectionId: string): Promise<void> { throw new Error(`Use WorkspaceTrashRepository.deleteEntity to delete collection ${collectionId} with a recoverable receipt.`); }
   async createLink(input: CreateLinkInput) { if (!isSaveableUrl(input.url)) throw new Error("Only http and https links can be saved."); const count = await this.client.from("links").select("id", { count: "exact", head: true }).eq("collection_id", input.collection_id); throwIfError(count.error); return { ...markSaved(await this.insert<Omit<SavedLink, keyof WorkspaceRecordMeta | "device_label">>("links", { ...input, position: count.count ?? 0 })), device_label: null }; }
   async createLinks(input: CreateLinkInput[]) {
     if (!input.every((item) => isSaveableUrl(item.url))) throw new Error("Only http and https links can be saved.");
@@ -109,7 +111,7 @@ export class SupabaseWorkspaceRepository implements WorkspaceRepository {
     throwIfError(result.error);
   }
   async updateLink(linkId: string, input: Partial<CreateLinkInput>) { if (input.url && !isSaveableUrl(input.url)) throw new Error("Only http and https links can be saved."); const result = await this.client.from("links").update({ ...input, updated_at: stamp() }).eq("id", linkId); throwIfError(result.error); }
-  async deleteLink(linkId: string) { const result = await this.client.from("links").delete().eq("id", linkId); throwIfError(result.error); }
+  async deleteLink(linkId: string): Promise<void> { throw new Error(`Use WorkspaceTrashRepository.deleteEntity to delete link ${linkId} with a recoverable receipt.`); }
   async reorderCollections(spaceId: string, orderedIds: string[]) { const snapshot = await this.load(); const rows = snapshot.collections.filter((item) => item.origin === "saved" && item.space_id === spaceId && orderedIds.includes(item.id)).map((item) => ({ id: item.id, user_id: item.user_id, space_id: item.space_id, name: item.name, position: orderedIds.indexOf(item.id), created_at: item.created_at, updated_at: stamp() })); const result = await this.client.from("collections").upsert(rows); throwIfError(result.error); }
   async reorderLinks(collectionId: string, orderedIds: string[]) { const snapshot = await this.load(); const rows = snapshot.links.filter((item) => item.origin === "saved" && orderedIds.includes(item.id)).map((item) => ({ id: item.id, user_id: item.user_id, collection_id: collectionId, url: item.url, title: item.title, description: item.description, favicon_url: item.favicon_url, position: orderedIds.indexOf(item.id), created_at: item.created_at, updated_at: stamp() })); const result = await this.client.from("links").upsert(rows); throwIfError(result.error); }
 }

@@ -130,6 +130,10 @@ describe("SupabaseWorkspaceSyncTransport", () => {
 
   it.each([
     { outcomes: [{ operationId: "bad", status: "applied" }] },
+    { outcomes: [{ operationId: OPERATION_ID, status: "applied", trashId: "bad", restoreUntil: timestamp }] },
+    { outcomes: [{ operationId: OPERATION_ID, status: "applied", trashId: SPACE_ID, restoreUntil: "bad" }] },
+    { outcomes: [{ operationId: OPERATION_ID, status: "applied", trashId: SPACE_ID }] },
+    { outcomes: [{ operationId: OPERATION_ID, status: "applied", restoreUntil: timestamp }] },
     { outcomes: [{ operationId: OPERATION_ID, status: "unknown" }] },
     { patches: { spaces: [{ ...rawSpace, position: "zero" }], collections: [], links: [] } },
     { tombstones: [{ entity: "space", entityId: "bad", deletedRevision: 1, deletedAt: timestamp }] },
@@ -147,6 +151,12 @@ describe("SupabaseWorkspaceSyncTransport", () => {
     });
     await expect(new SupabaseWorkspaceSyncTransport(client).applyOperations([operation], 7))
       .rejects.toThrow("invalid workspace sync response");
+  });
+
+  it.each(["applied", "already_applied"])("preserves an optional Trash receipt on %s delete outcomes", async (status) => {
+    const outcome = { operationId: OPERATION_ID, status, trashId: SPACE_ID, restoreUntil: timestamp };
+    const { client } = clientWith({ data: { revision: 8, outcomes: [outcome], patches: { spaces: [], collections: [], links: [] }, tombstones: [], conflicts: [] }, error: null });
+    await expect(new SupabaseWorkspaceSyncTransport(client).applyOperations([{ ...operation, action: "delete", payload: {} }], 7)).resolves.toMatchObject({ outcomes: [outcome] });
   });
 
   it("requires tombstones in canonical responses", async () => {

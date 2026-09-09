@@ -1,6 +1,7 @@
 begin;
+set local client_min_messages = warning;
 
-select plan(52);
+select no_plan();
 
 select has_table('public', 'workspace_operations', 'applied operation table exists');
 select has_table('public', 'workspace_tombstones', 'workspace tombstone table exists');
@@ -128,6 +129,12 @@ select is((select count(*) from public.collections), 0::bigint, 'collection is d
 select is((select count(*) from public.links), 0::bigint, 'collection delete cascades links');
 select is((select count(*) from public.workspace_tombstones), 4::bigint, 'collection and descendant receive tombstones');
 select is((select revision from public.workspace_sync_state), 4::bigint, 'delete batch increments revision once');
+select is((select count(*) from public.workspace_trash where created_operation_id='40000000-0000-4000-8000-000000000006' and source='extension'), 1::bigint, 'sync delete creates one extension Trash entry');
+select is((select snapshot #>> '{links,0,title}' from public.workspace_trash where created_operation_id='40000000-0000-4000-8000-000000000006'), 'Still here', 'sync snapshot retains descendants');
+select is(public.apply_workspace_operations(
+  '[{"operationId":"40000000-0000-4000-8000-000000000006","deviceId":"50000000-0000-4000-8000-000000000001","sequence":6,"entity":"collection","entityId":"20000000-0000-4000-8000-000000000001","action":"delete","payload":{}}]', 4
+) #>> '{outcomes,0,trashId}', (select id::text from public.workspace_trash where created_operation_id='40000000-0000-4000-8000-000000000006'), 'retry returns the original Trash receipt');
+select is((select count(*) from public.workspace_trash where created_operation_id='40000000-0000-4000-8000-000000000006'), 1::bigint, 'retry creates no duplicate Trash');
 select is(jsonb_array_length(public.load_workspace_snapshot()->'tombstones'), 4, 'canonical load includes owner tombstones');
 
 select is(
@@ -149,11 +156,17 @@ select is(
   'deleted outcomes return the older tombstone needed to clear stale local data'
 );
 
+-- Fixture setup must not advance revisions, and historical direct removal runs
+-- as the fixture owner rather than through revoked authenticated privileges.
+reset role;
+select set_config('tabloom.merge_in_progress','on',true);
 insert into public.collections(id, user_id, space_id, name, position)
 values ('20000000-0000-4000-8000-000000000003', '00000000-0000-0000-0000-00000000000a', '10000000-0000-4000-8000-000000000001', 'Legacy removed', 0);
 delete from public.collections
 where user_id = '00000000-0000-0000-0000-00000000000a'
   and id = '20000000-0000-4000-8000-000000000003';
+select set_config('tabloom.merge_in_progress','off',true);
+set local role authenticated;
 
 select is(
   public.apply_workspace_operations(
@@ -177,8 +190,10 @@ select is(
 );
 select is((select revision from public.workspace_sync_state), 5::bigint, 'a repeated missing delete does not advance the revision');
 
+select set_config('tabloom.merge_in_progress','on',true);
 insert into public.collections(id, user_id, space_id, name, position)
 values ('20000000-0000-4000-8000-000000000004', '00000000-0000-0000-0000-00000000000a', '10000000-0000-4000-8000-000000000001', 'Existing delete', 0);
+select set_config('tabloom.merge_in_progress','off',true);
 select lives_ok(
   $$ select public.apply_workspace_operations(
     '[
@@ -193,6 +208,31 @@ select is((select revision from public.workspace_sync_state), 6::bigint, 'mixed 
 select is((select count(*) from public.collections where id = '20000000-0000-4000-8000-000000000004'), 0::bigint, 'mixed batch deletes the existing collection');
 select is((select count(*) from public.workspace_tombstones where entity_type = 'collection' and entity_id in ('20000000-0000-4000-8000-000000000004', '20000000-0000-4000-8000-000000000005')), 2::bigint, 'mixed batch records both collection tombstones');
 
+select throws_ok($$ delete from public.spaces where false $$, '42501', 'permission denied for table spaces', 'direct authenticated space delete is revoked');
+select throws_ok($$ delete from public.collections where id='20000000-0000-4000-8000-000000000004' $$, '42501', 'permission denied for table collections', 'direct authenticated collection delete is revoked');
+select throws_ok($$ delete from public.links where id='30000000-0000-4000-8000-000000000001' $$, '42501', 'permission denied for table links', 'direct authenticated link delete is revoked');
+
+select lives_ok($$ select public.apply_workspace_operations('[
+  {"operationId":"40000000-0000-4000-8000-000000000020","deviceId":"50000000-0000-4000-8000-000000000001","sequence":20,"entity":"collection","entityId":"20000000-0000-4000-8000-000000000020","action":"create","payload":{"id":"20000000-0000-4000-8000-000000000020","space_id":"10000000-0000-4000-8000-000000000001","name":"Batch create","position":0}},
+  {"operationId":"40000000-0000-4000-8000-000000000021","deviceId":"50000000-0000-4000-8000-000000000001","sequence":21,"entity":"link","entityId":"30000000-0000-4000-8000-000000000020","action":"create","payload":{"id":"30000000-0000-4000-8000-000000000020","collection_id":"20000000-0000-4000-8000-000000000020","title":"Before update","url":"https://same-batch.example/","description":"","position":0}},
+  {"operationId":"40000000-0000-4000-8000-000000000022","deviceId":"50000000-0000-4000-8000-000000000001","sequence":22,"entity":"link","entityId":"30000000-0000-4000-8000-000000000020","action":"update","payload":{"title":"At deletion"}},
+  {"operationId":"40000000-0000-4000-8000-000000000023","deviceId":"50000000-0000-4000-8000-000000000001","sequence":23,"entity":"collection","entityId":"20000000-0000-4000-8000-000000000020","action":"delete","payload":{}},
+  {"operationId":"40000000-0000-4000-8000-000000000024","deviceId":"50000000-0000-4000-8000-000000000001","sequence":24,"entity":"link","entityId":"30000000-0000-4000-8000-000000000020","action":"delete","payload":{}}
+]',6) $$, 'same-batch create update and overlapping deletes apply');
+select is((select revision from public.workspace_sync_state), 7::bigint, 'same-batch changes advance revision once');
+select is((select snapshot #>> '{links,0,title}' from public.workspace_trash where created_operation_id='40000000-0000-4000-8000-000000000023'), 'At deletion', 'snapshot captures same-batch creates and final updates');
+select is((select count(*) from public.workspace_trash where root_id='30000000-0000-4000-8000-000000000020'), 0::bigint, 'overlapping child delete does not duplicate its parent snapshot');
+select is((select count(*) from public.collections where id='20000000-0000-4000-8000-000000000020'), 0::bigint, 'same-batch created collection was deleted');
+
+select throws_ok($$ select public.apply_workspace_operations('[
+  {"operationId":"40000000-0000-4000-8000-000000000025","deviceId":"50000000-0000-4000-8000-000000000001","sequence":25,"entity":"space","entityId":"10000000-0000-4000-8000-000000000001","action":"delete","payload":{}},
+  {"operationId":"40000000-0000-4000-8000-000000000026","deviceId":"50000000-0000-4000-8000-000000000001","sequence":26,"entity":"space","entityId":"10000000-0000-4000-8000-000000000026","action":"create","payload":{"id":"10000000-0000-4000-8000-000000000026","name":"Invalid","color":"bad"}}
+]',7) $$, '22023', 'invalid workspace space', 'later failure rolls back snapshot and strict deletion');
+select is((select count(*) from public.workspace_trash where created_operation_id='40000000-0000-4000-8000-000000000025'), 0::bigint, 'failed batch leaves no Trash snapshot');
+select is((select count(*) from public.spaces where id='10000000-0000-4000-8000-000000000001'), 1::bigint, 'failed batch leaves original root');
+select is((select revision from public.workspace_sync_state), 7::bigint, 'failed batch leaves revision unchanged');
+select is((select count(*) from public.workspace_tombstones where entity_id='10000000-0000-4000-8000-000000000001'), 0::bigint, 'failed batch leaves no root tombstone');
+
 reset role;
 insert into public.spaces(id, user_id, name, color, position)
 values ('10000000-0000-4000-8000-00000000000b', '00000000-0000-0000-0000-00000000000b', 'Other owner', '#7357e6', 0);
@@ -204,12 +244,21 @@ set local request.jwt.claim.role = 'authenticated';
 select throws_ok(
   $$ select public.apply_workspace_operations(
     '[{"operationId":"40000000-0000-4000-8000-000000000019","deviceId":"50000000-0000-4000-8000-000000000001","sequence":19,"entity":"collection","entityId":"20000000-0000-4000-8000-00000000000b","action":"delete","payload":{},"createdAt":"2026-08-31T00:00:00Z","baseRevision":7}]'::jsonb,
-    6
+    7
   ) $$,
   '23503',
   'cross-owner workspace id',
   'cross-owner missing recovery remains rejected'
 );
+
+select is(public.restore_workspace_trash((select id from public.workspace_trash where created_operation_id='40000000-0000-4000-8000-000000000023'), null)->>'status', 'restored', 'sync Trash can be restored');
+select is((select count(*) from public.collections where id='20000000-0000-4000-8000-000000000020'), 1::bigint, 'sync restore preserves the collection id');
+select is((select title from public.links where id='30000000-0000-4000-8000-000000000020'), 'At deletion', 'sync restore preserves the link id and last title');
+select is((select position from public.links where id='30000000-0000-4000-8000-000000000020'), 0, 'sync restore preserves ordering');
+select is((select count(*) from public.workspace_tombstones where entity_id in ('20000000-0000-4000-8000-000000000020','30000000-0000-4000-8000-000000000020')), 0::bigint, 'restoration clears sync tombstones');
+select is(public.apply_workspace_operations('[{"operationId":"40000000-0000-4000-8000-000000000023","deviceId":"50000000-0000-4000-8000-000000000001","sequence":23,"entity":"collection","entityId":"20000000-0000-4000-8000-000000000020","action":"delete","payload":{}}]',8) #>> '{outcomes,0,status}', 'already_applied', 'retry after restoration stays idempotent');
+select is((select count(*) from public.collections where id='20000000-0000-4000-8000-000000000020'), 1::bigint, 'old operation cannot delete the restored root again');
+select is((select revision from public.workspace_sync_state where user_id=auth.uid()), 8::bigint, 'restored operation retry leaves revision unchanged');
 
 set local request.jwt.claim.sub = '00000000-0000-0000-0000-00000000000b';
 select is((select count(*) from public.workspace_operations), 0::bigint, 'RLS hides another user operation ids');

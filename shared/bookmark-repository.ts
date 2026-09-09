@@ -130,7 +130,7 @@ export class CombinedWorkspaceRepository implements WorkspaceRepository {
   reorderLinks(collectionId: string, orderedIds: string[]) { return this.normal.reorderLinks(collectionId, orderedIds); }
 }
 
-export function copyBookmarkToCollection(repository: WorkspaceRepository, link: SavedLink, collectionId: string) {
+export function copyBookmarkToCollection(repository: Pick<WorkspaceRepository, "createLink">, link: SavedLink, collectionId: string) {
   if (link.origin !== "browser-bookmark") return Promise.reject(new Error("Only browser bookmarks can be copied with this action."));
   return repository.createLink({
     collection_id: collectionId,
