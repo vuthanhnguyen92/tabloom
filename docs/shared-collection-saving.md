@@ -74,3 +74,16 @@ See the [implementation plan](superpowers/plans/2026-09-09-save-shared-collectio
 - Both `npm run build:all` (web and three extension targets) and `npm run build:vercel` passed. The latter required local dependency files instead of an external worktree symlink. Generated Next type changes were restored; they are not part of the feature.
 - Four rendered-HTML checks passed. Independent reviews found one same-user auth-refresh navigation regression, now fixed and covered by a passing test.
 - Real Google provider round trip, hosted allowlist configuration, and extension sync/pending-edit smoke check remain unverified. The fixture sessions and server revision checks do not establish those results. No production migration or deployment was performed.
+
+## Production rollout — 2026-09-09
+
+Deployed following explicit operator authorization to push and deploy.
+
+- Source: `feat/save-shared-collection`, application commit `da4fddc9517ccbe0349633230ba79f9953387864`, pushed to GitHub.
+- Production: [tabloom.nickvu.dev](https://tabloom.nickvu.dev), Vercel project `tabloom-web`, deployment `dpl_2D8qHgJC5LrezDDL5SfYcaoSWUPU` (Ready).
+- Applied only `202609090001_save_shared_collection.sql` to the existing Tabloom Supabase project after confirming the pending migration with a dry run.
+- Added production Auth redirects `/app`, `/app?collection=*`, and `/auth/shared-save` under `https://tabloom.nickvu.dev`. Existing entries and other Auth settings were preserved; Google authentication is enabled.
+- Live `/`, `/app`, `/privacy`, `/auth/shared-save`, invalid-share handling, and `/mcp/health` returned HTTP 200 with the expected route content.
+- A live shared page displayed the Save action and sign-in dialog. Continuing reached Google authorization with the correct return target; anonymous viewing/sign-in entry issued no save request.
+- A production transaction verified copy content, private defaults, default destination, idempotency, revision advancement, and copy survival after revocation. It was rolled back, and the absence of the temporary fixture users was verified.
+- Full interactive Google login completion and the extension pending-edit smoke check were not performed. The source branch remains separate from `main`; this production deployment uses the application commit above.
