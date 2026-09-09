@@ -8,9 +8,11 @@ import { hostnameFor } from "../../../shared/domain";
 import { Brand } from "../../components/Brand";
 import { serializeSharedCollectionJsonLd } from "../../lib/shared-collection-metadata";
 
+import { SaveSharedCollectionButton } from "./SaveSharedCollectionButton";
+
 const LARGE_COLLECTION_THRESHOLD = 10;
 
-export function SharedCollectionView({ snapshot }: { snapshot: SharedCollectionSnapshot }) {
+export function SharedCollectionView({ snapshot, token }: { snapshot: SharedCollectionSnapshot; token: string }) {
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [blockedCount, setBlockedCount] = useState(0);
 
@@ -34,7 +36,7 @@ export function SharedCollectionView({ snapshot }: { snapshot: SharedCollectionS
     <section aria-labelledby="shared-collection-title" className="shared-collection-shell">
       <div className="shared-collection-heading">
         <div><span className="eyebrow">LIVE COLLECTION</span><h1 className="shared-collection-title" id="shared-collection-title">{snapshot.name}</h1><p>{snapshot.links.length} {snapshot.links.length === 1 ? "link" : "links"}</p></div>
-        {!!snapshot.links.length && <button className="button button-primary shared-open-all-button" onClick={requestOpenAll}><ExternalLink size={16} /> Open all</button>}
+        <div className="shared-collection-actions"><SaveSharedCollectionButton key={token} token={token} />{!!snapshot.links.length && <button className="button shared-open-all-button" onClick={requestOpenAll}><ExternalLink size={16} /> Open all</button>}</div>
       </div>
       {snapshot.links.length ? <ol aria-label={snapshot.name} className="shared-link-grid">
         {snapshot.links.map((link) => <li key={link.id}><a className="shared-link-card" href={link.url} rel="noreferrer noopener">

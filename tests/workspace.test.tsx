@@ -33,6 +33,32 @@ function combinedFixture() {
 }
 
 describe("WorkspaceClient", () => {
+  it("opens a collection in its current space and focuses it once", async () => {
+    const snapshot = createDemoSnapshot();
+    snapshot.collections[0].space_id = snapshot.spaces[1].id;
+    const repository = new MemoryWorkspaceRepository("demo-user", snapshot);
+    render(<WorkspaceClient repository={repository} mode="synced" initialCollectionId="collection-plan" />);
+    const heading = await screen.findByRole("heading", { name: "Plan" });
+    await waitFor(() => expect(heading.closest("article")).toHaveFocus());
+    expect(screen.getByRole("heading", { name: "Research" })).toBeVisible();
+    await userEvent.click(screen.getByRole("button", { name: "Product launch" }));
+    expect(screen.queryByRole("heading", { name: "Plan" })).not.toBeInTheDocument();
+  });
+
+  it("reports a deleted target after the workspace has loaded", async () => {
+    render(<WorkspaceClient repository={new MemoryWorkspaceRepository("demo-user", createDemoSnapshot())} mode="synced" initialCollectionId="missing" />);
+    expect(await screen.findByRole("alert")).toHaveTextContent("This collection is no longer in your workspace.");
+    expect(screen.getByRole("heading", { name: "Your workspace" })).toBeVisible();
+  });
+
+  it("does not call a failed load a deleted collection", async () => {
+    const repository = new MemoryWorkspaceRepository("demo-user", createDemoSnapshot());
+    vi.spyOn(repository, "load").mockRejectedValue(new Error("Network unavailable"));
+    render(<WorkspaceClient repository={repository} mode="synced" initialCollectionId="missing" />);
+    expect(await screen.findByRole("alert")).toHaveTextContent("Network unavailable");
+    expect(screen.queryByText("This collection is no longer in your workspace.")).not.toBeInTheDocument();
+  });
+
   it("opens live sharing for mutable synced collections", async () => {
     const sharing = shareRepository();
     render(<WorkspaceClient repository={new MemoryWorkspaceRepository("demo-user", createDemoSnapshot())} mode="synced" initialSnapshot={createDemoSnapshot()} sharing={{ availability: "ready", repository: sharing, siteUrl: "https://tabloom.nickvu.dev", onRequestSignIn: vi.fn() }} />);

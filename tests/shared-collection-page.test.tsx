@@ -12,7 +12,7 @@ afterEach(() => vi.restoreAllMocks());
 
 describe("SharedCollectionView", () => {
   it("renders an anonymous read-only collection with safe card links", () => {
-    render(<SharedCollectionView snapshot={{ name: "Launch plan", links }} />);
+    render(<SharedCollectionView token={"a".repeat(43)} snapshot={{ name: "Launch plan", links }} />);
 
     expect(screen.getByLabelText("Tabloom").closest("a")).toHaveClass("shared-collection-brand");
     expect(screen.queryByText("Shared collection")).not.toBeInTheDocument();
@@ -27,7 +27,7 @@ describe("SharedCollectionView", () => {
   });
 
   it("exposes an ordered, anonymous machine-readable collection", () => {
-    render(<SharedCollectionView snapshot={{ name: "Launch plan", links }} />);
+    render(<SharedCollectionView token={"a".repeat(43)} snapshot={{ name: "Launch plan", links }} />);
 
     expect(screen.getByRole("list", { name: "Launch plan" })).toBeVisible();
     expect(screen.getAllByRole("listitem")).toHaveLength(2);
@@ -61,14 +61,14 @@ describe("SharedCollectionView", () => {
   });
 
   it("renders a useful empty collection", () => {
-    render(<SharedCollectionView snapshot={{ name: "Reading list", links: [] }} />);
+    render(<SharedCollectionView token={"a".repeat(43)} snapshot={{ name: "Reading list", links: [] }} />);
     expect(screen.getByText("Nothing saved here yet")).toBeVisible();
     expect(screen.queryByRole("button", { name: "Open all" })).not.toBeInTheDocument();
   });
 
   it("opens a small collection in its canonical order", async () => {
     const open = vi.spyOn(window, "open").mockImplementation(() => null);
-    render(<SharedCollectionView snapshot={{ name: "Launch plan", links }} />);
+    render(<SharedCollectionView token={"a".repeat(43)} snapshot={{ name: "Launch plan", links }} />);
 
     await userEvent.click(screen.getByRole("button", { name: "Open all" }));
 
@@ -79,7 +79,7 @@ describe("SharedCollectionView", () => {
   it("confirms unusually large collections and supports cancellation", async () => {
     const open = vi.spyOn(window, "open").mockImplementation(() => null);
     const manyLinks = Array.from({ length: 11 }, (_, index) => ({ ...links[0], id: `link-${index}`, title: `Link ${index}`, url: `https://example.com/${index}`, position: index }));
-    render(<SharedCollectionView snapshot={{ name: "Big list", links: manyLinks }} />);
+    render(<SharedCollectionView token={"a".repeat(43)} snapshot={{ name: "Big list", links: manyLinks }} />);
 
     await userEvent.click(screen.getByRole("button", { name: "Open all" }));
     expect(screen.getByRole("dialog", { name: "Open 11 tabs?" })).toBeVisible();
@@ -91,7 +91,7 @@ describe("SharedCollectionView", () => {
 
   it("reports blocked popups instead of silently claiming success", async () => {
     vi.spyOn(window, "open").mockImplementation(() => null);
-    render(<SharedCollectionView snapshot={{ name: "Launch plan", links }} />);
+    render(<SharedCollectionView token={"a".repeat(43)} snapshot={{ name: "Launch plan", links }} />);
     await userEvent.click(screen.getByRole("button", { name: "Open all" }));
     expect(screen.getByRole("status")).toHaveTextContent("browser blocked 2 tabs");
   });

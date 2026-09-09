@@ -16,7 +16,11 @@ enabled = true
 site_url = "http://localhost:4173"
 additional_redirect_urls = [
   "http://localhost:4173/app",
+  "http://localhost:4173/app?collection=*",
+  "http://localhost:4173/auth/shared-save",
   "https://tabloom.nickvu.dev/app",
+  "https://tabloom.nickvu.dev/app?collection=*",
+  "https://tabloom.nickvu.dev/auth/shared-save",
   "https://tabloom.nickvu.dev/oauth/callback/supabase",
   "https://tabloom-workspace.nickvu92.chatgpt.site/app",
   "https://kgpdfbdokefljnjaagkbhlonhghimkad.chromiumapp.org/auth-callback",

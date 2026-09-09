@@ -15,7 +15,7 @@ import {
   X,
 } from "lucide-react";
 import Link from "next/link";
-import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
+import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Brand } from "../components/Brand";
 import { filterWorkspace, findDuplicateLink, hostnameFor, isSaveableUrl, type SavedLink, type WorkspaceSnapshot } from "../../shared/domain";
 import { copyBookmarkToCollection } from "../../shared/bookmark-repository";
@@ -46,7 +46,7 @@ type WorkspaceSharing = {
   onRequestSignIn: () => void;
 };
 
-export function WorkspaceClient({ repository, mode, onSignOut, initialSnapshot, sharing }: { repository: WorkspaceRepository; mode: "demo" | "synced"; onSignOut?: () => void; initialSnapshot?: WorkspaceSnapshot; sharing?: WorkspaceSharing }) {
+export function WorkspaceClient({ repository, mode, onSignOut, initialSnapshot, sharing, initialCollectionId }: { repository: WorkspaceRepository; mode: "demo" | "synced"; onSignOut?: () => void; initialSnapshot?: WorkspaceSnapshot; sharing?: WorkspaceSharing; initialCollectionId?: string | null }) {
   const [snapshot, setSnapshot] = useState<WorkspaceSnapshot>(initialSnapshot ?? { spaces: [], collections: [], links: [] });
   const [selectedSpaceId, setSelectedSpaceId] = useState(initialSnapshot?.spaces[0]?.id ?? "");
   const [query, setQuery] = useState("");
@@ -56,21 +56,54 @@ export function WorkspaceClient({ repository, mode, onSignOut, initialSnapshot, 
   const [draggedLink, setDraggedLink] = useState<DraggedLink | null>(null);
   const [sharingCollectionId, setSharingCollectionId] = useState<string | null>(null);
   const [shareToast, setShareToast] = useState("");
+  const handledTarget = useRef<{ repository: WorkspaceRepository; id: string } | null>(null);
+  const pendingFocus = useRef<string | null>(null);
+  const loadSequence = useRef(0);
 
   const reload = useCallback(async () => {
+    const sequence = ++loadSequence.current;
     try {
       const next = await repository.load();
+      if (sequence !== loadSequence.current) return;
       setSnapshot(next);
-      setSelectedSpaceId((current) => current || next.spaces[0]?.id || "");
       setError("");
+      if (initialCollectionId && (handledTarget.current?.repository !== repository || handledTarget.current.id !== initialCollectionId)) {
+        handledTarget.current = { repository, id: initialCollectionId };
+        const target = next.collections.find((collection) => collection.id === initialCollectionId);
+        if (target) {
+          setSelectedSpaceId(target.space_id);
+          setQuery("");
+          pendingFocus.current = target.id;
+        } else {
+          setSelectedSpaceId(next.spaces[0]?.id ?? "");
+          setError("This collection is no longer in your workspace.");
+        }
+      } else {
+        setSelectedSpaceId((current) => next.spaces.some((space) => space.id === current) ? current : next.spaces[0]?.id || "");
+      }
     } catch (reason) {
+      if (sequence !== loadSequence.current) return;
       setError(reason instanceof Error ? reason.message : "Could not load your workspace.");
-    } finally { setLoading(false); }
-  }, [repository]);
+    } finally { if (sequence === loadSequence.current) setLoading(false); }
+  }, [repository, initialCollectionId]);
 
   // The repository is external state; load its current snapshot on adapter changes.
-  // eslint-disable-next-line react-hooks/set-state-in-effect
-  useEffect(() => { void reload(); }, [reload]);
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    void reload();
+    // This numeric sequence deliberately invalidates the latest request on cleanup.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    return () => { loadSequence.current++; };
+  }, [reload]);
+  useEffect(() => {
+    if (!pendingFocus.current || loading) return;
+    const article = document.getElementById(`collection-${pendingFocus.current}`);
+    if (article) {
+      article.focus({ preventScroll: true });
+      article.scrollIntoView?.({ block: "nearest", inline: "nearest" });
+      pendingFocus.current = null;
+    }
+  }, [snapshot, selectedSpaceId, loading]);
   const visible = useMemo(() => filterWorkspace(snapshot, query), [snapshot, query]);
   const selectedSpace = snapshot.spaces.find((space) => space.id === selectedSpaceId) ?? snapshot.spaces[0];
   const collections = visible.collections.filter((collection) => query || collection.space_id === selectedSpace?.id);
@@ -183,7 +216,7 @@ export function WorkspaceClient({ repository, mode, onSignOut, initialSnapshot, 
             {collections.map((collection, collectionIndex) => {
               const links = visible.links.filter((link) => link.collection_id === collection.id).sort((a, b) => a.position - b.position);
               const collectionReadOnly = collection.origin === "browser-bookmark" || collection.read_only;
-              return <article className={`collection ${collectionReadOnly ? "collection-read-only" : ""}`} key={collection.id} onDragOver={collectionReadOnly ? undefined : (event) => event.preventDefault()} onDrop={collectionReadOnly ? undefined : () => void dropLink(collection.id)}>
+              return <article id={`collection-${collection.id}`} tabIndex={-1} className={`collection ${collectionReadOnly ? "collection-read-only" : ""}`} key={collection.id} onDragOver={collectionReadOnly ? undefined : (event) => event.preventDefault()} onDrop={collectionReadOnly ? undefined : () => void dropLink(collection.id)}>
                 <header><div><h3>{collection.name}</h3><span>{links.length} links</span></div>{!collectionReadOnly && <div className="collection-actions">{sharing && <button aria-label={`Share ${collection.name}`} onClick={() => setSharingCollectionId(collection.id)}><Share2 size={14} /></button>}<button aria-label={`Rename ${collection.name} collection`} onClick={() => setDialog({ type: "edit-collection", collectionId: collection.id })}><Pencil size={14} /></button><button aria-label={`Move ${collection.name} left`} disabled={collectionIndex === 0} onClick={() => void moveCollection(collection.id, -1)}><ChevronLeft size={15} /></button><button aria-label={`Move ${collection.name} right`} disabled={collectionIndex === collections.length - 1} onClick={() => void moveCollection(collection.id, 1)}><ChevronRight size={15} /></button><button aria-label={`Delete ${collection.name}`} onClick={() => links.length ? setDialog({ type: "delete-collection", collectionId: collection.id }) : void mutate(() => repository.deleteCollection(collection.id))}><Trash2 size={14} /></button></div>}</header>
                 {links.map((link) => {
                   const bookmark = link.origin === "browser-bookmark" || link.read_only;

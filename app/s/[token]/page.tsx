@@ -26,6 +26,6 @@ export default async function SharedCollectionPage({ params }: { params: Promise
   const token = (await params).token;
   const { snapshot, temporary } = await resolveSharedCollection(token);
 
-  if (snapshot) return <SharedCollectionView snapshot={snapshot} />;
+  if (snapshot) return <SharedCollectionView snapshot={snapshot} token={token} />;
   return <SharedCollectionUnavailable temporary={temporary} />;
 }
