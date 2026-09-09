@@ -15,7 +15,7 @@ import {
   X,
 } from "lucide-react";
 import Link from "next/link";
-import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
+import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Brand } from "../components/Brand";
 import { filterWorkspace, findDuplicateLink, hostnameFor, isSaveableUrl, type SavedLink, type WorkspaceSnapshot } from "../../shared/domain";
 import { copyBookmarkToCollection } from "../../shared/bookmark-repository";
@@ -60,6 +60,7 @@ export function WorkspaceClient({ repository, trashRepository, mode, onSignOut, 
   const [shareToast, setShareToast] = useState("");
   const [deleteReceipt, setDeleteReceipt] = useState<DeleteReceipt | null>(null);
   const [deleting, setDeleting] = useState(false);
+  const pendingDeleteOperations = useRef(new Map<string, string>());
 
   const reload = useCallback(async () => {
     try {
@@ -97,7 +98,13 @@ export function WorkspaceClient({ repository, trashRepository, mode, onSignOut, 
     setDeleting(true);
     await mutate(async () => {
       if (trashRepository) {
-        const receipt = await trashRepository.deleteEntity(rootType, rootId, "web", crypto.randomUUID(), intent?.intentId);
+        const target = `${rootType}:${rootId}`;
+        const operationId = pendingDeleteOperations.current.get(target) ?? crypto.randomUUID();
+        // A failed response may follow a committed delete; retry the same
+        // operation until its receipt arrives, including with a consumed intent.
+        pendingDeleteOperations.current.set(target, operationId);
+        const receipt = await trashRepository.deleteEntity(rootType, rootId, "web", operationId, intent?.intentId);
+        pendingDeleteOperations.current.delete(target);
         setDeleteReceipt(receipt);
       } else if (mode === "demo") {
         const local = repository as WorkspaceRepository;
