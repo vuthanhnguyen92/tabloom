@@ -1,0 +1,182 @@
+import { createHash } from "node:crypto";
+import type { z } from "zod";
+import { searchWorkspace, type Collection, type SavedLink, type Space, type WorkspaceRecordMeta, type WorkspaceSnapshot } from "../../../../shared/domain";
+import type { WorkspaceOperation } from "../../../../shared/workspace-operations";
+import type { TabloomRequestContext } from "../auth/request-context";
+import { commandError, WorkspaceCommandError, workspaceCommand } from "./errors";
+import { WorkspaceCommandRepository, type WorkspaceState } from "./repository";
+import * as schemas from "./schemas";
+
+type RecordType = Space | Collection | SavedLink;
+type OperationBody = WorkspaceOperation extends infer O ? O extends WorkspaceOperation ? Pick<O, "entity" | "entityId" | "action" | "payload"> : never : never;
+const editable = (item: WorkspaceRecordMeta) => item.origin === "saved" && !item.read_only;
+const ordered = <T extends { position: number; id: string }>(items: T[]): T[] => [...items].sort((a, b) => a.position - b.position || a.id.localeCompare(b.id));
+const fields = <T extends Record<string, unknown>>(value: T, keys: string[]) => Object.fromEntries(keys.filter((key) => value[key] !== undefined).map((key) => [key, value[key]]));
+
+function uuidFor(value: unknown): string {
+  const hex = createHash("sha256").update(JSON.stringify(value)).digest("hex");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-5${hex.slice(13, 16)}-8${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
+}
+
+function visible(snapshot: WorkspaceSnapshot): WorkspaceSnapshot {
+  const spaces = ordered(snapshot.spaces.filter(editable));
+  const spaceIds = new Set(spaces.map((item) => item.id));
+  const collections = ordered(snapshot.collections.filter((item) => editable(item) && spaceIds.has(item.space_id)));
+  const collectionIds = new Set(collections.map((item) => item.id));
+  const links = ordered(snapshot.links.filter((item) => editable(item) && collectionIds.has(item.collection_id)));
+  return { spaces, collections, links };
+}
+
+function requireRecord<T extends RecordType>(items: T[], id: string, expectedUpdatedAt?: string): T {
+  const item = items.find((candidate) => candidate.id === id);
+  if (!item) throw commandError("not_found");
+  if (!editable(item)) throw commandError("read_only");
+  // Compare exact server timestamps, preserving PostgreSQL submillisecond precision.
+  if (expectedUpdatedAt !== undefined && item.updated_at !== expectedUpdatedAt) {
+    throw commandError("conflict", { id: item.id, updatedAt: item.updated_at });
+  }
+  return item;
+}
+
+function requireSpace(snapshot: WorkspaceSnapshot, id: string, timestamp?: string): Space {
+  return requireRecord(snapshot.spaces, id, timestamp);
+}
+function requireCollection(snapshot: WorkspaceSnapshot, id: string, timestamp?: string): Collection {
+  const item = requireRecord(snapshot.collections, id, timestamp);
+  requireSpace(snapshot, item.space_id);
+  return item;
+}
+function requireItem(snapshot: WorkspaceSnapshot, id: string, timestamp?: string): SavedLink {
+  const item = requireRecord(snapshot.links, id, timestamp);
+  requireCollection(snapshot, item.collection_id);
+  return item;
+}
+
+export class WorkspaceCommandService {
+  private readonly repository: WorkspaceCommandRepository;
+
+  constructor(private readonly context: TabloomRequestContext) {
+    this.repository = new WorkspaceCommandRepository(context);
+  }
+
+  private read<I, O>(schema: z.ZodType<I>, input: unknown, select: (state: WorkspaceState, input: I) => O): Promise<O> {
+    return workspaceCommand(async () => {
+      const parsed = schemas.parseCommand(schema, input);
+      return select(await this.repository.load(), parsed);
+    });
+  }
+
+  getWorkspace(input: unknown = {}) {
+    return this.read(schemas.getWorkspaceSchema, input, (state) => ({ revision: state.revision, snapshot: visible(state.snapshot) }));
+  }
+  listSpaces(input: unknown = {}) {
+    return this.read(schemas.listSpacesSchema, input, (state) => visible(state.snapshot).spaces);
+  }
+  listCollections(input: unknown) {
+    return this.read(schemas.listCollectionsSchema, input, ({ snapshot }, value) => {
+      requireSpace(snapshot, value.spaceId);
+      return visible(snapshot).collections.filter((item) => item.space_id === value.spaceId);
+    });
+  }
+  listCollectionItems(input: unknown) {
+    return this.read(schemas.listCollectionItemsSchema, input, ({ snapshot }, value) => {
+      requireCollection(snapshot, value.collectionId);
+      return visible(snapshot).links.filter((item) => item.collection_id === value.collectionId);
+    });
+  }
+  searchWorkspace(input: unknown) {
+    return this.read(schemas.searchWorkspaceSchema, input, ({ snapshot }, value) => searchWorkspace(visible(snapshot), value.query));
+  }
+
+  private mutate<I extends { idempotencyKey: string }, O>(
+    name: string, schema: z.ZodType<I>, input: unknown,
+    prepare: (state: WorkspaceState, input: I, newId: string) => OperationBody,
+    result: (snapshot: WorkspaceSnapshot, input: I, newId: string) => O,
+  ): Promise<O> {
+    return workspaceCommand(async () => {
+      const parsed = schemas.parseCommand(schema, input);
+      const operationId = parsed.idempotencyKey;
+      const entityId = uuidFor(["tabloom-mcp-entity", this.context.userId, operationId]);
+      // device_id is opaque in the sync contract. A stable command fingerprint
+      // makes the existing durable operation ledger reject key reuse with new input.
+      const fingerprint = uuidFor(["tabloom-mcp-command", this.context.userId, name, parsed]);
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        const applied = await this.repository.wasApplied(operationId, fingerprint);
+        const state = await this.repository.load();
+        if (applied) return result(state.snapshot, parsed, entityId);
+        const body = prepare(state, parsed, entityId);
+        const operation = { ...body, operationId, deviceId: fingerprint, sequence: 1, baseRevision: state.revision, createdAt: new Date().toISOString() } as WorkspaceOperation;
+        try { await this.repository.apply(operation, state.revision); }
+        catch (error) {
+          if (attempt === 0 && error instanceof WorkspaceCommandError && error.code === "conflict") continue;
+          throw error;
+        }
+        return result((await this.repository.load()).snapshot, parsed, entityId);
+      }
+      throw commandError("conflict");
+    });
+  }
+
+  createSpace(input: unknown) {
+    return this.mutate("createSpace", schemas.createSpaceSchema, input, ({ snapshot }, value, id) => {
+      if (snapshot.spaces.some((item) => item.id === id)) throw commandError("conflict");
+      const timestamp = new Date().toISOString();
+      return { entity: "space", entityId: id, action: "create", payload: { id, name: value.name, color: value.color, position: Math.max(-1, ...snapshot.spaces.map((item) => item.position)) + 1, created_at: timestamp, updated_at: timestamp } };
+    }, (snapshot, _value, id) => requireSpace(snapshot, id));
+  }
+  updateSpace(input: unknown) {
+    return this.mutate("updateSpace", schemas.updateSpaceSchema, input, ({ snapshot }, value) => {
+      requireSpace(snapshot, value.spaceId, value.expectedUpdatedAt);
+      return { entity: "space", entityId: value.spaceId, action: "update", payload: fields(value, ["name", "color"]) };
+    }, (snapshot, value) => requireSpace(snapshot, value.spaceId));
+  }
+  createCollection(input: unknown) {
+    return this.mutate("createCollection", schemas.createCollectionSchema, input, ({ snapshot }, value, id) => {
+      requireSpace(snapshot, value.spaceId);
+      if (snapshot.collections.some((item) => item.id === id)) throw commandError("conflict");
+      const timestamp = new Date().toISOString();
+      return { entity: "collection", entityId: id, action: "create", payload: { id, space_id: value.spaceId, name: value.name, position: Math.max(-1, ...snapshot.collections.filter((item) => item.space_id === value.spaceId).map((item) => item.position)) + 1, created_at: timestamp, updated_at: timestamp } };
+    }, (snapshot, _value, id) => requireCollection(snapshot, id));
+  }
+  updateCollection(input: unknown) {
+    return this.mutate("updateCollection", schemas.updateCollectionSchema, input, ({ snapshot }, value) => {
+      requireCollection(snapshot, value.collectionId, value.expectedUpdatedAt);
+      return { entity: "collection", entityId: value.collectionId, action: "update", payload: { name: value.name } };
+    }, (snapshot, value) => requireCollection(snapshot, value.collectionId));
+  }
+  createCollectionItem(input: unknown) {
+    return this.mutate("createCollectionItem", schemas.createCollectionItemSchema, input, ({ snapshot }, value, id) => {
+      requireCollection(snapshot, value.collectionId);
+      if (snapshot.links.some((item) => item.id === id)) throw commandError("conflict");
+      const timestamp = new Date().toISOString();
+      return { entity: "link", entityId: id, action: "create", payload: { id, collection_id: value.collectionId, title: value.title, url: value.url, description: value.description, favicon_url: null, position: Math.max(-1, ...snapshot.links.filter((item) => item.collection_id === value.collectionId).map((item) => item.position)) + 1, created_at: timestamp, updated_at: timestamp } };
+    }, (snapshot, _value, id) => requireItem(snapshot, id));
+  }
+  updateCollectionItem(input: unknown) {
+    return this.mutate("updateCollectionItem", schemas.updateCollectionItemSchema, input, ({ snapshot }, value) => {
+      requireItem(snapshot, value.itemId, value.expectedUpdatedAt);
+      return { entity: "link", entityId: value.itemId, action: "update", payload: fields(value, ["title", "description", "url"]) };
+    }, (snapshot, value) => requireItem(snapshot, value.itemId));
+  }
+  moveCollectionItem(input: unknown) {
+    return this.mutate("moveCollectionItem", schemas.moveCollectionItemSchema, input, ({ snapshot }, value) => {
+      requireItem(snapshot, value.itemId, value.expectedUpdatedAt);
+      requireCollection(snapshot, value.destinationCollectionId);
+      return { entity: "link", entityId: value.itemId, action: "update", payload: { collection_id: value.destinationCollectionId } };
+    }, (snapshot, value) => requireItem(snapshot, value.itemId));
+  }
+  reorderCollectionItems(input: unknown) {
+    return this.mutate("reorderCollectionItems", schemas.reorderCollectionItemsSchema, input, ({ snapshot, revision }, value) => {
+      requireCollection(snapshot, value.collectionId);
+      if (value.expectedRevision !== revision) throw commandError("conflict", { revision });
+      const members = snapshot.links.filter((item) => item.collection_id === value.collectionId);
+      if (members.some((item) => !editable(item))) throw commandError("read_only");
+      const ids = new Set(members.map((item) => item.id));
+      if (ids.size !== value.orderedIds.length || value.orderedIds.some((id) => !ids.has(id))) throw commandError("validation_failed");
+      return { entity: "link", entityId: value.collectionId, action: "reorder", payload: { parentId: value.collectionId, orderedIds: value.orderedIds } };
+    }, (snapshot, value) => {
+      requireCollection(snapshot, value.collectionId);
+      return ordered(snapshot.links.filter((item) => item.collection_id === value.collectionId && editable(item)));
+    });
+  }
+}
