@@ -14,10 +14,33 @@ export type ToastRegionProps = {
   toasts: OrganizerToast[];
 };
 
+type ToastSemantics = {
+  actionLabel?: string;
+  actionHandler?: () => void;
+  message: string;
+  tone: "success" | "error";
+};
+
+function semanticsFor(toast: OrganizerToast): ToastSemantics {
+  return {
+    actionLabel: toast.action?.label,
+    actionHandler: toast.action?.onAction,
+    message: toast.message,
+    tone: toast.tone ?? "success",
+  };
+}
+
+function hasSameSemantics(left: ToastSemantics, right: ToastSemantics): boolean {
+  return left.actionLabel === right.actionLabel
+    && left.actionHandler === right.actionHandler
+    && left.message === right.message
+    && left.tone === right.tone;
+}
+
 export function ToastRegion({ onDismiss, toasts }: ToastRegionProps) {
   const onDismissRef = useRef(onDismiss);
-  const dismissedToastIdsRef = useRef(new Set<string>());
-  const timersRef = useRef(new Map<string, { deadline: number; handle: ReturnType<typeof globalThis.setTimeout> }>());
+  const dismissedToastSemanticsRef = useRef(new Map<string, ToastSemantics>());
+  const timersRef = useRef(new Map<string, { deadline: number; handle: ReturnType<typeof globalThis.setTimeout>; semantics: ToastSemantics }>());
 
   useEffect(() => {
     onDismissRef.current = onDismiss;
@@ -32,35 +55,44 @@ export function ToastRegion({ onDismiss, toasts }: ToastRegionProps) {
       globalThis.clearTimeout(timer.handle);
       timersRef.current.delete(id);
     }
-    for (const id of dismissedToastIdsRef.current) {
-      if (!transientIds.has(id)) dismissedToastIdsRef.current.delete(id);
+    for (const id of dismissedToastSemanticsRef.current.keys()) {
+      if (!transientIds.has(id)) dismissedToastSemanticsRef.current.delete(id);
     }
 
     for (const toast of transientToasts) {
-      if (dismissedToastIdsRef.current.has(toast.id)) continue;
+      const semantics = semanticsFor(toast);
+      const dismissedSemantics = dismissedToastSemanticsRef.current.get(toast.id);
+      if (dismissedSemantics && hasSameSemantics(dismissedSemantics, semantics)) continue;
+      if (dismissedSemantics) dismissedToastSemanticsRef.current.delete(toast.id);
+
       const existingTimer = timersRef.current.get(toast.id);
-      if (existingTimer) {
-        if (existingTimer.deadline > Date.now()) continue;
+      if (existingTimer && !hasSameSemantics(existingTimer.semantics, semantics)) {
         globalThis.clearTimeout(existingTimer.handle);
         timersRef.current.delete(toast.id);
-        dismissedToastIdsRef.current.add(toast.id);
+      }
+      const currentTimer = timersRef.current.get(toast.id);
+      if (currentTimer) {
+        if (currentTimer.deadline > Date.now()) continue;
+        globalThis.clearTimeout(currentTimer.handle);
+        timersRef.current.delete(toast.id);
+        dismissedToastSemanticsRef.current.set(toast.id, semantics);
         onDismissRef.current(toast.id);
         continue;
       }
       const deadline = Date.now() + 3_000;
       const handle = globalThis.setTimeout(() => {
         timersRef.current.delete(toast.id);
-        dismissedToastIdsRef.current.add(toast.id);
+        dismissedToastSemanticsRef.current.set(toast.id, semantics);
         onDismissRef.current(toast.id);
       }, deadline - Date.now());
-      timersRef.current.set(toast.id, { deadline, handle });
+      timersRef.current.set(toast.id, { deadline, handle, semantics });
     }
   });
 
   useEffect(() => () => {
     for (const timer of timersRef.current.values()) globalThis.clearTimeout(timer.handle);
     timersRef.current.clear();
-    dismissedToastIdsRef.current.clear();
+    dismissedToastSemanticsRef.current.clear();
   }, []);
 
   if (!toasts.length) return null;

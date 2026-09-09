@@ -1,4 +1,4 @@
-import { Children, type ReactNode } from "react";
+import { Children, Fragment, isValidElement, type ReactNode } from "react";
 
 export type OrganizerStatus = {
   state: "synced" | "syncing" | "failed" | "offline";
@@ -13,9 +13,22 @@ export type WorkspaceHeaderProps = {
   title: ReactNode;
 };
 
+function renderableChildren(children: ReactNode): ReactNode[] {
+  const rendered: ReactNode[] = [];
+  Children.forEach(children, (child) => {
+    if (child === null || typeof child === "boolean") return;
+    if (isValidElement<{ children?: ReactNode }>(child) && child.type === Fragment) {
+      rendered.push(...renderableChildren(child.props.children));
+      return;
+    }
+    rendered.push(child);
+  });
+  return rendered;
+}
+
 export function WorkspaceHeader({ actions, className, eyebrow, status, title }: WorkspaceHeaderProps) {
   const classes = ["organizer-workspace-header", className].filter(Boolean).join(" ");
-  const renderedActions = Children.toArray(actions);
+  const renderedActions = renderableChildren(actions);
 
   return <header className={classes}>
     <div className="organizer-header-title">

@@ -63,3 +63,23 @@
 - `npx tsc --noEmit` — pass.
 - `npm run lint` — pass.
 - `npm run build` — pass for Chromium, Firefox, Safari extension bundles and the web app.
+
+## Review round 2/5
+
+### RED
+
+- Added a fake-timer replacement case: a same-ID toast with a new message at 2.5 seconds must not dismiss at the first toast's original three-second deadline and must receive a full new lifetime.
+- Added an empty capability-gated `Fragment` action-slot case.
+- Ran `npx vitest run tests/organizer-shell.test.tsx tests/toast-region.test.tsx`; observed the expected two failures: the old same-ID timer dismissed the replacement, and the empty fragment emitted an actions wrapper.
+
+### GREEN
+
+- Timer records now retain semantic toast identity (tone, message, and action label/handler) alongside their ID. A same semantic toast retains its deadline; a semantic replacement clears the old handle and starts a new three-second timer using the current dismiss callback.
+- Header action normalization now recursively unwraps fragments and only emits the actions wrapper for a renderable string, number, or element descendant.
+
+### Verification
+
+- `npx vitest run tests/organizer-shell.test.tsx tests/toast-region.test.tsx tests/space-sidebar.test.tsx` — pass (18 tests).
+- `npx tsc --noEmit` — pass.
+- `npm run lint` — pass.
+- `npm run build` — pass for Chromium, Firefox, Safari extension bundles and the web app.

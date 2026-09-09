@@ -1,4 +1,5 @@
 import { act, fireEvent, render, screen } from "@testing-library/react";
+import { Fragment, type ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { SpaceRail } from "../shared/organizer/SpaceRail";
 import { ToastRegion } from "../shared/organizer/ToastRegion";
@@ -59,6 +60,13 @@ describe("shared organizer shell", () => {
     expect(container.querySelector(".organizer-header-actions")).not.toBeInTheDocument();
   });
 
+  it("does not render a header action container for an empty capability-gated fragment", () => {
+    const unavailableAction: ReactNode = undefined;
+    const { container } = render(<WorkspaceHeader actions={<Fragment>{unavailableAction}</Fragment>} title="Product launch" />);
+
+    expect(container.querySelector(".organizer-header-actions")).not.toBeInTheDocument();
+  });
+
   it("marks the sync subtitle with the status that supplies its color", () => {
     render(<WorkspaceHeader status={{ state: "syncing", subtitle: "2 changes waiting" }} title="Product launch" />);
 
@@ -86,6 +94,22 @@ describe("shared organizer shell", () => {
 
     expect(firstDismiss).not.toHaveBeenCalled();
     expect(latestDismiss).toHaveBeenCalledWith("saved");
+  });
+
+  it("gives a same-id replacement toast a fresh three-second lifetime", () => {
+    vi.useFakeTimers();
+    const firstDismiss = vi.fn();
+    const latestDismiss = vi.fn();
+    const { rerender } = render(<ToastRegion onDismiss={firstDismiss} toasts={[{ id: "message", message: "First save", tone: "success" }]} />);
+
+    act(() => vi.advanceTimersByTime(2_500));
+    rerender(<ToastRegion onDismiss={latestDismiss} toasts={[{ id: "message", message: "Second save", tone: "success" }]} />);
+    act(() => vi.advanceTimersByTime(500));
+    expect(firstDismiss).not.toHaveBeenCalled();
+    expect(latestDismiss).not.toHaveBeenCalled();
+
+    act(() => vi.advanceTimersByTime(2_500));
+    expect(latestDismiss).toHaveBeenCalledWith("message");
   });
 
   it("cleans transient toast timers when toasts are removed or unmounted", () => {
