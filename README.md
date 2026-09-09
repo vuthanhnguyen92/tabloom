@@ -59,6 +59,16 @@ accepted by `/mcp`. The facade issues ES256 tokens bound to the exact MCP
 resource and the single `tabloom:workspace` scope, while its encrypted inner
 Supabase credential preserves request-local RLS enforcement.
 
+MCP reads synchronized saved workspace data only; device-local unsynced data
+is unavailable. Workspace mutations are disabled by default with
+`TABLOOM_MCP_MUTATIONS_ENABLED=false`. When an operator enables them after the
+disabled-first acceptance gate, create and concurrency-safe update tools are
+available alongside recoverable deletion: spaces and collections require a
+10-minute single-use prepare/confirm intent, saved links move immediately to
+Trash, and deleted data remains recoverable for 30 days. See
+[Tabloom workspace MCP tools](docs/mcp-workspace-tools.md) for exact JSON
+examples, retry keys, confirmation, and restore behavior.
+
 Supabase Google login for the web app and browser extensions remains unchanged.
 The additional upstream callback for the facade is exactly:
 
