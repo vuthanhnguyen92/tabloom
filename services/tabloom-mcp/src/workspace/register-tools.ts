@@ -1,7 +1,8 @@
-import type { McpServer } from "@modelcontextprotocol/server";
+import type { McpServer, StandardSchemaWithJSON } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import { WorkspaceCommandService, destructiveCommandSchemas } from "./command-service";
 import * as schemas from "./schemas";
+import { commandError } from "./errors";
 import { requireWorkspaceContext, toolResult, workspaceToolError, type WorkspaceToolLog } from "./tool-result";
 
 const id = z.string().uuid();
@@ -37,6 +38,20 @@ type ToolOptions = {
   targetKey?: string;
 };
 
+function guardedInputSchema(schema: z.ZodType): StandardSchemaWithJSON<unknown, ReturnType<typeof schema.safeParse>> {
+  return {
+    "~standard": {
+      version: 1,
+      vendor: "tabloom",
+      // Advertise the original strict schema, including required fields and UUIDs.
+      jsonSchema: schema["~standard"].jsonSchema,
+      // Carry validation into the callback so failures use Tabloom's tool-error
+      // contract instead of the SDK's pre-callback, text-only validation error.
+      validate: (value) => ({ value: schema.safeParse(value) }),
+    },
+  };
+}
+
 /** Registration is shared; authenticated clients and command services are never cached. */
 export function registerWorkspaceTools(server: McpServer, config: { mutationsEnabled: boolean }) {
   function register(
@@ -46,18 +61,20 @@ export function registerWorkspaceTools(server: McpServer, config: { mutationsEna
     if (!options.readOnly && !config.mutationsEnabled) return;
     const outputSchema = z.object({ data: resultSchema });
     server.registerTool(name, {
-      title: name.replaceAll("_", " "), description: summary, inputSchema, outputSchema,
+      title: name.replaceAll("_", " "), description: summary, inputSchema: guardedInputSchema(inputSchema), outputSchema,
       annotations: {
         readOnlyHint: options.readOnly ?? false, destructiveHint: options.destructive ?? false,
         idempotentHint: options.idempotent ?? true, openWorldHint: false,
       },
-    }, async (input, ctx) => {
+    }, async (validation, ctx) => {
       const metadata: WorkspaceToolLog = { action: name, targetType: options.targetType, targetId: null, userId: null, clientId: null };
       try {
         const context = requireWorkspaceContext(ctx.http?.authInfo);
         metadata.userId = context.userId;
         metadata.clientId = context.clientId;
-        // Inputs are validated by the SDK and again by the command service.
+        if (!validation.success) throw commandError("validation_failed");
+        const input = validation.data;
+        // The command service independently validates the parsed input again.
         if (options.targetKey && input && typeof input === "object") {
           const target = Reflect.get(input, options.targetKey);
           metadata.targetId = id.safeParse(target).success ? String(target) : null;
@@ -89,19 +106,19 @@ export function registerWorkspaceTools(server: McpServer, config: { mutationsEna
   register("create_space", "createSpace", schemas.createSpaceSchema, space,
     "Create a saved space. Reuse the same idempotencyKey when retrying.", { targetType: "space" });
   register("update_space", "updateSpace", schemas.updateSpaceSchema, space,
-    "Update a saved space using its current updated_at as expectedUpdatedAt. Reuse the same idempotencyKey when retrying.", { targetType: "space", targetKey: "spaceId" });
+    "Update a saved space using its current updated_at as expectedUpdatedAt. Reuse the same idempotencyKey when retrying.", { targetType: "space", targetKey: "spaceId", destructive: true });
   register("create_collection", "createCollection", schemas.createCollectionSchema, collection,
     "Create a collection in a saved space. Reuse the same idempotencyKey when retrying.", { targetType: "space", targetKey: "spaceId" });
   register("update_collection", "updateCollection", schemas.updateCollectionSchema, collection,
-    "Rename a collection using its current updated_at as expectedUpdatedAt. Reuse the same idempotencyKey when retrying.", { targetType: "collection", targetKey: "collectionId" });
+    "Rename a collection using its current updated_at as expectedUpdatedAt. Reuse the same idempotencyKey when retrying.", { targetType: "collection", targetKey: "collectionId", destructive: true });
   register("create_collection_item", "createCollectionItem", schemas.createCollectionItemSchema, item,
     "Create a saved link. Reuse the same idempotencyKey when retrying.", { targetType: "collection", targetKey: "collectionId" });
   register("update_collection_item", "updateCollectionItem", schemas.updateCollectionItemSchema, item,
-    "Update a saved link using its current updated_at as expectedUpdatedAt. Reuse the same idempotencyKey when retrying.", { targetType: "link", targetKey: "itemId" });
+    "Update a saved link using its current updated_at as expectedUpdatedAt. Reuse the same idempotencyKey when retrying.", { targetType: "link", targetKey: "itemId", destructive: true });
   register("move_collection_item", "moveCollectionItem", schemas.moveCollectionItemSchema, item,
-    "Move a saved link to another collection using its current updated_at as expectedUpdatedAt. Reuse the same idempotencyKey when retrying.", { targetType: "link", targetKey: "itemId" });
+    "Move a saved link to another collection using its current updated_at as expectedUpdatedAt. Reuse the same idempotencyKey when retrying.", { targetType: "link", targetKey: "itemId", destructive: true });
   register("reorder_collection_items", "reorderCollectionItems", schemas.reorderCollectionItemsSchema, z.array(item),
-    "Reorder all links in a collection using the current workspace revision. Reuse the same idempotencyKey when retrying.", { targetType: "collection", targetKey: "collectionId" });
+    "Reorder all links in a collection using the current workspace revision. Reuse the same idempotencyKey when retrying.", { targetType: "collection", targetKey: "collectionId", destructive: true });
   register("prepare_delete_space", "prepareDeleteSpace", destructiveCommandSchemas.prepareDeleteSpace, intent,
     "Prepare deletion and return affected counts. Ask the user to confirm this deletion before calling confirm_delete_space with the returned intentId.",
     { targetType: "space", targetKey: "spaceId", idempotent: false });

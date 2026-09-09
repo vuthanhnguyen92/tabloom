@@ -77,7 +77,10 @@ describe("workspace MCP tools", () => {
       expect(tool.outputSchema.type).toBe("object");
       expect(tool.annotations.openWorldHint).toBe(false);
       expect(tool.annotations.readOnlyHint).toBe(reads.includes(tool.name));
-      expect(tool.annotations.destructiveHint).toBe(["confirm_delete_space", "confirm_delete_collection", "delete_collection_item"].includes(tool.name));
+      expect(tool.annotations.destructiveHint, tool.name).toBe([
+        "update_space", "update_collection", "update_collection_item", "move_collection_item", "reorder_collection_items",
+        "confirm_delete_space", "confirm_delete_collection", "delete_collection_item",
+      ].includes(tool.name));
       expect(tool.annotations.idempotentHint).toBe(!tool.name.startsWith("prepare_delete_"));
     }
   });
@@ -100,10 +103,18 @@ describe("workspace MCP tools", () => {
     expect(response.result).toMatchObject({ isError: true, structuredContent: { error: { code: "validation_failed" } } });
   });
 
-  it("rejects caller-supplied identity before any workspace call", async () => {
+  it.each([
+    ["unknown identity key", "list_spaces", { userId: USER }],
+    ["invalid field type", "list_collections", { spaceId: 123 }],
+    ["invalid mutation field type", "create_space", { name: 123, color: "#7357e6", idempotencyKey: KEY }],
+  ])("returns stable validation errors for %s before any workspace call", async (_label, name, args) => {
     const { context, calls } = requestContext();
-    const response = await send(true, "tools/call", { name: "list_spaces", arguments: { userId: USER } }, context);
-    expect(response.error ?? response.result?.isError).toBeTruthy();
+    const response = await send(true, "tools/call", { name, arguments: args }, context);
+    expect(response.result).toMatchObject({ isError: true, structuredContent: { error: {
+      code: "validation_failed", message: "The workspace command or response is invalid.", details: {},
+    } } });
+    expect(response.error).toBeUndefined();
+    expect(response.result.content[0].text).toBe("The workspace command or response is invalid.");
     expect(calls).toEqual([]);
   });
 
