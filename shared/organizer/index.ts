@@ -8,3 +8,5 @@ export * from "./CollectionList";
 export * from "./CollectionSection";
 export * from "./SavedLinkCard";
 export * from "./drag-model";
+export * from "./GlobalSearch";
+export * from "./WorkspaceDialogs";
