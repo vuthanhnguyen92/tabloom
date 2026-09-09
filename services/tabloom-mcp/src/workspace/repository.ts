@@ -7,12 +7,7 @@ import { versionedWorkspaceSchema } from "./schemas";
 
 export type WorkspaceState = { snapshot: WorkspaceSnapshot; revision: number };
 
-const ledgerSchema = z.object({ operation_id: z.string().uuid(), device_id: z.string().uuid(), applied_revision: z.number().int().nonnegative() });
-const applySchema = z.object({
-  revision: z.number().int().nonnegative(),
-  outcomes: z.array(z.object({ operationId: z.string().uuid(), status: z.enum(["applied", "already_applied", "deleted", "rejected"]) })),
-  conflicts: z.array(z.unknown()),
-});
+const receiptSchema = z.object({ operation_id: z.string().uuid(), command_name: z.string(), command_hash: z.string().regex(/^[0-9a-f]{64}$/), response: versionedWorkspaceSchema });
 
 /** Every operation uses the caller's authenticated client; RLS is authoritative. */
 export class WorkspaceCommandRepository {
@@ -32,29 +27,29 @@ export class WorkspaceCommandRepository {
     return { revision: state.revision, snapshot: { spaces, collections, links } };
   }
 
-  async wasApplied(operationId: string, fingerprint: string): Promise<boolean> {
-    const { data, error } = await this.context.supabase.from("workspace_operations")
-      .select("operation_id,device_id,applied_revision")
+  async replay(operationId: string, name: string, fingerprint: string): Promise<WorkspaceState | null> {
+    const { data, error } = await this.context.supabase.from("workspace_command_receipts")
+      .select("operation_id,command_name,command_hash,response")
       .eq("user_id", this.context.userId).eq("operation_id", operationId).maybeSingle();
     if (error) throw mapWorkspaceCommandError(error);
-    if (data === null) return false;
-    const applied = ledgerSchema.parse(data);
-    if (applied.operation_id !== operationId || applied.device_id !== fingerprint) throw commandError("conflict");
-    return true;
+    if (data === null) return null;
+    const receipt = receiptSchema.parse(data);
+    if (receipt.operation_id !== operationId || receipt.command_name !== name || receipt.command_hash !== fingerprint) throw commandError("conflict");
+    return this.validateReceipt(receipt.response);
   }
 
-  async apply(operation: WorkspaceOperation, revision: number): Promise<void> {
-    if (!isWorkspaceOperation(operation) || operation.action === "delete") throw commandError("validation_failed");
-    const { data, error } = await this.context.supabase.rpc("apply_workspace_operations", {
-      operations: [operation], expected_revision: revision,
+  async apply(operations: WorkspaceOperation[], revision: number, name: string, fingerprint: string): Promise<WorkspaceState> {
+    if (!operations.length || operations.some((operation) => !isWorkspaceOperation(operation) || operation.action === "delete")) throw commandError("validation_failed");
+    const { data, error } = await this.context.supabase.rpc("apply_workspace_command", {
+      p_operation_id: operations[0].operationId, p_command_name: name, p_command_hash: fingerprint,
+      p_operations: operations, p_expected_revision: revision,
     });
     if (error) throw mapWorkspaceCommandError(error);
-    const result = applySchema.parse(data);
-    if (result.outcomes.length !== 1 || result.outcomes[0].operationId !== operation.operationId) throw commandError("validation_failed");
-    if (result.conflicts.length || result.outcomes[0].status === "rejected") throw commandError("conflict");
-    if (result.outcomes[0].status === "deleted") throw commandError("not_found");
-    // Always reread the ledger after a possible concurrent replay, checking the
-    // persisted command fingerprint before returning any success.
-    if (!await this.wasApplied(operation.operationId, operation.deviceId)) throw commandError("validation_failed");
+    return this.validateReceipt(versionedWorkspaceSchema.parse(data));
+  }
+
+  private validateReceipt(state: WorkspaceState): WorkspaceState {
+    if ([...state.snapshot.spaces, ...state.snapshot.collections, ...state.snapshot.links].some((item) => item.user_id !== this.context.userId)) throw commandError("validation_failed");
+    return state;
   }
 }

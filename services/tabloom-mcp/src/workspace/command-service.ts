@@ -90,28 +90,36 @@ export class WorkspaceCommandService {
 
   private mutate<I extends { idempotencyKey: string }, O>(
     name: string, schema: z.ZodType<I>, input: unknown,
-    prepare: (state: WorkspaceState, input: I, newId: string) => OperationBody,
+    prepare: (state: WorkspaceState, input: I, newId: string) => OperationBody | OperationBody[],
     result: (snapshot: WorkspaceSnapshot, input: I, newId: string) => O,
   ): Promise<O> {
     return workspaceCommand(async () => {
       const parsed = schemas.parseCommand(schema, input);
       const operationId = parsed.idempotencyKey;
       const entityId = uuidFor(["tabloom-mcp-entity", this.context.userId, operationId]);
-      // device_id is opaque in the sync contract. A stable command fingerprint
-      // makes the existing durable operation ledger reject key reuse with new input.
-      const fingerprint = uuidFor(["tabloom-mcp-command", this.context.userId, name, parsed]);
+      const fingerprint = createHash("sha256").update(JSON.stringify([name, parsed])).digest("hex");
+      const deviceId = uuidFor(["tabloom-mcp-client", this.context.userId, this.context.clientId]);
       for (let attempt = 0; attempt < 2; attempt += 1) {
-        const applied = await this.repository.wasApplied(operationId, fingerprint);
+        const receipt = await this.repository.replay(operationId, name, fingerprint);
+        if (receipt) return result(receipt.snapshot, parsed, entityId);
         const state = await this.repository.load();
-        if (applied) return result(state.snapshot, parsed, entityId);
-        const body = prepare(state, parsed, entityId);
-        const operation = { ...body, operationId, deviceId: fingerprint, sequence: 1, baseRevision: state.revision, createdAt: new Date().toISOString() } as WorkspaceOperation;
-        try { await this.repository.apply(operation, state.revision); }
+        try {
+          const body = prepare(state, parsed, entityId);
+          const operations = (Array.isArray(body) ? body : [body]).map((part, index) => ({ ...part,
+            operationId: index === 0 ? operationId : uuidFor(["tabloom-mcp-batch", this.context.userId, operationId, index]),
+            deviceId, sequence: index + 1, baseRevision: state.revision, createdAt: new Date().toISOString(),
+          } as WorkspaceOperation));
+          const response = await this.repository.apply(operations, state.revision, name, fingerprint);
+          return result(response.snapshot, parsed, entityId);
+        }
         catch (error) {
+          // Another request may have committed after our receipt lookup, or the
+          // RPC response may have been lost after commit. Recover its exact result.
+          const completed = await this.repository.replay(operationId, name, fingerprint);
+          if (completed) return result(completed.snapshot, parsed, entityId);
           if (attempt === 0 && error instanceof WorkspaceCommandError && error.code === "conflict") continue;
           throw error;
         }
-        return result((await this.repository.load()).snapshot, parsed, entityId);
       }
       throw commandError("conflict");
     });
@@ -160,9 +168,21 @@ export class WorkspaceCommandService {
   }
   moveCollectionItem(input: unknown) {
     return this.mutate("moveCollectionItem", schemas.moveCollectionItemSchema, input, ({ snapshot }, value) => {
-      requireItem(snapshot, value.itemId, value.expectedUpdatedAt);
+      const item = requireItem(snapshot, value.itemId, value.expectedUpdatedAt);
       requireCollection(snapshot, value.destinationCollectionId);
-      return { entity: "link", entityId: value.itemId, action: "update", payload: { collection_id: value.destinationCollectionId } };
+      const parentIds = [...new Set([item.collection_id, value.destinationCollectionId])];
+      const members = snapshot.links.filter((link) => parentIds.includes(link.collection_id));
+      if (members.some((link) => !editable(link))) throw commandError("read_only");
+      const reorders: OperationBody[] = parentIds.map((parentId) => ({
+        entity: "link", entityId: parentId, action: "reorder", payload: {
+          parentId,
+          orderedIds: [
+            ...ordered(members.filter((link) => link.collection_id === parentId && link.id !== item.id)).map((link) => link.id),
+            ...(parentId === value.destinationCollectionId ? [item.id] : []),
+          ],
+        },
+      }));
+      return [{ entity: "link", entityId: value.itemId, action: "update", payload: { collection_id: value.destinationCollectionId } }, ...reorders];
     }, (snapshot, value) => requireItem(snapshot, value.itemId));
   }
   reorderCollectionItems(input: unknown) {

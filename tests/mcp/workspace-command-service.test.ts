@@ -28,20 +28,30 @@ function setup(initial: WorkspaceSnapshot = INITIAL) {
   let snapshot = structuredClone(initial);
   let revision = 7;
   let beforeApply: (() => void) | undefined;
+  let beforeLoad: (() => Promise<void>) | undefined;
   let rpcError: { code: string; message: string } | undefined;
-  const ledger = new Map<string, { operation_id: string; device_id: string; applied_revision: number }>();
+  const receipts = new Map<string, { operation_id: string; command_name: string; command_hash: string; response: { revision: number; snapshot: WorkspaceSnapshot } }>();
+  const appliedIds = new Set<string>();
   const writes: WorkspaceOperation[] = [];
   const tableFor = (entity: string) => entity === "space" ? "spaces" : entity === "collection" ? "collections" : "links";
-  const rpc = vi.fn(async (name: string, args?: Record<string, unknown>) => {
+  const rpc = vi.fn(async (name: string, args?: Record<string, unknown>): Promise<{ data: unknown; error: { code: string; message: string } | null }> => {
     if (rpcError) return { data: null, error: rpcError };
-    if (name === "load_workspace_snapshot") return { data: { revision, snapshot: structuredClone(snapshot) }, error: null };
-    if (name !== "apply_workspace_operations") throw new Error(`Unexpected RPC ${name}`);
+    if (name === "load_workspace_snapshot") {
+      if (beforeLoad) { const hook = beforeLoad; beforeLoad = undefined; await hook(); }
+      return { data: { revision, snapshot: structuredClone(snapshot) }, error: null };
+    }
+    if (name !== "apply_workspace_command") throw new Error(`Unexpected RPC ${name}`);
     if (beforeApply) { const hook = beforeApply; beforeApply = undefined; hook(); }
-    if (args?.expected_revision !== revision) return { data: null, error: { code: "40001", message: "workspace revision conflict" } };
-    const operations = args.operations as WorkspaceOperation[];
-    const outcomes = operations.map((operation) => {
+    const receipt = receipts.get(String(args?.p_operation_id));
+    if (receipt) return receipt.command_hash === args?.p_command_hash && receipt.command_name === args?.p_command_name
+      ? { data: structuredClone(receipt.response), error: null }
+      : { data: null, error: { code: "40001", message: "workspace command idempotency conflict" } };
+    if (args?.p_expected_revision !== revision) return { data: null, error: { code: "40001", message: "workspace revision conflict" } };
+    const operations = args.p_operations as WorkspaceOperation[];
+    let changed = false;
+    for (const operation of operations) {
       if (!isWorkspaceOperation(operation)) throw new Error("Service emitted an invalid workspace operation");
-      if (ledger.has(operation.operationId)) return { operationId: operation.operationId, status: "already_applied" };
+      if (appliedIds.has(operation.operationId)) throw new Error("Partial command replay");
       writes.push(structuredClone(operation));
       const table = tableFor(operation.entity);
       if (operation.action === "create") {
@@ -51,21 +61,29 @@ function setup(initial: WorkspaceSnapshot = INITIAL) {
       } else if (operation.action === "update") {
         snapshot = { ...snapshot, [table]: snapshot[table].map((row) => row.id === operation.entityId ? { ...row, ...operation.payload, updated_at: LATER } : row) };
       } else if (operation.action === "reorder") {
+        const members = snapshot.links.filter((row) => row.collection_id === operation.payload.parentId);
+        if (members.length !== operation.payload.orderedIds.length || members.some((row) => !operation.payload.orderedIds.includes(row.id))) throw new Error("Invalid reorder membership");
         snapshot = { ...snapshot, [table]: snapshot[table].map((row) => operation.payload.orderedIds.includes(row.id) ? { ...row, position: operation.payload.orderedIds.indexOf(row.id), updated_at: LATER } : row) };
       } else throw new Error("Task 4 must not issue a destructive sync operation");
-      revision += 1;
-      ledger.set(operation.operationId, { operation_id: operation.operationId, device_id: operation.deviceId, applied_revision: revision });
-      return { operationId: operation.operationId, status: "applied" };
-    });
-    return { data: { revision, outcomes, patches: structuredClone(snapshot), tombstones: [], conflicts: [] }, error: null };
+      changed ||= operation.action !== "reorder" || operation.payload.orderedIds.length > 0;
+      appliedIds.add(operation.operationId);
+    }
+    if (changed) revision += 1;
+    const root = operations[0];
+    const links = root.entity === "link" ? snapshot.links.filter((row) => root.action === "reorder" ? row.collection_id === root.payload.parentId : row.id === root.entityId) : [];
+    const collections = snapshot.collections.filter((row) => root.entity === "collection" ? row.id === root.entityId : root.action === "reorder" ? row.id === root.payload.parentId : links.some((link) => link.collection_id === row.id));
+    const spaces = snapshot.spaces.filter((row) => root.entity === "space" ? row.id === root.entityId : collections.some((collection) => collection.space_id === row.id));
+    const response = structuredClone({ revision, snapshot: { spaces, collections, links } });
+    receipts.set(String(args.p_operation_id), { operation_id: String(args.p_operation_id), command_name: String(args.p_command_name), command_hash: String(args.p_command_hash), response });
+    return { data: structuredClone(response), error: null };
   });
   const from = vi.fn((table: string) => {
-    if (table !== "workspace_operations") throw new Error(`Unexpected table ${table}`);
+    if (table !== "workspace_command_receipts") throw new Error(`Unexpected table ${table}`);
     const filters: Record<string, unknown> = {};
     const query = {
       select: vi.fn(() => query),
       eq: vi.fn((key: string, value: unknown) => { filters[key] = value; return query; }),
-      maybeSingle: async () => ({ data: filters.user_id === USER ? ledger.get(String(filters.operation_id)) ?? null : null, error: null }),
+      maybeSingle: async () => ({ data: filters.user_id === USER ? structuredClone(receipts.get(String(filters.operation_id)) ?? null) : null, error: null }),
     };
     return query;
   });
@@ -73,6 +91,8 @@ function setup(initial: WorkspaceSnapshot = INITIAL) {
   return {
     service: new WorkspaceCommandService(context), context, writes, rpc,
     state: () => structuredClone(snapshot),
+    deleteSpaceExternally: (id: string) => { snapshot.spaces = snapshot.spaces.filter((item) => item.id !== id); revision += 1; },
+    beforeNextLoad: (hook: () => Promise<void>) => { beforeLoad = hook; },
     concurrentChange: (change: (current: WorkspaceSnapshot) => void) => { beforeApply = () => { change(snapshot); revision += 1; }; },
     failWith: (error: { code: string; message: string }) => { rpcError = error; },
   };
@@ -128,6 +148,25 @@ describe("request-scoped workspace commands", () => {
     const { service, context, writes } = setup();
     await service.createSpace({ name: "New", color: "#123456", idempotencyKey: KEY });
     await expect(new WorkspaceCommandService(context).createSpace({ name: "Different", color: "#123456", idempotencyKey: KEY })).rejects.toMatchObject({ code: "conflict" });
+    expect(writes).toHaveLength(1);
+  });
+
+  it("replays the original create response after a subsequent edit", async () => {
+    const { service, context, writes } = setup();
+    const input = { name: "Original", color: "#123456", idempotencyKey: KEY };
+    const original = await service.createSpace(input);
+    await service.updateSpace({ spaceId: original.id, expectedUpdatedAt: original.updated_at, name: "Later edit", idempotencyKey: OTHER_ITEM_ID });
+    expect(await new WorkspaceCommandService(context).createSpace(input)).toEqual(original);
+    expect(writes).toHaveLength(2);
+  });
+
+  it("replays the original create response after deletion without resurrecting it", async () => {
+    const { service, context, writes, state, deleteSpaceExternally } = setup();
+    const input = { name: "Original", color: "#123456", idempotencyKey: KEY };
+    const original = await service.createSpace(input);
+    deleteSpaceExternally(original.id);
+    expect(await new WorkspaceCommandService(context).createSpace(input)).toEqual(original);
+    expect(state().spaces).toEqual([SPACE]);
     expect(writes).toHaveLength(1);
   });
 
@@ -187,6 +226,27 @@ describe("request-scoped workspace commands", () => {
     expect(state().links).toHaveLength(1);
   });
 
+  it("atomically closes source gaps and appends into a populated destination", async () => {
+    const { service, state, rpc } = setup({ ...INITIAL,
+      collections: [COLLECTION, { ...COLLECTION, id: DESTINATION_ID, name: "Destination" }],
+      links: [LINK, { ...LINK, id: OTHER_ITEM_ID, position: 1 }, { ...LINK, id: KEY, collection_id: DESTINATION_ID, position: 0 }],
+    });
+    await service.moveCollectionItem({ itemId: ITEM_ID, destinationCollectionId: DESTINATION_ID, expectedUpdatedAt: NOW, idempotencyKey: KEY });
+    const links = state().links;
+    expect(links.filter((item) => item.collection_id === COLLECTION_ID)).toMatchObject([{ id: OTHER_ITEM_ID, position: 0 }]);
+    expect(links.filter((item) => item.collection_id === DESTINATION_ID).sort((a, b) => a.position - b.position)).toMatchObject([{ id: KEY, position: 0 }, { id: ITEM_ID, position: 1 }]);
+    expect(rpc.mock.calls.filter(([name]) => name.startsWith("apply_workspace_"))).toHaveLength(1);
+  });
+
+  it.each([COLLECTION_ID, DESTINATION_ID])("rejects a move with read-only membership in %s", async (parentId) => {
+    const { service, writes } = setup({ ...INITIAL,
+      collections: [COLLECTION, { ...COLLECTION, id: DESTINATION_ID }],
+      links: [LINK, { ...LINK, id: OTHER_ITEM_ID, collection_id: parentId, read_only: true, position: 1 }],
+    });
+    await expect(service.moveCollectionItem({ itemId: ITEM_ID, destinationCollectionId: DESTINATION_ID, expectedUpdatedAt: NOW, idempotencyKey: KEY })).rejects.toMatchObject({ code: "read_only" });
+    expect(writes).toEqual([]);
+  });
+
   it.each(["missing", "foreign", "read_only"])("rejects a %s move destination", async (kind) => {
     const destination = { ...COLLECTION, id: DESTINATION_ID, user_id: kind === "foreign" ? KEY : USER, read_only: kind === "read_only" };
     const { service, writes } = setup({ ...INITIAL, collections: kind === "missing" ? [COLLECTION] : [COLLECTION, destination] });
@@ -209,7 +269,7 @@ describe("request-scoped workspace commands", () => {
     const { service, concurrentChange, rpc } = setup();
     concurrentChange((state) => { state.links[0].title = "Concurrent link edit"; });
     expect(await service.updateSpace({ spaceId: SPACE_ID, expectedUpdatedAt: NOW, name: "Renamed", idempotencyKey: KEY })).toMatchObject({ name: "Renamed" });
-    expect(rpc.mock.calls.filter(([name]) => name === "apply_workspace_operations").map(([, args]) => args?.expected_revision)).toEqual([7, 8]);
+    expect(rpc.mock.calls.filter(([name]) => name === "apply_workspace_command").map(([, args]) => args?.p_expected_revision)).toEqual([7, 8]);
   });
 
   it("rejects an edit when the target changes during a revision retry", async () => {
@@ -235,6 +295,15 @@ describe("request-scoped workspace commands", () => {
     ]);
     expect(first).toEqual(second);
     expect(state().spaces).toHaveLength(2);
+    expect(writes).toHaveLength(1);
+  });
+
+  it("replays a creation completed between the receipt lookup and snapshot read", async () => {
+    const { service, context, writes, beforeNextLoad } = setup();
+    const input = { name: "Concurrent", color: "#123456", idempotencyKey: KEY };
+    let original: unknown;
+    beforeNextLoad(async () => { original = await new WorkspaceCommandService(context).createSpace(input); });
+    expect(await service.createSpace(input)).toEqual(original);
     expect(writes).toHaveLength(1);
   });
 
@@ -274,11 +343,11 @@ describe("request-scoped workspace commands", () => {
   it("retries a write revision conflict at most once", async () => {
     const { service, rpc, writes } = setup();
     const implementation = rpc.getMockImplementation()!;
-    rpc.mockImplementation(async (name, args) => name === "apply_workspace_operations"
+    rpc.mockImplementation(async (name, args) => name === "apply_workspace_command"
       ? { data: null, error: { code: "40001", message: "concurrent edit" } }
       : implementation(name, args));
     await expect(service.updateSpace({ spaceId: SPACE_ID, expectedUpdatedAt: NOW, name: "Renamed", idempotencyKey: KEY })).rejects.toMatchObject({ code: "conflict" });
-    expect(rpc.mock.calls.filter(([name]) => name === "apply_workspace_operations")).toHaveLength(2);
+    expect(rpc.mock.calls.filter(([name]) => name === "apply_workspace_command")).toHaveLength(2);
     expect(writes).toEqual([]);
   });
 
