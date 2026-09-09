@@ -489,17 +489,8 @@ revoke all on function public.apply_workspace_operations_strict(jsonb,bigint) fr
 revoke all on function public.apply_workspace_operations(jsonb,bigint) from public,anon,service_role;
 grant execute on function public.apply_workspace_operations(jsonb,bigint) to authenticated;
 
--- Authenticated writes retain their owner RLS checks; deletion is RPC-only.
-revoke delete on public.spaces, public.collections, public.links from authenticated;
-drop policy "owners manage spaces" on public.spaces;
-create policy "owners read spaces" on public.spaces for select using (auth.uid() = user_id);
-create policy "owners create spaces" on public.spaces for insert with check (auth.uid() = user_id);
-create policy "owners update spaces" on public.spaces for update using (auth.uid() = user_id) with check (auth.uid() = user_id);
-drop policy "owners manage collections" on public.collections;
-create policy "owners read collections" on public.collections for select using (auth.uid() = user_id);
-create policy "owners create collections" on public.collections for insert with check (auth.uid() = user_id);
-create policy "owners update collections" on public.collections for update using (auth.uid() = user_id) with check (auth.uid() = user_id);
-drop policy "owners manage links" on public.links;
-create policy "owners read links" on public.links for select using (auth.uid() = user_id);
-create policy "owners create links" on public.links for insert with check (auth.uid() = user_id);
-create policy "owners update links" on public.links for update using (auth.uid() = user_id) with check (auth.uid() = user_id);
+-- Compatibility phase: keep the deployed web client's DELETE grants/policies.
+-- After compatible clients are deployed, the operator must run
+-- supabase/operations/workspace_trash_privilege_cutover.sql to revoke direct
+-- deletion. Keeping this outside migrations prevents db push from cutting off
+-- the previous web client before deployment. See docs/mcp-setup.md.

@@ -212,11 +212,15 @@ release gate:
 
 ```bash
 npm run lint && npx tsc --noEmit && npm run test:unit && \
-  npm run test:supabase && npm --prefix services/tabloom-mcp run build
+  npm run test:supabase && npm --prefix services/tabloom-mcp run type-check && \
+  npm --prefix services/tabloom-mcp run build && npm run build:vercel
 ```
 
 The database test command resets local Supabase. It must never be pointed at a
-hosted database.
+hosted database. It also executes the real operator cutover SQL against the
+fixed local database address, tests its preconditions, final privileges, RLS,
+Trash operations and extension sync, then rolls back that test's grants and
+fixtures. A fresh reset therefore leaves the compatibility state in place.
 
 ### 2. Review and apply migrations 001 through 004
 
@@ -246,7 +250,38 @@ npx supabase db push --linked --skip-vault
 Do not run migrations out of order and do not deploy the new service before
 all four are present.
 
-### 3. Deploy with mutations disabled
+These migrations are additive for deployed client access: they retain the
+existing authenticated table DELETE privileges and owner policies. The final
+privilege change is deliberately outside `supabase/migrations`, in
+`supabase/operations/workspace_trash_privilege_cutover.sql`; `db push` cannot
+apply it. Legacy web deletion keeps its previous permanent-delete behavior
+until the explicit cutover. Do not announce universal Trash protection yet.
+
+These four migrations have not been released. If the linked migration list
+already includes any of them from an earlier version of this branch, stop and
+review that database's actual grants and function definitions before proceeding;
+an edited migration file is not automatically reapplied by `db push`.
+
+### 3. Deploy compatible web and MCP clients with mutations disabled
+
+Schedule a short deletion maintenance window. Ask active web users to finish
+pending work, avoid deletion during deployment, and reload `/app` afterward.
+Publish the compatible extension packages and verify their sync delete RPC.
+Already-open tabs can retain the old JavaScript bundle; a maintenance notice
+and a new deployment alone do not replace that bundle or revoke API access.
+
+From the repository root linked to the canonical web project, deploy the
+reviewed web client that uses `SupabaseTrashRepository`:
+
+```bash
+vercel deploy --prod --cwd . --yes
+```
+
+Use a freshly loaded `/app` with dedicated fixtures to verify saved-link
+deletion returns a Trash receipt and Undo restores the link, and that collection
+deletion follows prepare/confirm and returns a recoverable receipt. Record the
+web deployment ID as a compatible rollback target. Do not cut over privileges
+if these checks fail.
 
 Inspect whether the production variable already exists:
 
@@ -294,9 +329,46 @@ enablement:
 Record only categorical pass/fail results, deployment and migration IDs, and
 the reviewed commit.
 
-### 4. Enable after disabled-flag acceptance
+### 4. Explicitly cut over direct DELETE privileges
 
-Only after the disabled deployment and two-user acceptance pass, update the
+After the compatible web, extension sync, and disabled MCP acceptance above
+pass, run this operator-only step. Configure a private libpq service named
+`tabloom-production` for project `tctjlsvfufzxhauhywsm`, using an administrative
+database connection and a password file or approved secret store. Do not put
+credentials into command arguments or logs. Verify the service target before
+running these commands from the reviewed repository root:
+
+```bash
+PGOPTIONS='-c tabloom.trash_clients_ready=on' \
+  psql 'service=tabloom-production' -X --set=ON_ERROR_STOP=1 \
+  --file=supabase/operations/workspace_trash_privilege_cutover.sql
+psql 'service=tabloom-production' -X --set=ON_ERROR_STOP=1 \
+  --file=supabase/operations/workspace_trash_privilege_postcheck.sql
+```
+
+The readiness setting is the operator's explicit attestation that client
+deployment, refresh handling, and acceptance are complete. The SQL also checks
+the required authenticated RPCs, helper privileges, and ownership RLS before
+changing access. The single statement revokes direct DELETE, replaces the old
+ALL policies with SELECT/INSERT/UPDATE policies, and checks the final grants.
+Any failed precondition or postcheck rolls back the entire statement; rerunning
+a successful cutover is safe. It is never part of automatic schema deployment.
+
+The read-only postcheck must return three rows with every boolean true. Then,
+with a dedicated authenticated user, require direct DELETE on `spaces`,
+`collections`, and `links` to fail with `42501`, while owned create/update/read,
+Trash deletion/Undo, and extension sync still work. Repeat the two-user RLS
+checks. Keep MCP mutations disabled if any result is uncertain.
+
+Old web tabs now fail closed on direct deletion. Show affected users the refresh
+instruction and have them reload `/app` before retrying. If the earlier deletion
+outcome is uncertain, first read the live workspace and Trash to determine
+whether it completed. Do not regrant DELETE to accommodate stale clients.
+End deletion maintenance only after these postchecks pass.
+
+### 5. Enable after client and privilege acceptance
+
+Only after disabled deployment, explicit cutover, and two-user acceptance pass, update the
 flag and redeploy:
 
 ```bash
@@ -314,7 +386,19 @@ the original parent, restore with an alternate destination, and OAuth
 revocation. Repeat the two-user isolation gate. Never record credentials or
 raw authorization headers.
 
-### 5. Roll back safely
+### 6. Roll back safely
+
+Before the privilege cutover, a failed compatible-client deployment can roll
+back to its prior web deployment while the additive database remains in the
+compatibility state. Keep deletion maintenance in place and finish or postpone
+the cutover explicitly. A failed cutover statement changes no grants.
+
+After cutover, the web rollback target must itself use the Trash repository;
+use the verified web deployment ID recorded above. A pre-Trash web build would
+fail on deletion. If no healthy compatible web deployment is available, keep
+workspace deletion unavailable and publish a refresh/maintenance notice until
+a forward fix is deployed. Preserve the final DELETE revocation. Neither MCP
+rollback nor a web rollback changes database privileges.
 
 Before enabling mutations, preselect and record a reviewed deployment ID or
 URL that passed the disabled-flag acceptance above or predates mutation-tool
@@ -367,6 +451,8 @@ Leave migrations 001 through 004 in place: they are the forward-compatible
 Trash and receipt foundation. Do not restore unsafe direct hard deletes or
 attempt an ad hoc down migration. Diagnose and ship a reviewed forward fix;
 Trash entries remain recoverable for their original 30-day windows.
+After any post-cutover rollback, rerun the privilege postcheck command above
+and the compatible web delete/Undo probe before ending maintenance.
 
 ## Run the redacted readiness probe
 

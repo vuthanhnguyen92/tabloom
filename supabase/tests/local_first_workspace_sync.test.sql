@@ -208,9 +208,12 @@ select is((select revision from public.workspace_sync_state), 6::bigint, 'mixed 
 select is((select count(*) from public.collections where id = '20000000-0000-4000-8000-000000000004'), 0::bigint, 'mixed batch deletes the existing collection');
 select is((select count(*) from public.workspace_tombstones where entity_type = 'collection' and entity_id in ('20000000-0000-4000-8000-000000000004', '20000000-0000-4000-8000-000000000005')), 2::bigint, 'mixed batch records both collection tombstones');
 
-select throws_ok($$ delete from public.spaces where false $$, '42501', 'permission denied for table spaces', 'direct authenticated space delete is revoked');
-select throws_ok($$ delete from public.collections where id='20000000-0000-4000-8000-000000000004' $$, '42501', 'permission denied for table collections', 'direct authenticated collection delete is revoked');
-select throws_ok($$ delete from public.links where id='30000000-0000-4000-8000-000000000001' $$, '42501', 'permission denied for table links', 'direct authenticated link delete is revoked');
+-- Additive migrations must remain compatible with the deployed web client.
+-- The actual operator cutover and final privileges are exercised separately by
+-- tests/database/workspace-trash-cutover.test.mjs after this database suite.
+select lives_ok($$ delete from public.spaces where false $$, 'space DELETE remains available before the explicit client cutover');
+select lives_ok($$ delete from public.collections where id='20000000-0000-4000-8000-000000000004' $$, 'collection DELETE remains available before the explicit client cutover');
+select lives_ok($$ delete from public.links where id='30000000-0000-4000-8000-000000000001' $$, 'link DELETE remains available before the explicit client cutover');
 
 select lives_ok($$ select public.apply_workspace_operations('[
   {"operationId":"40000000-0000-4000-8000-000000000020","deviceId":"50000000-0000-4000-8000-000000000001","sequence":20,"entity":"collection","entityId":"20000000-0000-4000-8000-000000000020","action":"create","payload":{"id":"20000000-0000-4000-8000-000000000020","space_id":"10000000-0000-4000-8000-000000000001","name":"Batch create","position":0}},

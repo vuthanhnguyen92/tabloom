@@ -143,7 +143,9 @@ All deletions from web, extension synchronization, and MCP route through these f
 
 Restoration recreates records with their original stable IDs and relative ordering. If an original parent no longer exists, restoration returns a structured `destination_required` result. A deleted link can then be restored into a chosen writable collection, and a deleted collection into a chosen writable space. A complete space snapshot is self-contained.
 
-Restoration rejects cross-owner destinations, read-only bookmark destinations, expired entries, already-restored entries, and ID conflicts. It advances the workspace revision so restored data synchronizes to other devices.
+Restoration rejects cross-owner destinations, read-only bookmark destinations, expired entries, and live ID conflicts. It advances the workspace revision so restored data synchronizes to other devices. Repeating a completed restore returns its existing result without another mutation.
+
+Restored records and existing siblings whose positions change receive fresh server `updated_at` versions. IDs and `created_at` values remain stable. Pre-delete timestamps and unused confirmation intents cannot authorize another deletion of the restored tree; completed operation receipts still replay safely within retention. Restoring a shared collection does not reactivate its old public URL: sharing must be enabled again because sharing tokens are outside the Trash snapshot.
 
 Expired entries are excluded from all user-facing reads immediately. Normal Trash access invokes a bounded opportunistic purge of expired rows, avoiding a hard dependency on an external scheduler. A later scheduled purge may be added without changing the public contract.
 
@@ -237,14 +239,15 @@ MCP commands are server-authoritative and return only after the transaction comm
 1. Deploy additive Trash and delete-intent schema, RLS, transactional functions, and integration tests.
 2. Add the server-side workspace command service and read-only MCP discovery tools.
 3. Add MCP mutations behind `TABLOOM_MCP_MUTATIONS_ENABLED=false`.
-4. Validate two-user RLS isolation, idempotency, concurrency, confirmation, deletion, and restoration in production-like staging.
-5. Enable MCP mutations.
-6. Extract shared organizer components and migrate the extension with no intended visual or behavioral changes.
-7. Move `/app` to the shared organizer, add Trash and Undo, and remove its duplicate organizer implementation.
-8. Build and regression-test the web app and Chromium, Firefox, and Safari extension targets.
-9. Deploy the web and MCP services, run live OAuth and MCP acceptance checks, and then publish updated downloadable extension packages.
+4. Extract shared organizer components, migrate the extension, and move `/app` to the shared organizer with Trash and Undo.
+5. Validate two-user RLS isolation, idempotency, concurrency, confirmation, deletion, and restoration in production-like staging. Build and regression-test web and Chromium, Firefox, and Safari extension targets.
+6. Deploy the compatible web and MCP services with mutations disabled, publish updated downloadable extension packages, and run web, sync, OAuth, and read-tool acceptance checks.
+7. Refresh legacy clients during deletion maintenance, run the explicit operator privilege cutover, and verify direct DELETE is blocked while Trash and owned reads/creates/updates work.
+8. Enable MCP mutations after client and privilege acceptance, then run live mutation and recovery probes.
 
 Database changes are additive during the compatibility portion of the rollout. After the updated clients and synchronization RPC use Trash functions, direct table-delete privileges are removed so supported clients cannot bypass recovery. Rollback disables new deletion entry points rather than restoring unsafe direct hard deletes. Disabling `TABLOOM_MCP_MUTATIONS_ENABLED` immediately removes agent mutation access without affecting read tools or human workspace access.
+
+Privilege removal is a separate operator-run cutover under `supabase/operations`, never an automatically applied migration. Deploy compatible clients first, refresh legacy web tabs during the deletion maintenance window, then run the checked cutover and final privilege probes before enabling MCP mutations. Post-cutover web rollback targets must remain compatible with Trash RPCs.
 
 ## Testing
 

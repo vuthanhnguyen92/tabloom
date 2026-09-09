@@ -44,7 +44,7 @@ Row-level security ensures every user can read and change only rows whose `user_
 
 ## Live collection sharing
 
-Signed-in users can enable a read-only live URL for an ordinary synced collection from the web workspace or any extension build. Sharing is off by default. Anyone possessing `https://tabloom.nickvu.dev/s/<token>` can view the collection without signing in; the owner identity, parent space, device information, and sync state are never included. Synced edits appear when the recipient reloads. Regenerating the URL or disabling sharing invalidates the previous bearer link immediately, and deleting the collection revokes it through the database cascade.
+Signed-in users can enable a read-only live URL for an ordinary synced collection from the web workspace or any extension build. Sharing is off by default. Anyone possessing `https://tabloom.nickvu.dev/s/<token>` can view the collection without signing in; the owner identity, parent space, device information, and sync state are never included. Synced edits appear when the recipient reloads. Regenerating the URL or disabling sharing invalidates the previous bearer link immediately, and deleting the collection revokes it through the database cascade. Restoring the collection from Trash does not reactivate that URL; enable sharing again to issue a new one.
 
 Apply `supabase/migrations/202609040001_live_collection_sharing.sql` before deploying owner controls. The public loader uses the anonymous key and the allow-listed `load_shared_collection` RPC; it never requires or accepts a service-role key. Release in this order: database migration, web application, then rebuilt browser packages.
 
@@ -147,3 +147,5 @@ See [Manual bookmark synchronization](docs/bookmark-sync-setup.md) for local Sup
 ## Deployment
 
 `https://tabloom.nickvu.dev` is the canonical Vercel front door for the landing page, `/app`, `/privacy`, `/mcp`, `/oauth/*`, and `/.well-known/*`. Set `TABLOOM_MCP_UPSTREAM_ORIGIN` to the MCP service's stable private `.vercel.app` origin; clients must use only `https://tabloom.nickvu.dev/mcp`. Configure the public Supabase variables in Vercel before enabling synchronized sign-in. The extension is delivered as an unpacked build in v1; Chrome Web Store submission is intentionally out of scope.
+
+Release Trash in three stages: additive schema/RPC migrations, compatible web/MCP clients, then the explicit operator DELETE-privilege cutover. The cutover SQL lives outside automatic migrations. Follow the [MCP operator guide](docs/mcp-setup.md) for client refresh, exact commands, final privilege checks, and rollback handling.

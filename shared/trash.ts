@@ -58,6 +58,9 @@ export class WorkspaceCommandError extends Error {
   }
 }
 
+/** Distinguishes a rejected Trash payload from an unexpected runtime failure. */
+export class TrashDecodeError extends Error {}
+
 const ROOT_TYPES = new Set<TrashRootType>(["space", "collection", "link"]);
 const SOURCES = new Set<TrashSource>(["web", "extension", "mcp"]);
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -75,7 +78,7 @@ function exact(value: Record<string, unknown>, keys: readonly string[]): boolean
 function string(value: unknown): value is string { return typeof value === "string"; }
 function uuid(value: unknown): value is string { return string(value) && UUID.test(value); }
 function timestamp(value: unknown): value is string { return string(value) && Number.isFinite(Date.parse(value)); }
-function fail(kind: string): never { throw new Error(`invalid ${kind}`); }
+function fail(kind: string): never { throw new TrashDecodeError(`invalid ${kind}`); }
 function enumValue<T extends string>(value: unknown, values: Set<T>): value is T { return string(value) && values.has(value as T); }
 
 function domainMeta(value: Record<string, unknown>): boolean {
@@ -84,7 +87,7 @@ function domainMeta(value: Record<string, unknown>): boolean {
   return value.origin === "saved" && value.read_only === false;
 }
 function domainBase(value: Record<string, unknown>): boolean {
-  return string(value.id) && string(value.user_id)
+  return uuid(value.id) && uuid(value.user_id)
     && Number.isInteger(value.position) && (value.position as number) >= 0
     && timestamp(value.created_at) && timestamp(value.updated_at) && domainMeta(value);
 }
@@ -96,13 +99,13 @@ function validSpace(value: unknown): value is Space {
 function validCollection(value: unknown): value is Collection {
   const item = object(value);
   return !!item && exact(item, ["id", "user_id", "space_id", "name", "position", "created_at", "updated_at", "origin", "read_only"])
-    && string(item.space_id) && string(item.name) && domainBase(item);
+    && uuid(item.space_id) && string(item.name) && domainBase(item);
 }
 function validLink(value: unknown): value is SavedLink {
   const item = object(value);
   const exactKeys = item && (exact(item, ["id", "user_id", "collection_id", "url", "title", "description", "favicon_url", "position", "created_at", "updated_at", "origin", "read_only"])
     || exact(item, ["id", "user_id", "collection_id", "url", "title", "description", "favicon_url", "position", "created_at", "updated_at", "origin", "read_only", "device_label"]));
-  return !!item && !!exactKeys && string(item.collection_id) && isSaveableUrl(string(item.url) ? item.url : null)
+  return !!item && !!exactKeys && uuid(item.collection_id) && isSaveableUrl(string(item.url) ? item.url : null)
     && string(item.url) && string(item.title) && string(item.description)
     && (item.favicon_url === null || string(item.favicon_url))
     && (item.device_label === undefined || item.device_label === null || string(item.device_label)) && domainBase(item);

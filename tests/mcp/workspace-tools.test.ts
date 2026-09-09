@@ -146,6 +146,23 @@ describe("workspace MCP tools", () => {
     const result = workspaceToolError(new Error("provider-secret"), metadata);
     expect(result).toMatchObject({ isError: true, structuredContent: { error: { code: "internal_error", correlationId: expect.stringMatching(/^[0-9a-f-]{36}$/) } } });
     expect(JSON.stringify(result)).not.toContain("provider-secret");
-    expect(logger).toHaveBeenCalledWith({ ...metadata, outcome: "internal_error" });
+    expect(logger).toHaveBeenCalledWith({ ...metadata, outcome: "internal_error", correlationId: Reflect.get(result.structuredContent.error, "correlationId") });
+  });
+
+  it.each(["rejected client", "database failure"])("correlates a %s through the actual MCP callback without exposing provider data", async (failure) => {
+    const logger = vi.spyOn(console, "error").mockImplementation(() => {});
+    const { context } = requestContext();
+    const secret = "private SQL select * from links; authorization: Bearer token-secret";
+    context.supabase = { rpc: async () => {
+      if (failure === "rejected client") throw new Error(secret);
+      return { data: null, error: { code: "XX000", message: secret, details: "header-secret" } };
+    } } as unknown as SupabaseClient;
+    const response = await send(false, "tools/call", { name: "list_collections", arguments: { spaceId: SPACE } }, context);
+    expect(response.result).toMatchObject({ isError: true, structuredContent: { error: {
+      code: "internal_error", correlationId: expect.stringMatching(/^[0-9a-f-]{36}$/),
+    } } });
+    expect(logger).toHaveBeenCalledExactlyOnceWith({ action: "list_collections", targetType: "space", targetId: SPACE,
+      userId: USER, clientId: context.clientId, outcome: "internal_error", correlationId: response.result.structuredContent.error.correlationId });
+    expect(JSON.stringify([response, logger.mock.calls])).not.toMatch(/private SQL|authorization|Bearer|token-secret|header-secret|outer-secret/);
   });
 });

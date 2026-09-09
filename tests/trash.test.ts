@@ -76,5 +76,21 @@ describe("workspace trash contracts", () => {
     expect(decodeTrashEntry(entry).snapshot.links[0].id).toBe(linkId);
     expect(() => decodeTrashEntry({ ...entry, snapshot: { ...snapshot, spaces: [{}] } })).toThrow("invalid trash snapshot");
     expect(() => decodeTrashEntry({ ...entry, rootType: "space", rootId: spaceId })).toThrow("invalid trash entry");
+    expect(() => decodeTrashEntry({ ...entry, rootId: crypto.randomUUID() })).toThrow("invalid trash entry");
+  });
+
+  it.each([
+    ["spaces", "id"], ["spaces", "user_id"],
+    ["collections", "id"], ["collections", "user_id"], ["collections", "space_id"],
+    ["links", "id"], ["links", "user_id"], ["links", "collection_id"],
+  ])("rejects a malformed UUID in nested %s.%s", (table, field) => {
+    const meta = { id: crypto.randomUUID(), user_id: crypto.randomUUID(), position: 0,
+      created_at: "2026-09-10T00:00:00Z", updated_at: "2026-09-10T00:00:00Z", origin: "saved", read_only: false };
+    const row = table === "spaces" ? { ...meta, name: "Space", color: "#123456" }
+      : table === "collections" ? { ...meta, space_id: crypto.randomUUID(), name: "Collection" }
+        : { ...meta, collection_id: crypto.randomUUID(), title: "Link", description: "", url: "https://example.com", favicon_url: null };
+    const snapshot = { version: 1, rootType: "space", spaces: [], collections: [], links: [], [table]: [row] };
+    expect(() => decodeTrashSnapshot(snapshot)).not.toThrow();
+    expect(() => decodeTrashSnapshot({ ...snapshot, [table]: [{ ...row, [field]: "not-a-uuid" }] })).toThrow("invalid trash snapshot");
   });
 });

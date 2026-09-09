@@ -25,16 +25,14 @@ export type WorkspaceToolLog = {
 };
 
 export function workspaceToolError(error: unknown, metadata?: WorkspaceToolLog) {
-  if (error instanceof WorkspaceCommandError) {
-    const safe = mapWorkspaceCommandError(error);
+  const safe = mapWorkspaceCommandError(error);
+  if (safe instanceof WorkspaceCommandError) {
     return { ...toolResult(safe.message, { error: { code: safe.code, message: safe.message, details: safe.details } }), isError: true };
   }
   const correlationId = randomUUID();
-  if (metadata) {
-    // Enumerate the allowlist: never log arguments, auth objects, or provider errors.
-    console.error({ action: metadata.action, targetType: metadata.targetType, targetId: metadata.targetId,
-      userId: metadata.userId, clientId: metadata.clientId, outcome: "internal_error" });
-  }
+  // Enumerate the allowlist: never log arguments, auth objects, or provider errors.
+  console.error({ ...(metadata ? { action: metadata.action, targetType: metadata.targetType, targetId: metadata.targetId,
+    userId: metadata.userId, clientId: metadata.clientId } : {}), outcome: "internal_error", correlationId });
   const message = "The workspace command failed. Try again or share the correlation ID with support.";
   return { ...toolResult(message, { error: { code: "internal_error", message, correlationId } }), isError: true };
 }

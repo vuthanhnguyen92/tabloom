@@ -236,11 +236,20 @@ describe("recoverable destructive workspace commands", () => {
     expect(rpc).toHaveBeenCalledWith("restore_workspace_trash", { p_trash_id: TRASH_ID, p_destination_id: null });
   });
 
-  it("restores into an alternate owned destination and returns stable IDs and server order", async () => {
-    const restored = { ...INITIAL, collections: [{ ...COLLECTION, id: DESTINATION_ID }], links: [{ ...LINK, collection_id: DESTINATION_ID, position: 2 }] };
-    const { service, rpc } = trashSetup(restored);
+  it("reads the fresh post-restore snapshot after an absent link appears in an alternate destination", async () => {
+    const { service, rpc } = trashSetup({ ...INITIAL, collections: [{ ...COLLECTION, id: DESTINATION_ID }], links: [] });
+    const original = rpc.getMockImplementation()!;
+    let restored = false;
+    rpc.mockImplementation(async (name, args) => {
+      if (name === "restore_workspace_trash") restored = true;
+      if (name === "load_workspace_snapshot" && restored) return { data: { revision: 8, snapshot: {
+        ...INITIAL, collections: [{ ...COLLECTION, id: DESTINATION_ID }], links: [{ ...LINK, collection_id: DESTINATION_ID, position: 2, updated_at: LATER }],
+      } }, error: null };
+      return original(name, args);
+    });
+    expect((await service.getWorkspace()).snapshot.links).toEqual([]);
     expect(await service.restoreTrashItem({ trashId: TRASH_ID, destinationId: DESTINATION_ID }))
-      .toMatchObject({ status: "restored", trashId: TRASH_ID, snapshot: { links: [{ id: ITEM_ID, collection_id: DESTINATION_ID, position: 2 }] } });
+      .toMatchObject({ status: "restored", trashId: TRASH_ID, revision: 8, snapshot: { links: [{ id: ITEM_ID, collection_id: DESTINATION_ID, position: 2, updated_at: LATER }] } });
     expect(rpc).toHaveBeenCalledWith("restore_workspace_trash", { p_trash_id: TRASH_ID, p_destination_id: DESTINATION_ID });
   });
 
@@ -598,7 +607,7 @@ describe("request-scoped workspace commands", () => {
 
   it.each([
     ["P0002", "not_found"], ["23503", "not_found"], ["42501", "not_found"],
-    ["40001", "conflict"], ["22023", "validation_failed"], ["23505", "conflict"], ["XX000", "validation_failed"],
+    ["40001", "conflict"], ["22023", "validation_failed"], ["22P02", "validation_failed"], ["23514", "validation_failed"], ["23505", "conflict"],
   ])("maps database error %s without leaking SQL or secrets", async (code, expectedCode) => {
     const { service, failWith } = setup();
     failWith({ code, message: "private SQL with access_token=secret" });
@@ -606,6 +615,13 @@ describe("request-scoped workspace commands", () => {
     expect(error).toMatchObject({ code: expectedCode });
     expect(String(error)).not.toContain("private SQL");
     expect(String(error)).not.toContain("secret");
+  });
+
+  it("preserves an unexpected service failure for correlation at the MCP boundary", async () => {
+    const { service, failWith } = setup();
+    const unexpected = { code: "XX000", message: "provider failure" };
+    failWith(unexpected);
+    await expect(service.listSpaces()).rejects.toBe(unexpected);
   });
 
   it("sanitizes already-classified repository errors and excludes private details", () => {

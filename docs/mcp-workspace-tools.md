@@ -181,6 +181,8 @@ Each returned entry includes its `id` (the `trashId` used for restore), root
 type and name, deletion source and time, expiry time, and saved snapshot.
 Entries disappear from this list after restoration or after the 30-day
 recovery window expires.
+Each normal list call also purges up to 100 expired entries belonging to the
+caller. Another user's entries and unexpired operation receipts are untouched.
 
 ## Restore to the original parent
 
@@ -195,6 +197,12 @@ still exists, call `restore_trash_item` with only `trashId`:
 
 A successful restore returns `status: "restored"` with the affected workspace
 snapshot and current revision. Retrying an already successful restore is safe.
+Restored records keep their IDs, creation times, and relative order but receive
+fresh `updated_at` versions, as do existing siblings whose positions change.
+Read the new versions before another mutation. An unused confirmation prepared
+before deletion cannot authorize deleting the restored tree; prepare again and
+obtain fresh user confirmation. A completed operation still replays its original
+receipt without deleting the restored data again during the retention window.
 
 ## Restore to an alternate destination
 
@@ -223,6 +231,10 @@ Trash is a 30-day recovery path, not permanent storage. Restore before the
 entry's `expiresAt` or deletion receipt's `restoreUntil`. A restore never
 overwrites a live row with the same ID, and failed deletion or restoration
 transactions leave the previous live or Trash state intact.
+
+Restoring a deleted shared collection does not reactivate its old public sharing
+URL. The owner must enable sharing again and distribute the new URL. Sharing
+tokens are not part of the Trash snapshot.
 
 For deployment, enablement, acceptance, and rollback procedures, see the
 [MCP operator guide](mcp-setup.md).

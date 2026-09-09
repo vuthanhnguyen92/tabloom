@@ -1,5 +1,6 @@
 -- Trash is written only by authenticated, ownership-checking RPCs. Direct saved
--- table DELETE privileges are retained until the callers migrate in Task 3.
+-- table DELETE privileges are retained until the operator runs the separate
+-- privilege cutover after deploying compatible clients.
 create table public.workspace_trash (
   id uuid primary key default gen_random_uuid(),
   user_id uuid not null references auth.users(id) on delete cascade,
@@ -94,6 +95,7 @@ as $$
 declare owner_id uuid := auth.uid();
 begin
   if owner_id is null then raise exception 'authentication required' using errcode = '28000'; end if;
+  perform public.purge_expired_workspace_trash(100);
   return coalesce((select jsonb_agg(jsonb_build_object(
     'id',id,'rootType',root_type,'rootId',root_id,'rootName',root_name,
     'source',source,'deletedAt',deleted_at,'expiresAt',expires_at,'restoredAt',restored_at,'snapshot',snapshot
@@ -210,6 +212,7 @@ declare
   root_row jsonb;
   parent_id uuid;
   next_revision bigint;
+  restore_version timestamptz;
   previous_merge_setting text := current_setting('tabloom.merge_in_progress',true);
 begin
   if owner_id is null then raise exception 'authentication required' using errcode = '28000'; end if;
@@ -247,38 +250,48 @@ begin
     raise exception 'workspace restore conflict' using errcode = '40001';
   end if;
   perform set_config('tabloom.merge_in_progress','on',true);
+  -- Restore is a new write: neither a stale mutation timestamp nor an unused
+  -- pre-delete confirmation may regain authority when the same IDs reappear.
+  -- Advance even a legacy client-supplied timestamp ahead of the server clock.
+  restore_version := clock_timestamp();
   -- Make room at the original slot before compacting positions. This preserves
   -- order even if a sibling has since occupied the deleted row's old position.
   if trash.root_type='space' then
-    update public.spaces set position=position+1 where user_id=owner_id and position >= (root_row->>'position')::int;
+    update public.spaces set position=position+1,updated_at=greatest(restore_version,updated_at+interval '1 microsecond')
+      where user_id=owner_id and position >= (root_row->>'position')::int;
   elsif trash.root_type='collection' then
-    update public.collections set position=position+1 where user_id=owner_id and space_id=parent_id and position >= (root_row->>'position')::int;
+    update public.collections set position=position+1,updated_at=greatest(restore_version,updated_at+interval '1 microsecond')
+      where user_id=owner_id and space_id=parent_id and position >= (root_row->>'position')::int;
   else
-    update public.links set position=position+1 where user_id=owner_id and collection_id=parent_id and position >= (root_row->>'position')::int;
+    update public.links set position=position+1,updated_at=greatest(restore_version,updated_at+interval '1 microsecond')
+      where user_id=owner_id and collection_id=parent_id and position >= (root_row->>'position')::int;
   end if;
   insert into public.spaces(id,user_id,name,color,position,created_at,updated_at)
-    select id,owner_id,name,color,position,created_at,updated_at
+    select id,owner_id,name,color,position,created_at,greatest(restore_version,updated_at+interval '1 microsecond')
     from jsonb_populate_recordset(null::public.spaces,snapshot_value->'spaces');
   insert into public.collections(id,user_id,space_id,name,position,created_at,updated_at)
-    select id,owner_id,case when trash.root_type='collection' then parent_id else space_id end,name,position,created_at,updated_at
+    select id,owner_id,case when trash.root_type='collection' then parent_id else space_id end,name,position,created_at,greatest(restore_version,updated_at+interval '1 microsecond')
     from jsonb_populate_recordset(null::public.collections,snapshot_value->'collections');
   insert into public.links(id,user_id,collection_id,url,title,description,favicon_url,position,created_at,updated_at)
-    select id,owner_id,case when trash.root_type='link' then parent_id else collection_id end,url,title,description,favicon_url,position,created_at,updated_at
+    select id,owner_id,case when trash.root_type='link' then parent_id else collection_id end,url,title,description,favicon_url,position,created_at,greatest(restore_version,updated_at+interval '1 microsecond')
     from jsonb_populate_recordset(null::public.links,snapshot_value->'links');
 
   if trash.root_type='space' then
     with ordered as (select id,row_number() over(order by position,created_at,id)-1 as pos from public.spaces where user_id=owner_id)
-    update public.spaces s set position=ordered.pos from ordered where s.id=ordered.id and s.position<>ordered.pos;
+    update public.spaces s set position=ordered.pos,updated_at=greatest(restore_version,s.updated_at+interval '1 microsecond')
+      from ordered where s.id=ordered.id and s.position<>ordered.pos;
   end if;
   with ordered as (
     select id,row_number() over(partition by space_id order by position,created_at,id)-1 as pos from public.collections
     where user_id=owner_id and ((trash.root_type='collection' and space_id=parent_id) or (trash.root_type='space' and space_id=trash.root_id))
-  ) update public.collections c set position=ordered.pos from ordered where c.id=ordered.id and c.position<>ordered.pos;
+  ) update public.collections c set position=ordered.pos,updated_at=greatest(restore_version,c.updated_at+interval '1 microsecond')
+    from ordered where c.id=ordered.id and c.position<>ordered.pos;
   with ordered as (
     select id,row_number() over(partition by collection_id order by position,created_at,id)-1 as pos from public.links
     where user_id=owner_id and ((trash.root_type='link' and collection_id=parent_id) or collection_id in
       (select (value->>'id')::uuid from jsonb_array_elements(snapshot_value->'collections')))
-  ) update public.links l set position=ordered.pos from ordered where l.id=ordered.id and l.position<>ordered.pos;
+  ) update public.links l set position=ordered.pos,updated_at=greatest(restore_version,l.updated_at+interval '1 microsecond')
+    from ordered where l.id=ordered.id and l.position<>ordered.pos;
   delete from public.workspace_tombstones t where t.user_id=owner_id and (
     (t.entity_type='space' and t.entity_id in (select (value->>'id')::uuid from jsonb_array_elements(snapshot_value->'spaces')))
     or (t.entity_type='collection' and t.entity_id in (select (value->>'id')::uuid from jsonb_array_elements(snapshot_value->'collections')))
