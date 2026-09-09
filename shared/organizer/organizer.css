@@ -92,4 +92,11 @@
   .organizer-toast { color: #e4e2ec; border-color: #484856; background: #25252f; box-shadow: 0 14px 38px rgba(0,0,0,.42); }.organizer-toast.error { color: #ffb7b5; border-color: #6c383e; background: #49272b; }
 }
 @media (max-width: 1000px) { .organizer-shell { grid-template-columns: 210px minmax(0, 1fr); }.organizer-shell:has(> :last-child:not(.organizer-main)) { grid-template-columns: 210px minmax(0, 1fr) 300px; }.organizer-workspace-header { grid-template-columns: 1fr; }.organizer-header-actions { justify-content: stretch; } }
+@media (max-width: 640px) {
+  .organizer-shell { position: relative; grid-template-columns: 68px minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) auto; }
+  .organizer-shell:has(> :last-child:not(.organizer-main)), .organizer-shell:has(.organizer-space-rail.collapsed), .organizer-shell:has(.organizer-space-rail.collapsed):has(> :last-child:not(.organizer-main)) { grid-template-columns: 68px minmax(0, 1fr); }
+  .organizer-shell > :last-child:not(.organizer-main) { grid-column: 1 / -1; grid-row: 2; max-height: min(44vh, 360px); }
+  .organizer-space-rail:not(.collapsed) { position: absolute; z-index: 60; inset: 0 auto 0 0; width: min(230px, calc(100vw - 44px)); box-shadow: 12px 0 34px rgba(37,35,58,.24); }
+  .organizer-main { padding: 22px 16px; }
+}
 @media (prefers-reduced-motion: reduce) { .organizer-space-rail, .organizer-boot-indicator { animation: none; transition: none; } }

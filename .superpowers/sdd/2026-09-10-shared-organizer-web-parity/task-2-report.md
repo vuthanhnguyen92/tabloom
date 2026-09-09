@@ -40,3 +40,26 @@
 ## Concerns
 
 - To avoid extension behavior changes during this extraction, `WorkspaceHeader` and `WorkspaceShell` are exported shared primitives but are not yet composed by `extension/src.tsx`; Task 3 can adopt those slots. The existing extension header and boot wrapper remain intact.
+
+## Review round 1/5
+
+### RED
+
+- Added a fake-timer test that rerenders a transient toast after two seconds and expects dismissal at the original three-second deadline through the newest callback.
+- Added cleanup coverage for removed and unmounted transient toasts.
+- Added null/false/empty-array header-action coverage and narrow-screen shell policy coverage.
+- Ran `npx vitest run tests/organizer-shell.test.tsx tests/extension-style-consistency.test.tsx`; observed the expected four failures: delayed dismissal after rerender, an empty action wrapper, missing narrow side-panel stacking, and duplicate extension dark token declarations.
+
+### GREEN
+
+- `ToastRegion` now uses `globalThis` timers only from effects, keeps a per-ID timer/deadline registry, updates the callback through an effect-backed ref, and clears removed or unmounted timers.
+- `WorkspaceHeader` uses `Children.toArray` before deciding whether to emit its actions container.
+- At `640px` and below, the shell keeps a 68px rail/main grid, stacks an optional side panel in a second row, and overlays an expanded rail instead of shrinking the main content.
+- Removed the duplicate extension dark-mode `:root` token declaration; shared `organizer.css` is the token owner.
+
+### Verification
+
+- `npx vitest run tests/organizer-shell.test.tsx tests/toast-region.test.tsx tests/space-sidebar.test.tsx tests/extension-style-consistency.test.tsx` — pass (25 tests).
+- `npx tsc --noEmit` — pass.
+- `npm run lint` — pass.
+- `npm run build` — pass for Chromium, Firefox, Safari extension bundles and the web app.

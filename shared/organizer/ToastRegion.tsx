@@ -1,5 +1,5 @@
 import { CircleAlert, CircleCheck, X } from "lucide-react";
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 
 export type OrganizerToast = {
   action?: { label: string; onAction: () => void };
@@ -15,12 +15,53 @@ export type ToastRegionProps = {
 };
 
 export function ToastRegion({ onDismiss, toasts }: ToastRegionProps) {
+  const onDismissRef = useRef(onDismiss);
+  const dismissedToastIdsRef = useRef(new Set<string>());
+  const timersRef = useRef(new Map<string, { deadline: number; handle: ReturnType<typeof globalThis.setTimeout> }>());
+
   useEffect(() => {
-    const timers = toasts
-      .filter((toast) => !toast.persistent && !toast.action)
-      .map((toast) => window.setTimeout(() => onDismiss(toast.id), 3_000));
-    return () => timers.forEach((timer) => window.clearTimeout(timer));
-  }, [onDismiss, toasts]);
+    onDismissRef.current = onDismiss;
+  }, [onDismiss]);
+
+  useEffect(() => {
+    const transientToasts = toasts.filter((toast) => !toast.persistent && !toast.action);
+    const transientIds = new Set(transientToasts.map((toast) => toast.id));
+
+    for (const [id, timer] of timersRef.current) {
+      if (transientIds.has(id)) continue;
+      globalThis.clearTimeout(timer.handle);
+      timersRef.current.delete(id);
+    }
+    for (const id of dismissedToastIdsRef.current) {
+      if (!transientIds.has(id)) dismissedToastIdsRef.current.delete(id);
+    }
+
+    for (const toast of transientToasts) {
+      if (dismissedToastIdsRef.current.has(toast.id)) continue;
+      const existingTimer = timersRef.current.get(toast.id);
+      if (existingTimer) {
+        if (existingTimer.deadline > Date.now()) continue;
+        globalThis.clearTimeout(existingTimer.handle);
+        timersRef.current.delete(toast.id);
+        dismissedToastIdsRef.current.add(toast.id);
+        onDismissRef.current(toast.id);
+        continue;
+      }
+      const deadline = Date.now() + 3_000;
+      const handle = globalThis.setTimeout(() => {
+        timersRef.current.delete(toast.id);
+        dismissedToastIdsRef.current.add(toast.id);
+        onDismissRef.current(toast.id);
+      }, deadline - Date.now());
+      timersRef.current.set(toast.id, { deadline, handle });
+    }
+  });
+
+  useEffect(() => () => {
+    for (const timer of timersRef.current.values()) globalThis.clearTimeout(timer.handle);
+    timersRef.current.clear();
+    dismissedToastIdsRef.current.clear();
+  }, []);
 
   if (!toasts.length) return null;
   return <section aria-label="Notifications" className="organizer-toast-region toast-region">

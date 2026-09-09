@@ -15,7 +15,7 @@ export type WorkspaceHeaderProps = {
 
 export function WorkspaceHeader({ actions, className, eyebrow, status, title }: WorkspaceHeaderProps) {
   const classes = ["organizer-workspace-header", className].filter(Boolean).join(" ");
-  const hasActions = Children.count(actions) > 0;
+  const renderedActions = Children.toArray(actions);
 
   return <header className={classes}>
     <div className="organizer-header-title">
@@ -23,6 +23,6 @@ export function WorkspaceHeader({ actions, className, eyebrow, status, title }: 
       <h1 title={typeof title === "string" ? title : undefined}>{title}</h1>
       {status && <small className={`organizer-status-subtitle sync-state-${status.state}`}>{status.subtitle}</small>}
     </div>
-    {hasActions && <div className="organizer-header-actions">{actions}</div>}
+    {!!renderedActions.length && <div className="organizer-header-actions">{renderedActions}</div>}
   </header>;
 }

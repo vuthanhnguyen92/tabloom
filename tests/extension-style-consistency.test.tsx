@@ -76,6 +76,15 @@ describe("extension cross-browser visual baseline", () => {
     expect(getComputedStyle(workspace).overflowY).toBe("auto");
   });
 
+  it("stacks the optional side panel below a collapsed rail on narrow screens", () => {
+    expect(organizerCss).toContain(".organizer-shell { position: relative; grid-template-columns: 68px minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) auto; }");
+    expect(organizerCss).toContain(".organizer-shell > :last-child:not(.organizer-main) { grid-column: 1 / -1; grid-row: 2; max-height: min(44vh, 360px); }");
+  });
+
+  it("keeps dark-mode organizer tokens owned by the shared stylesheet", () => {
+    expect(extensionCss).not.toMatch(/@media \(prefers-color-scheme: dark\) \{\s*:root \{ --surface-page:/);
+  });
+
   it("uses a single deliberate control at the top of the collapsed icon rail", () => {
     render(<aside className="ext-sidebar collapsed">
       <div className="sidebar-top"><button aria-label="Expand sidebar" className="sidebar-toggle">Expand</button></div>

@@ -53,6 +53,12 @@ describe("shared organizer shell", () => {
     expect(screen.queryByTestId("empty-header-action")).not.toBeInTheDocument();
   });
 
+  it("does not render a header action container for null or false capability slots", () => {
+    const { container } = render(<WorkspaceHeader actions={[null, false, [], undefined]} title="Product launch" />);
+
+    expect(container.querySelector(".organizer-header-actions")).not.toBeInTheDocument();
+  });
+
   it("marks the sync subtitle with the status that supplies its color", () => {
     render(<WorkspaceHeader status={{ state: "syncing", subtitle: "2 changes waiting" }} title="Product launch" />);
 
@@ -66,6 +72,35 @@ describe("shared organizer shell", () => {
 
     act(() => vi.advanceTimersByTime(3_000));
     expect(onDismiss).toHaveBeenCalledWith("saved");
+  });
+
+  it("keeps a transient toast's original deadline when its parent rerenders", () => {
+    vi.useFakeTimers();
+    const firstDismiss = vi.fn();
+    const latestDismiss = vi.fn();
+    const { rerender } = render(<ToastRegion onDismiss={firstDismiss} toasts={[{ id: "saved", message: "Saved", tone: "success" }]} />);
+
+    act(() => vi.advanceTimersByTime(2_000));
+    rerender(<ToastRegion onDismiss={latestDismiss} toasts={[{ id: "saved", message: "Saved", tone: "success" }]} />);
+    act(() => vi.advanceTimersByTime(1_000));
+
+    expect(firstDismiss).not.toHaveBeenCalled();
+    expect(latestDismiss).toHaveBeenCalledWith("saved");
+  });
+
+  it("cleans transient toast timers when toasts are removed or unmounted", () => {
+    vi.useFakeTimers();
+    const onDismiss = vi.fn();
+    const { rerender, unmount } = render(<ToastRegion onDismiss={onDismiss} toasts={[{ id: "removed", message: "Removed" }]} />);
+
+    rerender(<ToastRegion onDismiss={onDismiss} toasts={[]} />);
+    act(() => vi.advanceTimersByTime(3_000));
+    expect(onDismiss).not.toHaveBeenCalled();
+
+    rerender(<ToastRegion onDismiss={onDismiss} toasts={[{ id: "unmounted", message: "Unmounted" }]} />);
+    unmount();
+    act(() => vi.advanceTimersByTime(3_000));
+    expect(onDismiss).not.toHaveBeenCalled();
   });
 
   it("keeps actionable errors available until the user resolves them", () => {
