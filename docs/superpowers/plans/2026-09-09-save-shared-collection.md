@@ -282,3 +282,19 @@ rtk npx playwright test tests/e2e/collection-saving.spec.ts --project=chromium
 ## Planning review
 
 The plan covers every accepted behavior and adds explicit defaults for destination, empty collections, deleted copies, and auth resumption. The main implementation risks are concurrency with existing workspace writes and provider callback configuration; Tasks 1 and 3/6 carry direct validation for each. This document changes no application behavior and does not deploy or migrate a database.
+
+## Execution record — 2026-09-09
+
+Implemented on `feat/save-shared-collection`, isolated under `.worktrees/save-shared-collection`. The original checkout's uncommitted configuration/test changes were preserved. The checklist above records the original work breakdown; this execution record is the status summary.
+
+- [x] Task 1: atomic copy/status RPCs, provenance, 53 save-specific SQL assertions, and two live HTTP concurrency tests.
+- [x] Task 2: typed adapter, sanitized errors, and expiring validated sign-in intent.
+- [x] Task 3: OAuth callback and local allowlist entries; callback success/error/intent tests.
+- [x] Task 4: public save action, signed-out dialog, resume, duplicate/owner states, and responsive styling.
+- [x] Task 5: destination selection/focus, missing-target behavior, and same-user auth-refresh stability.
+- [x] Task 6: four passing live browser scenarios, local concurrency checks, visual/keyboard inspection, independent code reviews, and rollout documentation.
+- [ ] Deployment-environment checks: configure hosted allowlist, real Google round trip, and extension pending-edit smoke test. These require the target environment and are documented in `docs/shared-collection-saving.md`; no production deployment was requested.
+
+Implementation adjustments: preserve repository identity across same-user auth refreshes so a deep link does not override later navigation. Fix pre-existing hardcoded revision expectations in the sync SQL test (test only), confirmed failing both before the feature and on a clean tracked schema. Use normal revision triggers as planned; an import can advance the revision more than once in its single transaction.
+
+Verification details and remaining deployment checks are in `docs/shared-collection-saving.md`. All temporary Supabase/app services created for verification were stopped; the existing local database was not reset or persistently migrated.

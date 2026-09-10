@@ -11,6 +11,7 @@ import { Brand } from "../components/Brand";
 import { getSupabaseBrowserClient } from "../lib/supabase-browser";
 import { SupabaseCollectionShareRepository, type CollectionShareClient } from "../../shared/collection-sharing";
 import { WorkspaceClient } from "./WorkspaceClient";
+import { readCollectionTarget, workspaceCollectionPath } from "./workspace-collection-target";
 
 const demoRepository = new MemoryWorkspaceRepository("demo-user", createDemoSnapshot());
 
@@ -33,6 +34,7 @@ export function createSyncedRepositories(client: NonNullable<ReturnType<typeof g
 export function WorkspaceBootstrap() {
   const client = getSupabaseBrowserClient();
   const [auth, setAuth] = useState<{ client: typeof client; session: Session | null | undefined }>({ client, session: client ? undefined : null });
+  const [initialCollectionId, setInitialCollectionId] = useState<string | null>(null);
   // Client changes must recheck authentication before publishing another workspace.
   const session = !client ? null : auth.client === client ? auth.session : undefined;
   const userId = session?.user.id;
@@ -40,6 +42,9 @@ export function WorkspaceBootstrap() {
   const sharingRepository = useMemo(() => client && userId ? new SupabaseCollectionShareRepository(client as unknown as CollectionShareClient) : null, [client, userId]);
 
   useEffect(() => {
+    // The target belongs to the browser URL, not the server-rendered shell.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setInitialCollectionId(readCollectionTarget(window.location.search));
     if (!client) return;
     let active = true;
     let authEventReceived = false;
@@ -56,9 +61,11 @@ export function WorkspaceBootstrap() {
   }, [client]);
 
   if (session === undefined) return <main className="workspace-loading"><Brand /><span>Checking your session…</span></main>;
-  if (client && !session) return <main className="signin-page"><div className="signin-card"><Brand /><span className="eyebrow">YOUR LINKS, EVERYWHERE</span><h1>Welcome to your calmer browser.</h1><p>Sign in once to keep spaces and collections synchronized with the Tabloom new-tab extension.</p><button className="button button-primary" onClick={() => void client.auth.signInWithOAuth({ provider: "google", options: { redirectTo: `${window.location.origin}/app` } })}>Sign in with Google</button><Link href="/">Back to Tabloom</Link></div></main>;
+  if (client && !session) return <main className="signin-page"><div className="signin-card"><Brand /><span className="eyebrow">YOUR LINKS, EVERYWHERE</span><h1>Welcome to your calmer browser.</h1><p>Sign in once to keep spaces and collections synchronized with the Tabloom new-tab extension.</p><button className="button button-primary" onClick={() => void client.auth.signInWithOAuth({ provider: "google", options: { redirectTo: `${window.location.origin}${workspaceCollectionPath(readCollectionTarget(window.location.search))}` } })}>Sign in with Google</button><Link href="/">Back to Tabloom</Link></div></main>;
   if (!repositories) return null;
   return <WorkspaceClient
+    key={session?.user.id ?? "demo"}
+    initialCollectionId={initialCollectionId}
     repository={repositories.repository}
     trashRepository={repositories.trashRepository}
     mode={client ? "synced" : "demo"}

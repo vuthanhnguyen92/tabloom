@@ -24,7 +24,7 @@ type WorkspaceSharing = {
   onRequestSignIn: () => void;
 };
 
-export function WorkspaceClient({ repository, trashRepository, mode, userId = "demo-user", email, onSignOut, sharing }: {
+export function WorkspaceClient({ repository, trashRepository, mode, userId = "demo-user", email, onSignOut, sharing, initialCollectionId }: {
   repository: WebWorkspaceRepository;
   trashRepository?: WorkspaceTrashRepository;
   mode: "demo" | "synced";
@@ -34,6 +34,7 @@ export function WorkspaceClient({ repository, trashRepository, mode, userId = "d
   /** Compatibility only: canonical data and preferences load together in the controller. */
   initialSnapshot?: WorkspaceSnapshot;
   sharing?: WorkspaceSharing;
+  initialCollectionId?: string | null;
 }) {
   // Storage is accessed only when the controller boots on the client, never during SSR.
   const preferenceStore = useMemo(() => createWebPreferenceStore({
@@ -44,6 +45,25 @@ export function WorkspaceClient({ repository, trashRepository, mode, userId = "d
   const options = { repository, trashRepository, userId, preferenceStore, preferenceScope: mode === "synced" ? `account:${userId}` : "demo", capabilities: webOrganizerCapabilities, mutationPolicy: "rollbackOnFailure" as const, deleteSource: "web" as const };
   const controller = useWorkspaceController(options);
   const account = useRef<HTMLDetailsElement>(null);
+  const handledTarget = useRef<{ repository: WebWorkspaceRepository; id: string } | null>(null);
+
+  useEffect(() => {
+    if (!controller.ready || !initialCollectionId) return;
+    if (handledTarget.current?.repository === repository && handledTarget.current.id === initialCollectionId) return;
+    handledTarget.current = { repository, id: initialCollectionId };
+    const target = controller.snapshot.collections.find((collection) => collection.id === initialCollectionId);
+    if (!target) {
+      controller.notify("This collection is no longer in your workspace.", "error");
+      return;
+    }
+    controller.selectSpace(target.space_id);
+    requestAnimationFrame(() => {
+      const article = document.getElementById(`collection-${target.id}`);
+      article?.focus({ preventScroll: true });
+      article?.scrollIntoView?.({ block: "nearest", inline: "nearest" });
+    });
+  }, [controller, initialCollectionId, repository]);
+
   useEffect(() => {
     function closeAccount(event: KeyboardEvent | PointerEvent) {
       const menu = account.current;
