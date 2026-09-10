@@ -5,6 +5,7 @@ import {
   type CreateLinkInput,
   type CreateSpaceInput,
   type MoveLinkInput,
+  type MoveCollectionInput,
   type WorkspaceRepository,
 } from "../shared/repository";
 import { browserAdapter } from "./browser";
@@ -160,6 +161,7 @@ class LocalWorkspaceRepository implements WorkspaceRepository {
   reorderCollections(spaceId: string, orderedIds: string[]): Promise<void> { return this.mutate((memory) => memory.reorderCollections(spaceId, orderedIds)); }
   reorderLinks(collectionId: string, orderedIds: string[]): Promise<void> { return this.mutate((memory) => memory.reorderLinks(collectionId, orderedIds)); }
   moveLink(input: MoveLinkInput): Promise<void> { return this.mutate((memory) => memory.moveLink(input)); }
+  moveCollection(input: MoveCollectionInput): Promise<void> { return this.mutate((memory) => memory.moveCollection(input)); }
 }
 
 export function createLocalWorkspaceRepository(area: StorageArea = browserAdapter.storage): Promise<WorkspaceRepository> {

@@ -18,10 +18,13 @@ test("explicit extension restore uses owned Trash, preserves IDs and is idempote
     await db.query("insert into collections(id,user_id,space_id,name,position) values($1,$2,$3,'Collection',0)", [collection, owner, space]);
     await db.query("insert into links(id,user_id,collection_id,title,url,position) values($1,$2,$3,'Original','https://example.com',0)", [link, owner, collection]);
     let sequence = 0;
-    const op = (action, payload, entity = "link", entityId = link) => ({ operationId: randomUUID(), deviceId: device, sequence: ++sequence, entity, entityId, action, payload, createdAt: new Date().toISOString(), baseRevision: 0 });
+    let knownRevision = Number((await db.query("select revision from workspace_sync_state where user_id=$1", [owner])).rows[0].revision);
+    const op = (action, payload, entity = "link", entityId = link) => ({ operationId: randomUUID(), deviceId: device, sequence: ++sequence, entity, entityId, action, payload, createdAt: new Date().toISOString(), baseRevision: knownRevision });
     const apply = async (operations) => {
       const revision = (await db.query("select revision from workspace_sync_state where user_id=$1", [owner])).rows[0].revision;
-      return (await db.query("select apply_workspace_operations($1::jsonb,$2) as result", [JSON.stringify(operations), revision])).rows[0].result;
+      const result = (await db.query("select apply_workspace_operations($1::jsonb,$2) as result", [JSON.stringify(operations), revision])).rows[0].result;
+      knownRevision = result.revision;
+      return result;
     };
     const deletion = op("delete", {});
     const restoration = op("restore", { deleteOperationId: deletion.operationId, snapshot: { links: [{ id: link, title: "Forged" }], spaces: [], collections: [] } });
@@ -84,11 +87,41 @@ test("explicit extension restore uses owned Trash, preserves IDs and is idempote
     assert.equal(rejected.outcomes[0].status, "rejected");
     assert.equal(rejected.outcomes[1].status, "applied");
     assert.equal((await apply([orphan])).outcomes[0].status, "rejected");
-    // A prior read may have dropped a redundant local delete BEFORE Undo
-    // existed. Resolve its now-orphaned receipt only with the same proof.
-    await apply([op("delete", {})]);
-    const lateUndo = op("restore", { deleteOperationId: randomUUID(), snapshot: {} });
-    assert.equal((await apply([lateUndo])).outcomes[0].status, "applied");
+    // Unknown old identities must never be guessed from a current tombstone.
+    const lateDelete = op("delete", {});
+    await apply([lateDelete]);
+    await apply([op("restore", { deleteOperationId: lateDelete.operationId, snapshot: {} })]);
+
+    const d1 = op("delete", {}), alias1 = op("delete", {});
+    const firstReceipt = (await apply([d1])).outcomes[0];
+    assert.equal((await apply([alias1])).outcomes[0].trashId, firstReceipt.trashId);
+    const unrecordedOldDelete = op("delete", {});
+    await apply([op("restore", { deleteOperationId: d1.operationId, snapshot: {} })]);
+    await apply([op("update", { title: "Generation two" })]);
+    const d2 = op("delete", {});
+    const secondReceipt = (await apply([d2])).outcomes[0];
+    assert.equal((await apply([unrecordedOldDelete])).outcomes[0].trashId, undefined);
+    assert.equal((await apply([op("restore", { deleteOperationId: unrecordedOldDelete.operationId, snapshot: {} })])).outcomes[0].status, "rejected");
+    assert.equal((await apply([op("delete", {})])).outcomes[0].trashId, secondReceipt.trashId);
+    await db.query("reset role");
+    await db.query("update workspace_trash set expires_at=clock_timestamp()-interval '1 second' where id=$1", [firstReceipt.trashId]);
+    await db.query("set local role authenticated");
+    assert.equal((await apply([op("restore", { deleteOperationId: d1.operationId, snapshot: {} })])).outcomes[0].status, "rejected");
+    assert.equal((await db.query("select purge_expired_workspace_trash(100) as purged")).rows[0].purged, 1);
+    for (const deleted of [d1, alias1]) {
+      const oldRestore = await apply([op("restore", { deleteOperationId: deleted.operationId, snapshot: {} })]);
+      assert.equal(oldRestore.outcomes[0].status, "rejected");
+      assert.equal(oldRestore.patches.links.length, 0);
+    }
+    assert.notEqual(firstReceipt.trashId, secondReceipt.trashId);
+    assert.equal((await apply([op("restore", { deleteOperationId: d2.operationId, snapshot: {} })])).patches.links[0].title, "Generation two");
+    await db.query("savepoint reused_delete_identity");
+    await assert.rejects(db.query("select trash_workspace_entity('link',$1,'web',$2,null)", [link, d1.operationId]), (error) => error.code === "22023");
+    await db.query("rollback to savepoint reused_delete_identity");
+    const unknownGeneration = op("delete", {});
+    await apply([unknownGeneration]);
+    assert.equal((await apply([op("restore", { deleteOperationId: randomUUID(), snapshot: {} })])).outcomes[0].status, "rejected");
+    await apply([op("restore", { deleteOperationId: unknownGeneration.operationId, snapshot: {} })]);
     // An ancestor receipt is not equivalent to a child delete. Reject only
     // this restore; an unrelated later write must still complete.
     await apply([op("delete", {}, "collection", target)]);

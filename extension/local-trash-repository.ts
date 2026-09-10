@@ -29,7 +29,24 @@ export class LocalTrashRepository implements WorkspaceTrashRepository {
     const stored = (await this.area.get(localTrashKey(this.scope)))[localTrashKey(this.scope)];
     if (stored === undefined) return [];
     if (!Array.isArray(stored)) throw new Error("Local Trash is unavailable.");
-    return stored.map((value) => this.validateEntry(value));
+    const entries = stored.map((value) => this.validateEntry(value));
+    // Keep backing rows as operation/local-receipt aliases, but a canonical
+    // receipt has one deadline even in caches written by older versions.
+    const receipts = new Map<string, LocalTrashEntry>();
+    for (const entry of entries) {
+      const previous = receipts.get(entry.id);
+      if (previous && (previous.rootId !== entry.rootId || previous.rootType !== entry.rootType)) throw new Error("Conflicting canonical Trash aliases.");
+      if (!previous || Date.parse(entry.expiresAt) < Date.parse(previous.expiresAt)) receipts.set(entry.id, entry);
+    }
+    return entries.map((entry) => ({ ...entry, expiresAt: receipts.get(entry.id)!.expiresAt }));
+  }
+  private canonicalEntries(entries: LocalTrashEntry[]): LocalTrashEntry[] {
+    const canonical = new Map<string, LocalTrashEntry>();
+    for (const entry of entries) {
+      const previous = canonical.get(entry.id);
+      if (!previous || entry.restorePending && !previous.restorePending || !previous.restorePending && entry.restoredAt && !previous.restoredAt) canonical.set(entry.id, entry);
+    }
+    return [...canonical.values()];
   }
   private validateEntry(value: unknown): LocalTrashEntry {
     if (!value || typeof value !== "object") throw new Error("Invalid local Trash.");
@@ -67,7 +84,7 @@ export class LocalTrashRepository implements WorkspaceTrashRepository {
       if (remoteEntries) await this.updateEntries((entries) => {
         const remoteIds = new Set(remoteEntries.map((entry) => entry.id));
         const retained = entries.filter((entry) => entry.restoredAt || entry.id === entry.localId && !entry.remoteOnly || remoteIds.has(entry.id)).map((entry) => {
-          const remote = remoteEntries.find((item) => item.operationId === entry.operationId);
+          const remote = remoteEntries.find((item) => item.operationId === entry.operationId || item.id === entry.id);
           return remote ? { ...entry, id: remote.id, expiresAt: remote.expiresAt } : entry;
         });
         return [...retained, ...remoteEntries.filter((entry) => !retained.some((local) => local.id === entry.id)).map((entry) => ({ ...entry, operationId: entry.operationId ?? crypto.randomUUID(), localId: entry.id, remoteOnly: true }))];
@@ -77,7 +94,7 @@ export class LocalTrashRepository implements WorkspaceTrashRepository {
     let purged = 0;
     const retained = entries.filter((entry) => !(Date.parse(entry.expiresAt) <= this.now() && purged++ < 100));
     if (retained.length !== entries.length) await this.updateEntries((current) => { let count = 0; return current.filter((entry) => !(Date.parse(entry.expiresAt) <= this.now() && count++ < 100)); });
-    return retained.filter((entry) => (!entry.restoredAt || entry.restorePending) && Date.parse(entry.expiresAt) > this.now()).sort((a, b) => Date.parse(b.deletedAt) - Date.parse(a.deletedAt));
+    return this.canonicalEntries(retained).filter((entry) => (!entry.restoredAt || entry.restorePending) && Date.parse(entry.expiresAt) > this.now()).sort((a, b) => Date.parse(b.deletedAt) - Date.parse(a.deletedAt));
   }
   async saveLocal(entry: LocalTrashEntry): Promise<void> {
     this.validateEntry(entry);
@@ -92,7 +109,7 @@ export class LocalTrashRepository implements WorkspaceTrashRepository {
       const entry = entries.find((item) => item.operationId === operationId);
       if (!entry) return entries;
       if (receipt.operationId !== operationId || receipt.rootId !== entry.rootId || receipt.rootType !== entry.rootType) throw new WorkspaceCommandError("conflict", "Trash receipt did not match.");
-      return entries.map((item) => item === entry ? { ...item, id: receipt.trashId, expiresAt: receipt.restoreUntil } : item);
+      return entries.map((item) => item === entry || item.id === receipt.trashId ? { ...item, id: receipt.trashId, expiresAt: receipt.restoreUntil } : item);
     });
   }
   async completeRestore(operationId: string): Promise<void> {
@@ -159,7 +176,8 @@ export class LocalTrashRepository implements WorkspaceTrashRepository {
   }
   async restore(trashId: string, destinationId?: string): Promise<WorkspaceSnapshot> {
     const entries = await this.entries();
-    const entry = entries.find((item) => item.id === trashId || item.localId === trashId);
+    const alias = entries.find((item) => item.id === trashId || item.localId === trashId);
+    const entry = alias && this.canonicalEntries(entries.filter((item) => item.id === alias.id))[0];
     if (!entry || Date.parse(entry.expiresAt) <= this.now()) throw new WorkspaceCommandError("not_found", "Recovery has expired.");
     // A receipt callback can finish before the queue acknowledgement is saved.
     // The queue is the authority for whether an attempted outcome is resolved.
@@ -186,7 +204,7 @@ export class LocalTrashRepository implements WorkspaceTrashRepository {
       }
       const after = reduceWorkspaceSnapshot(before, { type: "restore", snapshot: restored });
       const current = await this.entries();
-      return { snapshot: after, values: { ...this.values(current.map((item) => item.operationId === entry.operationId ? { ...item, restoredAt: new Date(this.now()).toISOString(), restoreOperationId: operationId, restorePending: this.backend().syncsTrash === true, restoreRejected: false, ...(destinationId ? { restoreDestinationId: destinationId } : {}) } : item)), [generationKey(this.scope)]: (await this.generation()) + 1 } };
+      return { snapshot: after, values: { ...this.values(current.map((item) => item.id === entry.id ? { ...item, restoredAt: new Date(this.now()).toISOString(), restoreOperationId: operationId, restorePending: this.backend().syncsTrash === true, restoreRejected: false, ...(destinationId ? { restoreDestinationId: destinationId } : {}) } : item)), [generationKey(this.scope)]: (await this.generation()) + 1 } };
     });
     // A successful replay established the original canonical outcome first.
     // Any subsequent destination change is an ordinary new move identity.
@@ -206,7 +224,10 @@ export class LocalTrashRepository implements WorkspaceTrashRepository {
     const currentParent = entry.rootType === "collection" ? snapshot.collections.find((item) => item.id === entry.rootId)!.space_id : snapshot.links.find((item) => item.id === entry.rootId)!.collection_id;
     if (currentParent === destinationId) return snapshot;
     try {
-      if (entry.rootType === "collection") await this.workspace.reorderCollections(destinationId, [...snapshot.collections.filter((item) => item.space_id === destinationId && item.id !== entry.rootId).map((item) => item.id), entry.rootId]);
+      if (entry.rootType === "collection") {
+        if (!this.workspace.moveCollection) throw new WorkspaceCommandError("conflict", "This workspace cannot move collections.");
+        await this.workspace.moveCollection({ id: entry.rootId, sourceSpaceId: currentParent, destinationSpaceId: destinationId });
+      }
       else await this.workspace.updateLink(entry.rootId, { collection_id: destinationId });
     } catch (cause) { throw new LocallyCommittedTrashError(await this.workspace.load(), undefined, { cause }); }
     return this.workspace.load();

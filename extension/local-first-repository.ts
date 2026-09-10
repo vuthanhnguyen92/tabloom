@@ -5,6 +5,7 @@ import {
   type CreateLinkInput,
   type CreateSpaceInput,
   type MoveLinkInput,
+  type MoveCollectionInput,
   type WorkspaceRepository,
 } from "../shared/repository";
 import { coalesceWorkspaceOperations, type WorkspaceOperation } from "../shared/workspace-operations";
@@ -264,5 +265,10 @@ export class LocalFirstWorkspaceRepository implements WorkspaceRepository {
         { entity: "link", entityId: input.sourceCollectionId, action: "reorder", payload: { parentId: input.sourceCollectionId, orderedIds: input.sourceOrderedIds } },
       ],
     );
+  }
+  moveCollection(input: MoveCollectionInput): Promise<void> {
+    return this.mutate((memory) => memory.moveCollection(input), () => [
+      { entity: "collection", entityId: input.id, action: "move", payload: { sourceSpaceId: input.sourceSpaceId, destinationSpaceId: input.destinationSpaceId } },
+    ]);
   }
 }

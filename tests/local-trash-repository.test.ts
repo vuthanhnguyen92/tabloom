@@ -23,6 +23,82 @@ async function fixture() {
 }
 
 describe("local Trash", () => {
+  it.each(["local", "account"] as const)("really moves a restored collection to another space in %s mode", async (mode) => {
+    const { storage, workspace, trash: localTrash, link } = await fixture();
+    const target = await workspace.createSpace({ name: "Target space", color: "#7357e6" });
+    const sibling = await workspace.createCollection({ space_id: (await workspace.load()).spaces[0].id, name: "Source sibling" });
+    const targetSibling = await workspace.createCollection({ space_id: target.id, name: "Target sibling" });
+    let repository = workspace, trash = localTrash;
+    let state: LocalFirstStorage | undefined;
+    if (mode === "account") {
+      const userId = crypto.randomUUID(), initial = await workspace.load();
+      for (const item of [...initial.spaces, ...initial.collections, ...initial.links]) item.user_id = userId;
+      state = new LocalFirstStorage(storage, userId); await state.saveCanonical(initial, 1);
+      repository = await LocalFirstWorkspaceRepository.create({ userId, storage: state, onMutation: async () => {} });
+      trash = new LocalTrashRepository(storage, repository, userId);
+    }
+    const intent = await trash.prepareDelete("collection", link.collection_id);
+    const receipt = await trash.deleteEntity("collection", link.collection_id, "extension", crypto.randomUUID(), intent.intentId);
+    await trash.restore(receipt.trashId);
+    if (state) {
+      const restore = (await state.loadOrThrow()).queue.find((item) => item.operation.action === "restore")!;
+      await state.update(async (current) => [{ ...current, queue: [] }, undefined]);
+      await trash.completeRestore(restore.operation.operationId);
+    }
+    const moved = await trash.restore(receipt.trashId, target.id);
+    expect(moved.collections.find((item) => item.id === link.collection_id)).toMatchObject({ space_id: target.id, position: 1 });
+    expect(moved.collections.find((item) => item.id === sibling.id)?.position).toBe(0);
+    expect(moved.collections.find((item) => item.id === targetSibling.id)?.position).toBe(0);
+    expect(moved.links[0]).toMatchObject({ id: link.id, collection_id: link.collection_id, title: link.title });
+    if (state) expect((await state.loadOrThrow()).queue[0].operation).toMatchObject({ action: "move", entity: "collection", entityId: link.collection_id, payload: { destinationSpaceId: target.id } });
+    else expect((await (await createLocalWorkspaceRepository(storage)).load()).collections.find((item) => item.id === link.collection_id)?.space_id).toBe(target.id);
+  });
+  it.each(["source", "destination"])("rejects a collection move when its latest %s ancestry is read-only", async (protectedParent) => {
+    const { storage, workspace, link } = await fixture();
+    const target = await workspace.createSpace({ name: "Target", color: "#7357e6" });
+    const initial = await workspace.load();
+    const sourceId = initial.collections.find((item) => item.id === link.collection_id)!.space_id;
+    initial.spaces = initial.spaces.map((item) => item.id === (protectedParent === "source" ? sourceId : target.id) ? { ...item, read_only: true } : item);
+    await storage.set({ [LOCAL_WORKSPACE_KEY]: { version: 2, snapshot: initial, bookmarkSources: [], cachedAt: new Date().toISOString() } });
+    await expect(workspace.moveCollection!({ id: link.collection_id, sourceSpaceId: sourceId, destinationSpaceId: target.id })).rejects.toThrow(/read-only/i);
+    expect((await (await createLocalWorkspaceRepository(storage)).load()).collections[0].space_id).toBe(sourceId);
+  });
+  it("refreshes existing canonical alias deadlines together from remote listing", async () => {
+    const { storage, workspace, trash, link } = await fixture();
+    const receipt = await trash.deleteEntity("link", link.id, "extension", crypto.randomUUID());
+    const first = (await trash.list())[0];
+    const secondId = crypto.randomUUID();
+    await trash.saveLocal({ ...first, localId: secondId, operationId: crypto.randomUUID() });
+    const deadline = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+    const remote: WorkspaceTrashRepository = { list: async () => [{ ...first, expiresAt: deadline }], listForSync: async () => [{ ...first, expiresAt: deadline }], prepareDelete: vi.fn(), deleteEntity: vi.fn(), restore: vi.fn() };
+    const refreshed = new LocalTrashRepository(storage, workspace, "local", { remote });
+    expect(await refreshed.list()).toEqual([expect.objectContaining({ id: receipt.trashId, expiresAt: deadline })]);
+    const expired = new LocalTrashRepository(storage, workspace, "local", { now: () => Date.parse(deadline) + 1 });
+    expect(await expired.list()).toEqual([]);
+    for (const id of [receipt.trashId, secondId]) await expect(expired.restore(id)).rejects.toMatchObject({ code: "not_found" });
+  });
+
+  it("coalesces existing canonical receipt aliases and restores idempotently by either local Undo ID", async () => {
+    const { storage, workspace, trash, link } = await fixture();
+    const first = await trash.deleteEntity("link", link.id, "extension", crypto.randomUUID());
+    const entry = (await trash.list())[0];
+    const second = { ...entry, id: crypto.randomUUID(), operationId: crypto.randomUUID() };
+    second.localId = second.id;
+    await trash.saveLocal(second);
+    const canonicalId = crypto.randomUUID();
+    await trash.reconcileRemote(first.operationId, { ...first, trashId: canonicalId });
+    await trash.reconcileRemote(second.operationId, { ...first, operationId: second.operationId, trashId: canonicalId });
+    const reopened = new LocalTrashRepository(storage, workspace, "local");
+    expect(await reopened.list()).toHaveLength(1);
+    expect((await reopened.restore(first.trashId)).links[0].id).toBe(link.id);
+    expect(await reopened.list()).toEqual([]);
+    expect((await reopened.restore(second.localId)).links[0].id).toBe(link.id);
+    for (const operationId of [first.operationId, second.operationId]) expect((await reopened.deleteEntity("link", link.id, "extension", operationId)).trashId).toBe(canonicalId);
+    expect((await workspace.load()).links).toHaveLength(1);
+    const expired = new LocalTrashRepository(storage, workspace, "local", { now: () => Date.parse(first.restoreUntil) + 1 });
+    expect(await expired.list()).toEqual([]);
+    for (const id of [canonicalId, first.trashId, second.localId]) await expect(expired.restore(id)).rejects.toMatchObject({ code: "not_found" });
+  });
   it("uses a new restore identity after a definitive destination rejection", async () => {
     const { storage, workspace, link } = await fixture();
     const userId = crypto.randomUUID();

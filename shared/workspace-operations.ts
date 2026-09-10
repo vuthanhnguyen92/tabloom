@@ -1,6 +1,7 @@
 import { isSaveableUrl, normalizePositions, type Collection, type SavedLink, type Space, type WorkspaceSnapshot } from "./domain";
 import { decodeTrashSnapshot } from "./trash";
 import { reduceWorkspaceSnapshot } from "./organizer/mutation-policy";
+import { moveWorkspaceCollection } from "./repository";
 
 export type WorkspaceEntity = "space" | "collection" | "link";
 
@@ -43,7 +44,8 @@ export type WorkspaceRestoreOperation = OperationMeta & {
   /** Snapshot is local rebase data only; the server restores its owned Trash snapshot. */
   payload: { deleteOperationId?: string; trashId?: string; destinationId?: string; snapshot: WorkspaceSnapshot };
 };
-export type WorkspaceOperation = WorkspaceCreateOperation | WorkspaceUpdateOperation | WorkspaceDeleteOperation | WorkspaceReorderOperation | WorkspaceRestoreOperation;
+export type WorkspaceCollectionMoveOperation = OperationMeta<"collection"> & { action: "move"; payload: { sourceSpaceId: string; destinationSpaceId: string } };
+export type WorkspaceOperation = WorkspaceCreateOperation | WorkspaceUpdateOperation | WorkspaceDeleteOperation | WorkspaceReorderOperation | WorkspaceRestoreOperation | WorkspaceCollectionMoveOperation;
 
 export type WorkspaceTombstone = {
   entity: WorkspaceEntity;
@@ -62,7 +64,7 @@ export type WorkspacePatchSet = {
 export type WorkspaceRebaseResult = {
   snapshot: WorkspaceSnapshot;
   pending: WorkspaceOperation[];
-  rejected: Array<{ operationId: string; code: "deleted" | "deleted_parent" }>;
+  rejected: Array<{ operationId: string; code: "deleted" | "deleted_parent" | "conflict" }>;
 };
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -154,7 +156,11 @@ export function isWorkspaceOperation(value: unknown): value is WorkspaceOperatio
   if (!Number.isSafeInteger(value.sequence) || Number(value.sequence) < 1) return false;
   if (!Number.isSafeInteger(value.baseRevision) || Number(value.baseRevision) < 0) return false;
   if (!["space", "collection", "link"].includes(String(value.entity)) || !UUID_PATTERN.test(String(value.entityId))) return false;
-  if (!["create", "update", "delete", "reorder", "restore"].includes(String(value.action)) || !isTimestamp(value.createdAt) || !isRecord(value.payload)) return false;
+  if (!["create", "update", "delete", "reorder", "restore", "move"].includes(String(value.action)) || !isTimestamp(value.createdAt) || !isRecord(value.payload)) return false;
+  if (value.action === "move") return value.entity === "collection"
+    && hasExactKeys(value.payload, ["sourceSpaceId", "destinationSpaceId"])
+    && UUID_PATTERN.test(String(value.payload.sourceSpaceId)) && UUID_PATTERN.test(String(value.payload.destinationSpaceId))
+    && value.payload.sourceSpaceId !== value.payload.destinationSpaceId;
   if (value.action === "restore") {
     if (!hasExactKeys(value.payload, ["deleteOperationId", "trashId", "destinationId", "snapshot"], ["snapshot"])
       || (Object.hasOwn(value.payload, "deleteOperationId") === Object.hasOwn(value.payload, "trashId"))
@@ -303,6 +309,7 @@ function entityExists(snapshot: WorkspaceSnapshot, entity: WorkspaceEntity, enti
 }
 
 function applyOperation(snapshot: WorkspaceSnapshot, operation: WorkspaceOperation, userId: string): WorkspaceSnapshot {
+  if (operation.action === "move") return moveWorkspaceCollection(snapshot, { id: operation.entityId, ...operation.payload }, operation.createdAt);
   const next = clone(snapshot);
   if (operation.action === "restore") {
     const restored = operation.payload.snapshot;
@@ -371,6 +378,9 @@ export function rebaseWorkspaceOperations(
         snapshot = applyOperation(snapshot, operation, userId);
         activeTombstones = activeTombstones.filter((item) => !entityExists(operation.payload.snapshot, item.entity, item.entityId));
       } catch { /* Missing ancestors require a new destination; retain the recovery operation. */ }
+    } else if (operation.action === "move") {
+      try { snapshot = applyOperation(snapshot, operation, userId); }
+      catch { rejected.push({ operationId: operation.operationId, code: "conflict" }); continue; }
     } else snapshot = applyOperation(snapshot, operation, userId);
     surviving.push(operation);
   }

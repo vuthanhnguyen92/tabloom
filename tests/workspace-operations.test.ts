@@ -44,6 +44,17 @@ function operation(overrides: Partial<WorkspaceOperation> = {}): WorkspaceOperat
 }
 
 describe("workspace operations", () => {
+  it("validates and rebases an explicit collection move without recreating its content", () => {
+    const initial = workspace();
+    const target = { ...initial.spaces[0], id: crypto.randomUUID(), name: "Target", position: 1 };
+    initial.spaces.push(target);
+    const move = operation({ action: "move", entity: "collection", entityId: COLLECTION_ID, payload: { sourceSpaceId: SPACE_ID, destinationSpaceId: target.id } });
+    expect(isWorkspaceOperation(move)).toBe(true);
+    const result = rebaseWorkspaceOperations(initial, [], [move], USER_ID);
+    expect(result.snapshot.collections[0]).toMatchObject({ id: COLLECTION_ID, space_id: target.id, name: "Reading" });
+    expect(result.snapshot.links).toEqual(initial.links);
+    expect(isWorkspaceOperation({ ...move, payload: { ...move.payload, destinationSpaceId: SPACE_ID } })).toBe(false);
+  });
   it("retains an absent delete receipt dependency before offline Undo and later edits", () => {
     const tree = workspace();
     const deletion = operation({ action: "delete", payload: {} });

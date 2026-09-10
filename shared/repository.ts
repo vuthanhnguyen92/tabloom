@@ -12,6 +12,7 @@ import {
 export type CreateSpaceInput = Pick<Space, "name" | "color">;
 export type CreateCollectionInput = Pick<Collection, "space_id" | "name">;
 export type CreateLinkInput = Pick<SavedLink, "collection_id" | "url" | "title" | "description" | "favicon_url">;
+export type MoveCollectionInput = { id: string; sourceSpaceId: string; destinationSpaceId: string };
 export type MoveLinkInput = {
   id: string;
   sourceCollectionId: string;
@@ -44,6 +45,8 @@ export interface WorkspaceRepository {
   reorderLinks(collectionId: string, orderedIds: string[]): Promise<void>;
   /** Commit both collections together. Reject before persistence on invalid/stale input. */
   moveLink(input: MoveLinkInput): Promise<void>;
+  /** Optional atomic local capability: change parent and compact both spaces. */
+  moveCollection?(input: MoveCollectionInput): Promise<void>;
 }
 
 export type WebWorkspaceRepository = Omit<WorkspaceRepository, "deleteSpace" | "deleteCollection" | "deleteLink">;
@@ -52,6 +55,25 @@ const stamp = () => new Date().toISOString();
 const id = () => globalThis.crypto.randomUUID();
 const clone = <T>(value: T): T => structuredClone(value);
 const markSaved = <T extends object>(value: T): T & WorkspaceRecordMeta => ({ ...value, origin: "saved", read_only: false });
+
+export function moveWorkspaceCollection(snapshot: WorkspaceSnapshot, input: MoveCollectionInput, timestamp = stamp()): WorkspaceSnapshot {
+  const moving = snapshot.collections.find((item) => item.id === input.id);
+  if (!moving || input.sourceSpaceId === input.destinationSpaceId) throw new WorkspaceConflictError();
+  for (const id of [input.sourceSpaceId, input.destinationSpaceId]) {
+    const parent = snapshot.spaces.find((item) => item.id === id);
+    if (!parent || parent.origin !== "saved" || parent.read_only) throw new Error("Missing or read-only collection move ancestry.");
+  }
+  const affected = snapshot.collections.filter((item) => item.space_id === input.sourceSpaceId || item.space_id === input.destinationSpaceId);
+  if (affected.some((item) => item.origin !== "saved" || item.read_only)
+    || snapshot.links.some((item) => item.collection_id === input.id && (item.origin !== "saved" || item.read_only))) throw new Error("Cannot move read-only collection data.");
+  if (moving.space_id === input.destinationSpaceId) return snapshot;
+  if (moving.space_id !== input.sourceSpaceId) throw new WorkspaceConflictError();
+  const source = normalizePositions(affected.filter((item) => item.space_id === input.sourceSpaceId && item.id !== input.id));
+  const target = normalizePositions(affected.filter((item) => item.space_id === input.destinationSpaceId));
+  target.push({ ...moving, space_id: input.destinationSpaceId, position: target.length });
+  const moved = new Map([...source, ...target].map((item) => [item.id, { ...item, updated_at: timestamp }]));
+  return { ...snapshot, collections: snapshot.collections.map((item) => moved.get(item.id) ?? item) };
+}
 
 function movedLinks(snapshot: WorkspaceSnapshot, input: MoveLinkInput): SavedLink[] {
   const source = snapshot.links.find((item) => item.id === input.id);
@@ -118,6 +140,7 @@ export class MemoryWorkspaceRepository implements WorkspaceRepository {
     const moved = new Map(movedLinks(this.snapshot, input).map((link) => [link.id, link]));
     this.snapshot = { ...this.snapshot, links: this.snapshot.links.map((link) => moved.get(link.id) ?? link) };
   }
+  async moveCollection(input: MoveCollectionInput) { this.snapshot = moveWorkspaceCollection(this.snapshot, input); }
 }
 
 function throwIfError(error: { message: string } | null) { if (error) throw new Error(error.message); }
