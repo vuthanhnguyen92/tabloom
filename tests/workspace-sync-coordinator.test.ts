@@ -384,6 +384,26 @@ describe("WorkspaceSyncCoordinator reads", () => {
 });
 
 describe("WorkspaceSyncCoordinator writes", () => {
+  it("invalidates local Trash when the server definitively rejects a delete", async () => {
+    const { area } = observableMemoryArea();
+    const storage = new LocalFirstStorage(area, USER_ID);
+    await storage.save(state());
+    const rejected: string[] = [];
+    const trash = { current: null as LocalTrashRepository | null };
+    const coordinator = new WorkspaceSyncCoordinator({ userId: USER_ID, storage, exclusiveRunner: serialRunner(),
+      onDeleteRejected: async (operationId) => { rejected.push(operationId); await trash.current!.discardRejectedDelete(operationId); },
+      transport: transport({ applyOperations: async (operations) => ({ revision: 2, outcomes: operations.map((operation) => ({ operationId: operation.operationId, status: "rejected", message: "Item was restored. Refresh and delete again." })), patches: workspace("Canonical"), tombstones: [], conflicts: [] }) }),
+    });
+    const repository = await LocalFirstWorkspaceRepository.create({ userId: USER_ID, storage, onMutation: async (operations) => { for (const operation of operations) await coordinator.submit(operation); } });
+    trash.current = new LocalTrashRepository(area, repository, USER_ID);
+    const intent = await trash.current.prepareDelete("space", SPACE_ID);
+    await expect(trash.current.deleteEntity("space", SPACE_ID, "extension", crypto.randomUUID(), intent.intentId)).rejects.toBeTruthy();
+    expect(rejected).toHaveLength(1);
+    expect(await trash.current.list()).toEqual([]);
+    expect((await storage.loadOrThrow()).snapshot.spaces[0].name).toBe("Canonical");
+    expect((await storage.loadOrThrow()).queue).toEqual([]);
+    coordinator.stop();
+  });
   it("reconciles a local Trash receipt before acknowledging its durable delete", async () => {
     const { area } = observableMemoryArea();
     const storage = new LocalFirstStorage(area, USER_ID);

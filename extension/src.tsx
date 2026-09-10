@@ -79,6 +79,7 @@ function useExtensionRuntime() {
   const workspaceScope = workspace?.scope ?? LOCAL_SPACE_SCOPE;
   const workspaceUserId = workspace?.userId ?? "local-user";
   const [refreshVersion, setRefreshVersion] = useState(0);
+  const [rejectedDelete, setRejectedDelete] = useState<{ operationId: string; version: number } | null>(null);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const [user, setUser] = useState<(SyncUser & { id: string }) | null>(null);
@@ -131,6 +132,12 @@ function useExtensionRuntime() {
       storage,
       transport: new SupabaseWorkspaceSyncTransport(extensionSupabase),
       onDeleteReceipt: (receipt) => new LocalTrashRepository(browserAdapter.storage, localFirst, accountSpaceScope(userId)).reconcileRemote(receipt.operationId, receipt),
+      onDeleteRejected: async (operationId) => {
+        await new LocalTrashRepository(browserAdapter.storage, localFirst, accountSpaceScope(userId)).discardRejectedDelete(operationId);
+        if (coordinatorRef.current === coordinator && activationGenerationRef.current === generation) {
+          setRejectedDelete((current) => ({ operationId, version: (current?.version ?? 0) + 1 }));
+        }
+      },
       onRestoreCommitted: (operationId) => new LocalTrashRepository(browserAdapter.storage, localFirst, accountSpaceScope(userId)).completeRestore(operationId),
       onRestoreRejected: (operationId) => new LocalTrashRepository(browserAdapter.storage, localFirst, accountSpaceScope(userId)).rejectRestore(operationId),
       exclusiveRunner: new WorkspaceSyncLock({
@@ -464,7 +471,7 @@ function useExtensionRuntime() {
 
 
   return {
-    bootstrapReady, repository, bookmarkRepository, workspaceScope, workspaceUserId, refreshVersion,
+    bootstrapReady, repository, bookmarkRepository, workspaceScope, workspaceUserId, refreshVersion, rejectedDelete,
     message, setMessage, error, setError, user, syncStatus, coordinatorState,
     workspaceSync, workspaceSyncBusy, workspaceSyncError, confirmWorkspaceSync, cancelWorkspaceSync,
     signIn, logout, retryWorkspaceSync, recoverySuggested, signInOpenRequest, setSignInOpenRequest,
@@ -532,6 +539,14 @@ function ExtensionOrganizer({ runtime, repository, trashRepository }: { runtime:
   };
   const controller = useWorkspaceController(organizerOptions);
   const { snapshot, activeSpace } = controller;
+  const rejectedDeleteSeen = useRef(0);
+  useEffect(() => {
+    if (!controller.ready || !runtime.rejectedDelete || rejectedDeleteSeen.current === runtime.rejectedDelete.version) return;
+    rejectedDeleteSeen.current = runtime.rejectedDelete.version;
+    controller.rejectDelete(runtime.rejectedDelete.operationId);
+  // The coordinator invalidates a receipt outside React; consume each event once.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [controller.ready, runtime.rejectedDelete]);
   useEffect(() => {
     if (!controller.ready || (!message && !error)) return;
     let active = true;

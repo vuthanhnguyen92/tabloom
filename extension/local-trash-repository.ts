@@ -112,6 +112,9 @@ export class LocalTrashRepository implements WorkspaceTrashRepository {
       return entries.map((item) => item === entry || item.id === receipt.trashId ? { ...item, id: receipt.trashId, expiresAt: receipt.restoreUntil } : item);
     });
   }
+  async discardRejectedDelete(operationId: string): Promise<void> {
+    await this.updateEntries((entries) => entries.filter((entry) => entry.operationId !== operationId));
+  }
   async completeRestore(operationId: string): Promise<void> {
     await this.updateEntries((entries) => entries.map((entry) => entry.restoreOperationId === operationId ? { ...entry, restorePending: false } : entry));
   }

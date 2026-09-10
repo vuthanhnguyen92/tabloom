@@ -44,6 +44,7 @@ type CoordinatorInput = {
   onSnapshotCommitted?: (snapshot: WorkspaceSnapshot) => void;
   onActionRequired?: (message: string) => void;
   onDeleteReceipt?: (receipt: DeleteReceipt) => Promise<void>;
+  onDeleteRejected?: (operationId: string, message: string) => Promise<void>;
   onRestoreCommitted?: (operationId: string) => Promise<void>;
   onRestoreRejected?: (operationId: string, message: string) => Promise<void>;
 };
@@ -350,7 +351,10 @@ export class WorkspaceSyncCoordinator implements WorkspaceSyncCoordinatorContrac
         const sentIds = new Set(sent.map((operation) => operation.operationId));
         for (const outcome of result.outcomes) {
           const operation = sent.find((item) => item.operationId === outcome.operationId);
-          if (operation?.action === "delete" && outcome.trashId && outcome.restoreUntil) await this.input.onDeleteReceipt?.({ operationId: operation.operationId, rootType: operation.entity, rootId: operation.entityId, trashId: outcome.trashId, restoreUntil: outcome.restoreUntil });
+          if (operation?.action === "delete") {
+            if (outcome.status === "rejected") await this.input.onDeleteRejected?.(outcome.operationId, outcome.message ?? "Delete requires attention.");
+            else if (outcome.trashId && outcome.restoreUntil) await this.input.onDeleteReceipt?.({ operationId: operation.operationId, rootType: operation.entity, rootId: operation.entityId, trashId: outcome.trashId, restoreUntil: outcome.restoreUntil });
+          }
           if (operation?.action === "restore") {
             if (outcome.status === "rejected") await this.input.onRestoreRejected?.(outcome.operationId, outcome.message ?? "Restore requires attention.");
             else await this.input.onRestoreCommitted?.(outcome.operationId);

@@ -313,6 +313,13 @@ describe("local Trash", () => {
     expect(await trash.list()).toEqual([expect.objectContaining({ id: remote.trashId, operationId: local.operationId })]);
     expect((await trash.restore(local.trashId)).links[0].id).toBe(link.id);
   });
+  it("discards the exact local Trash receipt after its delete is definitively rejected", async () => {
+    const { trash, link } = await fixture();
+    const rejected = await trash.deleteEntity("link", link.id, "extension", crypto.randomUUID());
+    await trash.discardRejectedDelete(rejected.operationId);
+    expect(await trash.list()).toEqual([]);
+    await expect(trash.restore(rejected.trashId)).rejects.toMatchObject({ code: "not_found" });
+  });
   it("merges remote listing by operation ID even before its response receipt reconciles", async () => {
     const { storage, workspace, trash, link } = await fixture();
     await trash.deleteEntity("link", link.id, "extension", crypto.randomUUID());

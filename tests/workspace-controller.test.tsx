@@ -110,6 +110,22 @@ describe("workspace mutation policy", () => {
 });
 
 describe("workspace controller", () => {
+  it("removes a rejected delete's Undo action and ignores a late local receipt", async () => {
+    const { options } = setup();
+    const operationId = crypto.randomUUID();
+    const trash: WorkspaceTrashRepository = {
+      list: async () => [],
+      prepareDelete: async () => { throw new Error("unused"); },
+      deleteEntity: async (_type, id) => ({ operationId, trashId: crypto.randomUUID(), rootType: "link", rootId: id, restoreUntil: new Date(Date.now() + 60_000).toISOString() }),
+      restore: async () => snapshot,
+    };
+    const { result } = renderHook(() => useWorkspaceController({ ...options, trashRepository: trash }));
+    await waitFor(() => expect(result.current.ready).toBe(true));
+    await act(async () => { await result.current.deleteLink(link.id); });
+    expect(result.current.toasts.some((toast) => toast.id === `undo:${operationId}`)).toBe(true);
+    act(() => result.current.rejectDelete(operationId));
+    expect(result.current.toasts.some((toast) => toast.id === `undo:${operationId}`)).toBe(false);
+  });
   it.each(["success", "refresh-failure", "sync-failure"] as const)("serializes Trash list restore after an edit rejection (%s)", async (outcome) => {
     const { options } = setup();
     const edited = snapshot.links[1];

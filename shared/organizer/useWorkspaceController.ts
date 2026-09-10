@@ -49,6 +49,7 @@ export function useWorkspaceController(options: WorkspaceControllerOptions) {
   const dialogGeneration = useRef(0);
   const duplicateAction = useRef<(() => Promise<unknown>) | null>(null);
   const undoRoots = useRef(new Map<string, string>());
+  const rejectedDeleteOperations = useRef(new Set<string>());
 
   const current = state.session === session ? state : { session, snapshot: emptySnapshot, ready: false, selected: "", collapsed: new Set<string>(), railCollapsed: true };
   function notify(message: string, tone: "success" | "error" = "success") {
@@ -67,6 +68,7 @@ export function useWorkspaceController(options: WorkspaceControllerOptions) {
     const generation = ++session.generation;
     intent.current = null; duplicateAction.current = null; dialogGeneration.current++;
     undoRoots.current.clear();
+    rejectedDeleteOperations.current.clear();
     void (async () => {
       await Promise.resolve();
       if (!session.active || generation !== session.generation) return;
@@ -238,6 +240,7 @@ export function useWorkspaceController(options: WorkspaceControllerOptions) {
     if (!receipt || !session.active) return receipt;
     session.deleteOperations.delete(key);
     const toastId = `undo:${receipt.operationId}`;
+    if (rejectedDeleteOperations.current.delete(receipt.operationId)) return receipt;
     undoRoots.current.set(toastId, id);
     let undoing = false;
     const undo = async () => {
@@ -255,6 +258,12 @@ export function useWorkspaceController(options: WorkspaceControllerOptions) {
   }
   function deleteLink(id: string): Promise<DeleteReceipt | undefined> {
     return deleteEntity("link", id);
+  }
+  function rejectDelete(operationId: string) {
+    rejectedDeleteOperations.current.add(operationId);
+    const toastId = `undo:${operationId}`;
+    undoRoots.current.delete(toastId);
+    setToasts((items) => items.filter((toast) => toast.id !== toastId));
   }
   function restore(trashId: string, restored: WorkspaceSnapshot, destinationId?: string) {
     return restoreWithOutcome(trashId, restored, destinationId).then((outcome) => outcome.snapshot);
@@ -389,7 +398,7 @@ export function useWorkspaceController(options: WorkspaceControllerOptions) {
     collapsedCollections: current.collapsed, railCollapsed: current.railCollapsed,
     dialog, searchOpen, drag, externalDropTarget, toasts, busy, retryRequired, refreshRequired, isPending,
     selectSpace, setRailCollapsed, toggleCollection, openDialog, closeDialog, submitDialog,
-    requestDelete, deleteLink, restore, restoreTrashEntry, trashOpen, setTrashOpen, reload, retry, mutate, notify, openCollection, moveLink, moveCollection,
+    requestDelete, deleteLink, rejectDelete, restore, restoreTrashEntry, trashOpen, setTrashOpen, reload, retry, mutate, notify, openCollection, moveLink, moveCollection,
     setSearchOpen, setDrag: (value: OrganizerDragState) => {
       if (value?.kind === "collection" && isPending(value.id) || value?.kind === "saved-link" && (isPending(value.id) || isPending(value.targetCollectionId))) return;
       setDrag(value);
