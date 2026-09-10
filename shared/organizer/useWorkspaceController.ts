@@ -24,6 +24,10 @@ export type WorkspaceControllerOptions = {
 const emptySnapshot: WorkspaceSnapshot = { spaces: [], collections: [], links: [] };
 const railKey = "tabloom:sidebar-collapsed";
 const order = <T extends { position: number }>(items: T[]) => [...items].sort((a, b) => a.position - b.position);
+function retainBookmarks<T extends { id: string; origin: string }>(canonical: T[], combined: T[]): T[] {
+  const ids = new Set(canonical.map((item) => item.id));
+  return [...canonical, ...combined.filter((item) => item.origin === "browser-bookmark" && !ids.has(item.id))];
+}
 
 export function useWorkspaceController(options: WorkspaceControllerOptions) {
   const { repository, preferenceScope: scope, preferenceStore, userId, capabilities, trashRepository, deleteSource = "web", mutationPolicy, onRetry } = options;
@@ -107,16 +111,16 @@ export function useWorkspaceController(options: WorkspaceControllerOptions) {
       } catch { if (session.active) setRetryRequired(true); }
     });
   }
-  function failure(policy: MutationPolicy, before: WorkspaceSnapshot, optimistic: WorkspaceSnapshot, selected: string) {
+  function failure(policy: MutationPolicy, before: WorkspaceSnapshot, optimistic: WorkspaceSnapshot, selected: string, notifyRollback = true) {
     const result = applyMutationFailure(policy, before, optimistic);
     publish(result.snapshot, selected);
     if (result.retryRequired) {
       setRetryRequired(true);
       setToasts((items) => [...items.filter((toast) => toast.id !== "sync-retry"), { id: "sync-retry", message: "Changes are saved locally. Failed to sync.", tone: "error", persistent: true, action: { label: "Retry", onAction: () => { void retry(); } } }]);
-    } else notify("Changes could not be saved. Please try again.", "error");
+    } else if (notifyRollback) notify("Changes could not be saved. Please try again.", "error");
   }
   /** Serialize writes and their canonical reads so rollback cannot erase a later mutation. */
-  function mutate<T>(mutation: WorkspaceMutation | ((snapshot: WorkspaceSnapshot) => WorkspaceMutation), write: (optimistic: WorkspaceSnapshot, before: WorkspaceSnapshot) => Promise<T>, message = "Saved", resultOptions?: { select?: (result: T) => string; reconcile?: (result: T, optimistic: WorkspaceSnapshot) => WorkspaceSnapshot; canonical?: (result: T) => WorkspaceSnapshot }): Promise<T | undefined> {
+  function mutate<T>(mutation: WorkspaceMutation | ((snapshot: WorkspaceSnapshot) => WorkspaceMutation), write: (optimistic: WorkspaceSnapshot, before: WorkspaceSnapshot) => Promise<T>, message = "Saved", resultOptions?: { select?: (result: T) => string; reconcile?: (result: T, optimistic: WorkspaceSnapshot) => WorkspaceSnapshot; canonical?: (result: T) => WorkspaceSnapshot; publishOptimistic?: boolean; notifyFailure?: boolean }): Promise<T | undefined> {
     return enqueue(async () => {
       const before = session.snapshot;
       const selected = session.selected;
@@ -132,13 +136,14 @@ export function useWorkspaceController(options: WorkspaceControllerOptions) {
         if (pendingId) session.pendingIds.add(pendingId);
       }
       catch { notify("This change is unavailable for this item.", "error"); return; }
-      setBusy(true); publish(optimistic); setDrag(null);
+      setBusy(true); if (resultOptions?.publishOptimistic !== false) publish(optimistic); setDrag(null);
       try {
         let result: T;
         try { result = await write(optimistic, before); }
         catch (error) {
           if (!session.active) return;
           if (error instanceof CommittedRestoreRefreshError) {
+            if (resultOptions?.publishOptimistic === false) publish(optimistic, session.selectionVersion === selectionVersion ? selected : session.selected);
             setRefreshRequired(true);
             setToasts((items) => [...items.filter((toast) => toast.id !== "workspace-refresh"), { id: "workspace-refresh", message: "Restored, but the workspace needs a refresh.", tone: "error", persistent: true, action: { label: "Refresh", onAction: () => { void reload(); } } }]);
           } else if (error instanceof WorkspaceConflictError && mutationPolicy === "rollbackOnFailure") {
@@ -153,7 +158,7 @@ export function useWorkspaceController(options: WorkspaceControllerOptions) {
             }
           } else {
             if (pendingId && mutationPolicy === "rollbackOnFailure") session.pendingIds.delete(pendingId);
-            failure(mutationPolicy, before, optimistic, session.selectionVersion === selectionVersion ? selected : session.selected);
+            failure(mutationPolicy, before, optimistic, session.selectionVersion === selectionVersion ? selected : session.selected, resultOptions?.notifyFailure !== false);
           }
           return;
         }
@@ -229,20 +234,43 @@ export function useWorkspaceController(options: WorkspaceControllerOptions) {
     session.deleteOperations.delete(key);
     const toastId = `undo:${receipt.operationId}`;
     let undoing = false;
-    setToasts((items) => [...items, { id: toastId, message: "Moved to Trash", expiresAfter: 3_000, action: { label: "Undo", onAction: () => {
+    const undo = async () => {
       if (undoing || !session.active) return;
       undoing = true;
-      setToasts((items) => items.filter((toast) => toast.id !== toastId));
-      void restore(receipt.trashId, removed);
-    } } }]);
+      setToasts((items) => items.map((toast) => toast.id === toastId ? { ...toast, persistent: true, action: { ...toast.action!, disabled: true } } : toast));
+      const outcome = await restoreWithOutcome(receipt.trashId, removed, undefined, false);
+      if (!session.active) return;
+      undoing = false;
+      if (outcome.committed) setToasts((items) => items.filter((toast) => toast.id !== toastId));
+      else setToasts((items) => items.map((toast) => toast.id === toastId ? { id: toastId, message: "Undo could not be completed. Please retry.", tone: "error", persistent: true, action: { label: "Retry Undo", onAction: () => { void undo(); } } } : toast));
+    };
+    setToasts((items) => [...items, { id: toastId, message: "Moved to Trash", expiresAfter: 3_000, action: { label: "Undo", onAction: () => { void undo(); } } }]);
     return receipt;
   }
   function deleteLink(id: string): Promise<DeleteReceipt | undefined> {
     return deleteEntity("link", id);
   }
   function restore(trashId: string, restored: WorkspaceSnapshot, destinationId?: string) {
-    if (!trashRepository) return Promise.resolve(undefined);
-    return mutate({ type: "restore", snapshot: restored }, () => trashRepository.restore(trashId, destinationId), "Restored", { canonical: (snapshot) => snapshot });
+    return restoreWithOutcome(trashId, restored, destinationId).then((outcome) => outcome.snapshot);
+  }
+  async function restoreWithOutcome(trashId: string, restored: WorkspaceSnapshot, destinationId?: string, publishOptimistic = true) {
+    if (!trashRepository) return { committed: false, snapshot: undefined };
+    let committed = false;
+    const snapshot = await mutate({ type: "restore", snapshot: restored }, async () => {
+      try {
+        const snapshot = await trashRepository.restore(trashId, destinationId);
+        committed = true;
+        return snapshot;
+      } catch (error) {
+        committed = error instanceof CommittedRestoreRefreshError;
+        throw error;
+      }
+    }, "Restored", { publishOptimistic, notifyFailure: publishOptimistic, canonical: (snapshot) => ({
+      spaces: retainBookmarks(snapshot.spaces, session.snapshot.spaces),
+      collections: retainBookmarks(snapshot.collections, session.snapshot.collections),
+      links: retainBookmarks(snapshot.links, session.snapshot.links),
+    }) });
+    return { committed, snapshot };
   }
   function meta(position: number) { const timestamp = new Date().toISOString(); return { id: globalThis.crypto.randomUUID(), user_id: userId, position, created_at: timestamp, updated_at: timestamp, origin: "saved" as const, read_only: false }; }
   async function submitDialog(command: WorkspaceDialogCommand): Promise<unknown> {

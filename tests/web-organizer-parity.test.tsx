@@ -116,13 +116,16 @@ describe("web shared organizer parity", () => {
       render(<WorkspaceClient repository={new MemoryWorkspaceRepository("demo-user", createDemoSnapshot())} mode="demo" sharing={{ availability: "sign-in-required", repository: null, siteUrl: "https://tabloom.nickvu.dev", onRequestSignIn: vi.fn() }} />);
       await userEvent.click(await screen.findByRole("button", { name: "Share Plan" }));
       expect(getComputedStyle(screen.getByRole("dialog")).borderRadius).toBe("16px");
+      expect(getComputedStyle(screen.getByRole("dialog")).fontFamily).toContain("Poppins");
       await userEvent.keyboard("{Escape}");
       await userEvent.click(screen.getByRole("button", { name: "New collection" }));
       expect(getComputedStyle(screen.getByRole("button", { name: "Close dialog" })).width).toBe("34px");
+      expect(getComputedStyle(screen.getByRole("dialog")).fontFamily).toContain("Poppins");
       await userEvent.keyboard("{Escape}");
       await userEvent.click(screen.getByRole("button", { name: "Search all links" }));
       const footer = screen.getByRole("dialog").querySelector("footer")!;
       expect(getComputedStyle(footer).marginLeft).not.toBe("auto");
+      expect(getComputedStyle(screen.getByRole("dialog")).fontFamily).toContain("Poppins");
     } finally { style.remove(); }
   });
 });

@@ -131,7 +131,7 @@ button { color: inherit; }
 .marketing-page > footer small { grid-column: 1 / -1; color: #aaa3a0; padding-top: 30px; border-top: 1px solid var(--line); }
 
 /* Web account controls compose around the shared organizer. */
-[data-testid="shared-workspace-organizer"] { font-family: Poppins, sans-serif; }
+[data-testid="shared-workspace-organizer"], .global-search-overlay, .organizer-dialog-backdrop, .collection-share-backdrop { font-family: Poppins, sans-serif; }
 .web-organizer-account { position: relative; flex: none; }
 .web-organizer-account > summary { width: var(--control-height); height: var(--control-height); display: grid; place-items: center; border: 1px solid var(--border-default); border-radius: 10px; color: var(--text-primary); background: var(--surface-panel); cursor: pointer; list-style: none; }
 .web-organizer-account > summary::-webkit-details-marker { display: none; }

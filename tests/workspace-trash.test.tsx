@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { SupabaseClient } from "@supabase/supabase-js";
@@ -7,6 +7,9 @@ import { createDemoSnapshot } from "../shared/domain";
 import { MemoryWorkspaceRepository } from "../shared/repository";
 import type { WorkspaceTrashRepository } from "../shared/trash-repository";
 import type { DeleteReceipt } from "../shared/trash";
+import { CommittedRestoreRefreshError } from "../shared/trash";
+import { CombinedWorkspaceRepository, type BookmarkRepository } from "../shared/bookmark-repository";
+import { mergeBookmarkEntries, toBookmarkWorkspace } from "../shared/bookmarks";
 
 function fixture({ loseFirstDeleteResponse = false } = {}) {
   const initial = createDemoSnapshot();
@@ -54,7 +57,69 @@ function fixture({ loseFirstDeleteResponse = false } = {}) {
 
 beforeEach(() => localStorage.clear());
 
+function withBookmarks(repository: MemoryWorkspaceRepository) {
+  const snapshot = toBookmarkWorkspace("demo-user", mergeBookmarkEntries(
+    [{ id: "mac", device_name: "Work Mac", last_synced_at: "2026-08-27T12:00:00.000Z" }],
+    [{ id: "bookmark-entry", source_id: "mac", chrome_bookmark_id: "chrome-docs", url: "https://developer.chrome.com/docs", normalized_url: "https://developer.chrome.com/docs", title: "Chrome docs", folder_path: "Work / Design", syncing: false, position: 0 }],
+  ));
+  const bookmarks: BookmarkRepository = { beginSync: vi.fn(), appendBatch: vi.fn(), finalizeSync: vi.fn(), loadWorkspace: async () => snapshot, listSources: async () => [], renameSource: vi.fn(), forgetSource: vi.fn() };
+  return new CombinedWorkspaceRepository(repository, bookmarks);
+}
+
 describe("web Trash deletion composition", () => {
+  it("retains the combined read-only bookmark tree after a saved-only Trash restore", async () => {
+    const value = fixture();
+    render(<WorkspaceClient {...value} repository={withBookmarks(value.repository)} mode="synced" />);
+    await userEvent.click(await screen.findByRole("button", { name: "Delete Product roadmap" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Undo" }));
+    expect(await screen.findByText("Product roadmap")).toBeVisible();
+    await userEvent.click(screen.getByRole("button", { name: /Browser Bookmarks/ }));
+    expect(await screen.findByText("Chrome docs")).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Edit Chrome docs" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Drag Chrome docs" })).toBeNull();
+  });
+
+  it("keeps a failed Undo recoverable past its normal toast expiry and retries the same receipt once", async () => {
+    const value = fixture();
+    vi.mocked(value.trashRepository.restore).mockRejectedValueOnce(new Error("Network unavailable"));
+    render(<WorkspaceClient {...value} mode="synced" />);
+    await userEvent.click(await screen.findByRole("button", { name: "Delete Product roadmap" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Undo" }));
+    expect(await screen.findByRole("button", { name: "Retry Undo" })).toBeVisible();
+    expect(screen.queryByText("Product roadmap")).toBeNull();
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 3_100)); });
+    expect(screen.getByRole("button", { name: "Retry Undo" })).toBeVisible();
+    const restore = value.trashRepository.restore;
+    let finish!: () => void;
+    const pending = new Promise<void>((resolve) => { finish = resolve; });
+    vi.mocked(restore).mockImplementationOnce(async (...args) => { await pending; return vi.mocked(restore).getMockImplementation()!(...args); });
+    await userEvent.click(screen.getByRole("button", { name: "Retry Undo" }));
+    expect(screen.queryByText("Product roadmap")).toBeNull();
+    expect(screen.getByRole("button", { name: "Retry Undo" })).toBeDisabled();
+    await act(async () => finish());
+    expect(await screen.findByText("Product roadmap")).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Retry Undo" })).toBeNull();
+    expect(restore).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(restore).mock.calls.map(([id]) => id)).toEqual(["receipt-trash-1", "receipt-trash-1"]);
+  });
+
+  it("shows committed Undo with refresh recovery without retrying the restore", async () => {
+    const value = fixture();
+    const restore = vi.mocked(value.trashRepository.restore).getMockImplementation()!;
+    vi.mocked(value.trashRepository.restore).mockImplementationOnce(async (...args) => { await restore(...args); throw new CommittedRestoreRefreshError(args[0]); });
+    render(<WorkspaceClient {...value} repository={withBookmarks(value.repository)} mode="synced" />);
+    await userEvent.click(await screen.findByRole("button", { name: "Delete Product roadmap" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Undo" }));
+    expect(await screen.findByText("Product roadmap")).toBeVisible();
+    expect(screen.getByRole("button", { name: "Refresh" })).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Retry Undo" })).toBeNull();
+    await userEvent.click(screen.getByRole("button", { name: /Browser Bookmarks/ }));
+    expect(await screen.findByText("Chrome docs")).toBeVisible();
+    await userEvent.click(screen.getByRole("button", { name: "Refresh" }));
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Refresh" })).toBeNull());
+    expect(value.trashRepository.restore).toHaveBeenCalledOnce();
+  });
+
   it("exposes saved writes and a Trash adapter without a direct delete method", async () => {
     const bootstrap = await import("../app/app/WorkspaceBootstrap");
     const factory = Reflect.get(bootstrap, "createSyncedRepositories");

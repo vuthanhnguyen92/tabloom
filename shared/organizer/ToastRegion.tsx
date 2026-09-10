@@ -2,7 +2,7 @@ import { CircleAlert, CircleCheck, X } from "lucide-react";
 import { useLayoutEffect, useRef } from "react";
 
 export type OrganizerToast = {
-  action?: { label: string; onAction: () => void };
+  action?: { label: string; onAction: () => void; disabled?: boolean };
   id: string;
   message: string;
   persistent?: boolean;
@@ -115,7 +115,7 @@ export function ToastRegion({ onDismiss, toasts }: ToastRegionProps) {
       return <p className={`organizer-toast ${error ? "error" : ""}`} key={toast.id} role={error ? "alert" : "status"}>
         {error ? <CircleAlert aria-hidden="true" size={17} /> : <CircleCheck aria-hidden="true" size={17} />}
         <span>{toast.message}</span>
-        {toast.action && <button onClick={toast.action.onAction} type="button">{toast.action.label}</button>}
+        {toast.action && <button onClick={toast.action.onAction} disabled={toast.action.disabled} type="button">{toast.action.label}</button>}
         {error && <button aria-label="Dismiss notification" onClick={() => onDismiss(toast.id)} type="button"><X aria-hidden="true" size={14} /></button>}
       </p>;
     })}

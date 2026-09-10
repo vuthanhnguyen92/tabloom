@@ -1,11 +1,11 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { Session } from "@supabase/supabase-js";
 import Link from "next/link";
 import { createDemoSnapshot } from "../../shared/domain";
 import { MemoryWorkspaceRepository, SupabaseWorkspaceRepository, type WebWorkspaceRepository } from "../../shared/repository";
-import { SupabaseTrashRepository, type WorkspaceTrashRepository } from "../../shared/trash-repository";
+import { SupabaseTrashRepository } from "../../shared/trash-repository";
 import { CombinedWorkspaceRepository, SupabaseBookmarkRepository } from "../../shared/bookmark-repository";
 import { Brand } from "../components/Brand";
 import { getSupabaseBrowserClient } from "../lib/supabase-browser";
@@ -32,8 +32,12 @@ export function createSyncedRepositories(client: NonNullable<ReturnType<typeof g
 
 export function WorkspaceBootstrap() {
   const client = getSupabaseBrowserClient();
-  const [session, setSession] = useState<Session | null | undefined>(client ? undefined : null);
-  const [repositories, setRepositories] = useState<{ repository: WebWorkspaceRepository; trashRepository?: WorkspaceTrashRepository } | null>(client ? null : { repository: demoRepository });
+  const [auth, setAuth] = useState<{ client: typeof client; session: Session | null | undefined }>({ client, session: client ? undefined : null });
+  // Client changes must recheck authentication before publishing another workspace.
+  const session = !client ? null : auth.client === client ? auth.session : undefined;
+  const userId = session?.user.id;
+  const repositories = useMemo(() => !client ? { repository: demoRepository, trashRepository: undefined } : userId ? createSyncedRepositories(client, userId) : null, [client, userId]);
+  const sharingRepository = useMemo(() => client && userId ? new SupabaseCollectionShareRepository(client as unknown as CollectionShareClient) : null, [client, userId]);
 
   useEffect(() => {
     if (!client) return;
@@ -41,14 +45,12 @@ export function WorkspaceBootstrap() {
     let authEventReceived = false;
     void client.auth.getSession().then(({ data }) => {
       if (!active || authEventReceived) return;
-      setSession(data.session);
-      setRepositories(data.session ? createSyncedRepositories(client, data.session.user.id) : null);
+      setAuth({ client, session: data.session });
     });
     const { data } = client.auth.onAuthStateChange((_event, next) => {
       if (!active) return;
       authEventReceived = true;
-      setSession(next);
-      setRepositories(next ? createSyncedRepositories(client, next.user.id) : null);
+      setAuth({ client, session: next });
     });
     return () => { active = false; data.subscription.unsubscribe(); };
   }, [client]);
@@ -63,9 +65,9 @@ export function WorkspaceBootstrap() {
     userId={session?.user.id ?? "demo-user"}
     email={session?.user.email}
     onSignOut={client ? async () => { const { error } = await client.auth.signOut(); if (error) throw error; } : undefined}
-    sharing={client && session ? {
+    sharing={sharingRepository ? {
       availability: "ready",
-      repository: new SupabaseCollectionShareRepository(client as unknown as CollectionShareClient),
+      repository: sharingRepository,
       siteUrl: process.env.NEXT_PUBLIC_SITE_URL || "https://tabloom.nickvu.dev",
       onRequestSignIn: () => undefined,
     } : undefined}
