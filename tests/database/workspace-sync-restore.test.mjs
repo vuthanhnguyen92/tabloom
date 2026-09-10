@@ -3,6 +3,44 @@ import { randomUUID } from "node:crypto";
 import test from "node:test";
 import pg from "pg";
 
+test("revision-3 offline deletes cannot remove revision-5 restored roots or descendants", async () => {
+  const db = new pg.Client({ host: "127.0.0.1", port: 54322, database: "postgres", user: "postgres", password: "postgres" });
+  await db.connect(); await db.query("begin");
+  try {
+    for (const entity of ["space", "collection", "link"]) {
+      const owner = randomUUID(), space = randomUUID(), collection = randomUUID(), link = randomUUID();
+      const root = { space, collection, link }[entity];
+      await db.query("reset role");
+      await db.query("insert into auth.users(id,aud,role,email) values($1,'authenticated','authenticated',$2)", [owner, `${owner}@example.test`]);
+      await db.query("set local role authenticated");
+      await db.query("select set_config('request.jwt.claim.sub',$1,true)", [owner]);
+      await db.query("insert into spaces(id,user_id,name,position) values($1,$2,'Space',0)", [space, owner]);
+      await db.query("insert into collections(id,user_id,space_id,name,position) values($1,$2,$3,'Collection',0)", [collection, owner, space]);
+      await db.query("insert into links(id,user_id,collection_id,title,url,position) values($1,$2,$3,'Original','https://example.com',0)", [link, owner, collection]);
+      const revision = async () => Number((await db.query("select revision from workspace_sync_state where user_id=$1", [owner])).rows[0].revision);
+      assert.equal(await revision(), 3);
+      const intent = entity === "link" ? null : (await db.query("select prepare_workspace_delete($1,$2) as intent", [entity, root])).rows[0].intent.intentId;
+      const trash = (await db.query("select trash_workspace_entity($1,$2,'web',$3,$4) as receipt", [entity, root, randomUUID(), intent])).rows[0].receipt;
+      await db.query("select restore_workspace_trash($1,null)", [trash.trashId]);
+      assert.equal(await revision(), 5);
+      await db.query("update links set title='Restored and edited' where id=$1", [link]);
+      const operation = { operationId: randomUUID(), deviceId: randomUUID(), sequence: 1, entity, entityId: root, action: "delete", payload: {}, baseRevision: 3, createdAt: new Date().toISOString() };
+      const later = { ...operation, operationId: randomUUID(), sequence: 2, entity: "space", entityId: space, action: "update", payload: { name: "Later queue change" } };
+      const apply = async (ops) => (await db.query("select apply_workspace_operations($1::jsonb,$2) as result", [JSON.stringify(ops), await revision()])).rows[0].result;
+      const result = await apply([operation, later]);
+      assert.equal(result.outcomes[0].status, "rejected", entity);
+      assert.equal(result.outcomes[1].status, "applied", entity);
+      assert.equal(result.patches.links.find((item) => item.id === link).title, "Restored and edited");
+      assert.equal(result.patches.spaces.find((item) => item.id === space).name, "Later queue change");
+      assert.equal((await apply([operation])).outcomes[0].status, "rejected");
+      assert.equal((await apply([{ ...operation, baseRevision: await revision() }])).outcomes[0].status, "rejected", "a changed replay cannot upgrade old authority");
+      const sameGeneration = { ...operation, operationId: randomUUID(), sequence: 3, baseRevision: 5 };
+      assert.equal((await apply([sameGeneration])).outcomes[0].status, "applied");
+      assert.equal((await apply([sameGeneration])).outcomes[0].status, "already_applied");
+    }
+  } finally { await db.query("rollback"); await db.end(); }
+});
+
 test("explicit extension restore uses owned Trash, preserves IDs and is idempotent", async () => {
   const db = new pg.Client({ host: "127.0.0.1", port: 54322, database: "postgres", user: "postgres", password: "postgres" });
   await db.connect();

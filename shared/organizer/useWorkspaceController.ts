@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { findDuplicateLink, type Collection, type SavedLink, type WorkspaceSnapshot } from "../domain";
 import { WorkspaceConflictError, type WebWorkspaceRepository } from "../repository";
-import type { DeleteIntent, DeleteReceipt, TrashSource } from "../trash";
+import type { DeleteIntent, DeleteReceipt, TrashSource, WorkspaceTrashEntry } from "../trash";
 import { CommittedRestoreRefreshError, LocallyCommittedTrashError } from "../trash";
 import type { WorkspaceTrashRepository } from "../trash-repository";
 import type { OrganizerCapabilities } from "./capabilities";
@@ -259,6 +259,24 @@ export function useWorkspaceController(options: WorkspaceControllerOptions) {
   function restore(trashId: string, restored: WorkspaceSnapshot, destinationId?: string) {
     return restoreWithOutcome(trashId, restored, destinationId).then((outcome) => outcome.snapshot);
   }
+  function restoreTrashEntry(entry: WorkspaceTrashEntry, destinationId?: string) {
+    return enqueue(async () => {
+      if (!trashRepository) return;
+      const restored = structuredClone(entry.snapshot);
+      if (destinationId && entry.rootType === "collection") restored.collections[0].space_id = destinationId;
+      if (destinationId && entry.rootType === "link") restored.links[0].collection_id = destinationId;
+      setBusy(true);
+      try {
+        const canonical = await trashRepository.restore(entry.id, destinationId);
+        acceptTrashRestoration(canonical, restored);
+        return canonical;
+      } catch (error) {
+        if (error instanceof LocallyCommittedTrashError) acceptTrashRestoration(error.snapshot, restored, true);
+        else if (error instanceof CommittedRestoreRefreshError) acceptTrashRestoration(undefined, restored);
+        throw error;
+      } finally { if (session.active) setBusy(false); }
+    });
+  }
   function acceptTrashRestoration(snapshot: WorkspaceSnapshot | undefined, restored: WorkspaceSnapshot, pendingSync = false) {
     if (!session.active) return;
     const ids = new Set([...restored.spaces, ...restored.collections, ...restored.links].map((item) => item.id));
@@ -371,7 +389,7 @@ export function useWorkspaceController(options: WorkspaceControllerOptions) {
     collapsedCollections: current.collapsed, railCollapsed: current.railCollapsed,
     dialog, searchOpen, drag, externalDropTarget, toasts, busy, retryRequired, refreshRequired, isPending,
     selectSpace, setRailCollapsed, toggleCollection, openDialog, closeDialog, submitDialog,
-    requestDelete, deleteLink, restore, acceptTrashRestoration, trashOpen, setTrashOpen, reload, retry, mutate, notify, openCollection, moveLink, moveCollection,
+    requestDelete, deleteLink, restore, restoreTrashEntry, trashOpen, setTrashOpen, reload, retry, mutate, notify, openCollection, moveLink, moveCollection,
     setSearchOpen, setDrag: (value: OrganizerDragState) => {
       if (value?.kind === "collection" && isPending(value.id) || value?.kind === "saved-link" && (isPending(value.id) || isPending(value.targetCollectionId))) return;
       setDrag(value);

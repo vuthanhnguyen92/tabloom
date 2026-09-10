@@ -144,7 +144,9 @@ export class WorkspaceSyncCoordinator implements WorkspaceSyncCoordinatorContrac
     if (this.stopped) return Promise.resolve();
     if (this.activeRead) return this.activeRead;
     const running = this.input.exclusiveRunner.runExclusive(this.input.userId, async () => {
+      if (this.stopped) return;
       const latest = await this.input.storage.normalizeInterruptedAttempts();
+      if (this.stopped) return;
       if (latest.sync.lastRevisionCheckAt
         && latest.sync.lastRevisionCheckAt !== baselineRevisionCheckAt) {
         this.observeLocal(latest);

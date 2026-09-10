@@ -3,7 +3,7 @@ import type { WorkspaceSnapshot } from "../domain";
 import { CommittedRestoreRefreshError, LocallyCommittedTrashError, WorkspaceCommandError, type WorkspaceTrashEntry } from "../trash";
 import type { WorkspaceTrashRepository } from "../trash-repository";
 
-export function useTrash(repository: WorkspaceTrashRepository, open: boolean, onRestored?: (snapshot: WorkspaceSnapshot | undefined, entry: WorkspaceTrashEntry, destinationId?: string, pendingSync?: boolean) => void) {
+export function useTrash(repository: WorkspaceTrashRepository, open: boolean, onRestored?: (snapshot: WorkspaceSnapshot | undefined, entry: WorkspaceTrashEntry, destinationId?: string, pendingSync?: boolean) => void, onRestore?: (entry: WorkspaceTrashEntry, destinationId?: string) => Promise<WorkspaceSnapshot | undefined>) {
   const [entries, setEntries] = useState<WorkspaceTrashEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -25,7 +25,7 @@ export function useTrash(repository: WorkspaceTrashRepository, open: boolean, on
     const current = session.current;
     setBusy(true); setError("");
     try {
-      const snapshot = await repository.restore(entry.id, destinationId);
+      const snapshot = await (onRestore ? onRestore(entry, destinationId) : repository.restore(entry.id, destinationId));
       if (!current.active) return;
       setEntries((items) => items.filter((item) => item.id !== entry.id)); setDestination(null);
       onRestored?.(snapshot, entry, destinationId);

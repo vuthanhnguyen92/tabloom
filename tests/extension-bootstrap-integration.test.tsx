@@ -97,6 +97,34 @@ function accountSnapshot(userId: string, offset = 0) {
 }
 
 describe("ExtensionApp bootstrap", () => {
+  it("keeps recovered account items locally owned and recoverable after logout", async () => {
+    const userId = "11111111-1111-4111-8111-111111111111";
+    const snapshot = accountSnapshot(userId);
+    const link = snapshot.links.find((item) => item.collection_id === snapshot.collections[0].id)!;
+    mocks.supabase = { auth: { signOut: async () => ({ error: null }) } } as unknown as SupabaseClient;
+    await new ChromeSnapshotCache(browserAdapter.storage).saveCloud(userId, { revision: 1, snapshot });
+    mocks.bootstrapWorkspace.mockResolvedValue({ mode: "recovered", localRepository: null, session: { user: { id: userId } }, recoverySuggested: false });
+    render(<ExtensionApp />);
+    await userEvent.click(await screen.findByRole("button", { name: "Open account menu" }));
+    await userEvent.click(screen.getByRole("menuitem", { name: "Log out" }));
+    await screen.findByRole("button", { name: "Sign in to sync" });
+    const local = await createLocalWorkspaceRepository(browserAdapter.storage);
+    const retained = await local.load();
+    expect([...retained.spaces, ...retained.collections, ...retained.links].every((item) => item.user_id === "local-user")).toBe(true);
+    await userEvent.click(await screen.findByRole("button", { name: `Delete ${link.title}` }));
+    await userEvent.click(await screen.findByRole("button", { name: "Trash" }));
+    expect(await screen.findByRole("button", { name: `Restore ${link.title}` })).toBeVisible();
+    await userEvent.click(screen.getByRole("button", { name: "Close Trash" }));
+    await userEvent.click(screen.getByRole("button", { name: "Undo" }));
+    expect(await screen.findByRole("link", { name: new RegExp(link.title) })).toBeVisible();
+    await userEvent.click(screen.getByRole("button", { name: `Delete ${link.title}` }));
+    await userEvent.click(screen.getByRole("button", { name: "Trash" }));
+    await userEvent.click(await screen.findByRole("button", { name: `Restore ${link.title}` }));
+    expect(await screen.findByText("Trash is empty.")).toBeVisible();
+    await userEvent.click(screen.getByRole("button", { name: "Close Trash" }));
+    expect(await screen.findByRole("link", { name: new RegExp(link.title) })).toBeVisible();
+  });
+
   it("provides local Trash and Undo while signed out", async () => {
     const repository = await createLocalWorkspaceRepository(browserAdapter.storage);
     const snapshot = await repository.load();

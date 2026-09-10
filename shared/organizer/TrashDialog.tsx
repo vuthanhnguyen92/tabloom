@@ -6,10 +6,10 @@ import { registerModal } from "./modal-stack";
 import { isWritable } from "./mutation-policy";
 import { useTrash } from "./useTrash";
 
-type Props = { repository: WorkspaceTrashRepository; snapshot?: WorkspaceSnapshot; open: boolean; onClose: () => void; onRestored?: Parameters<typeof useTrash>[2] };
+type Props = { repository: WorkspaceTrashRepository; snapshot?: WorkspaceSnapshot; open: boolean; onClose: () => void; onRestored?: Parameters<typeof useTrash>[2]; onRestore?: Parameters<typeof useTrash>[3] };
 export function TrashDialog(props: Props) { return props.open ? <OpenTrashDialog {...props} /> : null; }
-function OpenTrashDialog({ repository, snapshot = { spaces: [], collections: [], links: [] }, onClose, onRestored }: Props) {
-  const trash = useTrash(repository, true, onRestored);
+function OpenTrashDialog({ repository, snapshot = { spaces: [], collections: [], links: [] }, onClose, onRestored, onRestore }: Props) {
+  const trash = useTrash(repository, true, onRestored, onRestore);
   const root = useRef<HTMLDivElement>(null);
   const callbacks = useRef({ onClose, busy: trash.busy });
   useLayoutEffect(() => { callbacks.current = { onClose, busy: trash.busy }; });

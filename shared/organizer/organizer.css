@@ -51,10 +51,11 @@ button, input, select, textarea { margin: 0; color: inherit; font: inherit; line
 .organizer-rail-toggle:hover { color: white; background: rgba(255,255,255,.1); }
 .organizer-rail-actions { display: flex; align-items: center; justify-content: space-between; padding: 0 6px 7px 10px; }
 .organizer-rail-actions > span { color: #a6a0c3; font-size: 9px; font-weight: 800; letter-spacing: .14em; }
-.organizer-rail-actions > button, .organizer-space-row > button:last-child { flex: none; width: 27px; height: 27px; padding: 0; border: 0; border-radius: 7px; color: #c8c3db; background: transparent; display: grid; place-items: center; }
-.organizer-rail-actions > button:hover, .organizer-space-row > button:last-child:hover { color: white; background: rgba(255,255,255,.1); }
+.organizer-rail-actions > button, .organizer-space-row > .space-edit { flex: none; width: 27px; height: 27px; padding: 0; border: 0; border-radius: 7px; color: #c8c3db; background: transparent; display: grid; place-items: center; }
+.organizer-rail-actions > button:hover, .organizer-space-row > .space-edit:hover { color: white; background: rgba(255,255,255,.1); }
 .organizer-space-list { display: flex; flex-direction: column; gap: 5px; }
 .organizer-space-row { position: relative; min-width: 0; border-radius: 9px; }
+.organizer-space-rail .organizer-space-row { display: block; }
 .organizer-space-row.active { background: rgba(255,255,255,.1); }
 .organizer-space-row > .space-row-actions { position: absolute; top: 50%; right: 7px; transform: translateY(-50%); display: flex; gap: 2px; opacity: 0; background: var(--sidebar); border-radius: 7px; }
 .organizer-space-row:hover > .space-row-actions, .organizer-space-row:focus-within > .space-row-actions { opacity: 1; }
@@ -64,8 +65,8 @@ button, input, select, textarea { margin: 0; color: inherit; font: inherit; line
 .organizer-space-select > i { flex: none; width: 30px; height: 30px; border-radius: 9px; color: white; display: grid; place-items: center; font-size: 12px; font-style: normal; font-weight: 600; text-shadow: 0 1px 2px rgba(0,0,0,.28); box-shadow: inset 0 0 0 1px rgba(255,255,255,.16); }
 .organizer-space-row.active .organizer-space-select > i { box-shadow: 0 0 0 2px #b9a8ff, 0 0 0 5px rgba(185,168,255,.18); }
 .organizer-space-select > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.organizer-space-row > button:last-child { position: absolute; top: 50%; right: 7px; transform: translateY(-50%); opacity: 0; }
-.organizer-space-row:hover > button:last-child, .organizer-space-row.active > button:last-child, .organizer-space-row > button:last-child:focus-visible { opacity: 1; }
+.organizer-space-row > .space-edit { position: absolute; top: 50%; right: 7px; transform: translateY(-50%); opacity: 0; }
+.organizer-space-row:hover > .space-edit, .organizer-space-row.active > .space-edit, .organizer-space-row > .space-edit:focus-visible { opacity: 1; }
 .organizer-space-rail.collapsed { padding: 18px 10px; align-items: stretch; }
 .organizer-space-rail.collapsed .organizer-rail-top { justify-content: center; margin: 0 0 12px; padding: 0 0 13px; border-bottom: 1px solid rgba(255,255,255,.1); }
 .organizer-space-rail.collapsed .organizer-rail-toggle { width: 38px; height: 38px; border: 1px solid rgba(255,255,255,.12); border-radius: 11px; color: #ded9ee; background: rgba(255,255,255,.06); }

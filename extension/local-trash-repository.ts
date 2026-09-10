@@ -162,6 +162,7 @@ export class LocalTrashRepository implements WorkspaceTrashRepository {
         const id = crypto.randomUUID();
         entry = { id, localId: id, operationId, rootType, rootId, rootName: rootType === "link" ? tree.links[0].title : (rootType === "space" ? tree.spaces : tree.collections)[0].name,
           source, deletedAt: new Date(this.now()).toISOString(), expiresAt: new Date(this.now() + retention).toISOString(), restoredAt: null, snapshot: tree };
+        this.validateEntry(entry);
         return { snapshot: after, values: { ...this.values([...(await this.entries()), entry]), [generationKey(this.scope)]: generation + 1 } };
       }); this.intents.clear(); } catch (cause) {
         if (cause instanceof LocallyCommittedTrashError) {

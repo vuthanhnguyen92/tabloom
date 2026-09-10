@@ -5,6 +5,43 @@ let server: Awaited<ReturnType<typeof startOrganizerServer>>;
 test.beforeAll(async () => { server = await startOrganizerServer(); });
 test.afterAll(async () => { await server?.close(); });
 
+for (const readOnly of [false, true]) {
+  test(`two space selections keep distinct visible hit targets (readOnly=${readOnly})`, async ({ page }) => {
+    const errors = trackPageErrors(page);
+    await page.setViewportSize({ width: 1080, height: 900 });
+    await page.goto(`${server.url}${readOnly ? "?readOnly" : ""}`);
+    await ready(page);
+    for (const collapsed of [true, false]) {
+      if (!collapsed) await page.getByRole("button", { name: "Expand sidebar" }).click();
+      await expect(page.locator(".organizer-space-rail")).toHaveCSS("width", collapsed ? "68px" : "230px");
+      await page.mouse.move(800, 800);
+      const buttons = page.locator(".organizer-space-select");
+      await expect(buttons).toHaveCount(2);
+      for (let index = 0; index < 2; index++) {
+        const button = buttons.nth(index);
+        await expect(button).toHaveCSS("position", "static");
+        await expect(button).toHaveCSS("opacity", "1");
+        const bounds = (await button.boundingBox())!;
+        expect(bounds.height).toBeGreaterThanOrEqual(44);
+        expect(bounds.width).toBeGreaterThanOrEqual(44);
+        const hit = await button.evaluate((node) => {
+          const bounds = node.getBoundingClientRect();
+          return node.contains(document.elementFromPoint(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2));
+        });
+        expect(hit).toBe(true);
+        await button.click();
+        await expect(button).toHaveAttribute("aria-current", "page");
+        // Compare both rows in the same layout, not across asynchronous clicks.
+        const rectangles = await buttons.evaluateAll((nodes) => nodes.map((node) => node.getBoundingClientRect().toJSON()));
+        expect(rectangles[1].y).toBeGreaterThanOrEqual(rectangles[0].y + rectangles[0].height);
+      }
+      await page.mouse.move(800, 800);
+      await page.screenshot({ path: test.info().outputPath(`spaces-${readOnly ? "readonly" : "saved"}-${collapsed ? "collapsed" : "expanded"}.png`) });
+    }
+    expect(errors).toEqual([]);
+  });
+}
+
 test("production web and installed extension share geometry and automatic themes", async ({ page: web }) => {
   const errors = trackPageErrors(web);
   await web.setViewportSize({ width: 1080, height: 900 });
@@ -14,7 +51,7 @@ test("production web and installed extension share geometry and automatic themes
   const extension = await openExtension();
   try {
     // Give the organizer equal available width; the extension owns a 360px side panel.
-    for (const selector of [".organizer-space-rail", ".organizer-main > header", '.ext-columns > article:first-child', ".ext-link-card:first-child"]) {
+    for (const selector of [".organizer-space-rail", ".organizer-space-select", ".organizer-main > header", '.ext-columns > article:first-child', ".ext-link-card:first-child"]) {
       const a = (await web.locator(selector).first().boundingBox())!;
       const b = (await extension.page.locator(selector).first().boundingBox())!;
       for (const dimension of ["x", "y", "width", "height"] as const) expect(b[dimension], `${selector} ${dimension}`).toBeCloseTo(a[dimension], 0);

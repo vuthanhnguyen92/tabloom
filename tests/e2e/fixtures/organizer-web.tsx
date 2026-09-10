@@ -14,5 +14,12 @@ const area: StorageArea = {
 };
 if (!localStorage.getItem(LOCAL_WORKSPACE_KEY)) await area.set({ [LOCAL_WORKSPACE_KEY]: { version: 2, snapshot: organizerSnapshot(), bookmarkSources: [], cachedAt: "2026-09-10T00:00:00Z" } });
 const repository = await createLocalWorkspaceRepository(area);
+if (new URL(location.href).searchParams.has("readOnly")) {
+  const load = repository.load.bind(repository);
+  repository.load = async () => {
+    const snapshot = await load();
+    return { ...snapshot, spaces: snapshot.spaces.map((space) => ({ ...space, read_only: true })) };
+  };
+}
 const trashRepository = new LocalTrashRepository(area, repository, "web-acceptance");
 createRoot(document.getElementById("root")!).render(<WorkspaceClient repository={repository} trashRepository={trashRepository} mode="synced" userId="local-user" email="acceptance@example.com" />);

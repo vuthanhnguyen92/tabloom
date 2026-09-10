@@ -15,6 +15,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { LocalTrashRepository } from "../extension/local-trash-repository";
 import { LocalFirstWorkspaceRepository } from "../extension/local-first-repository";
 import { LocalFirstStorage } from "../extension/local-first-storage";
+import { CommittedRestoreRefreshError, LocallyCommittedTrashError, type WorkspaceTrashEntry } from "../shared/trash";
 
 const snapshot = createDemoSnapshot();
 const link = snapshot.links[0];
@@ -109,6 +110,45 @@ describe("workspace mutation policy", () => {
 });
 
 describe("workspace controller", () => {
+  it.each(["success", "refresh-failure", "sync-failure"] as const)("serializes Trash list restore after an edit rejection (%s)", async (outcome) => {
+    const { options } = setup();
+    const edited = snapshot.links[1];
+    const bookmark = { ...snapshot.spaces[0], id: "native", origin: "browser-bookmark" as const, read_only: true, name: "Native bookmarks" };
+    const canonical = { ...snapshot, links: snapshot.links.map((item) => item.id === link.id ? { ...item, title: "Canonical restoration" } : item) };
+    let committed = false;
+    options.repository.load = async () => committed ? { ...canonical, spaces: [...canonical.spaces, bookmark] } : { ...snapshot, spaces: [...snapshot.spaces, bookmark], links: snapshot.links.filter((item) => item.id !== link.id) };
+    const gate = deferred<void>();
+    options.repository.updateLink = () => gate.promise;
+    const entry: WorkspaceTrashEntry = { id: "trash", rootType: "link", rootId: link.id, rootName: link.title, source: "web", deletedAt: "2026-09-10T00:00:00Z", expiresAt: "2099-01-01T00:00:00Z", restoredAt: null, snapshot: { version: 1, rootType: "link", spaces: [], collections: [], links: [link] } };
+    const trashRepository: WorkspaceTrashRepository = { list: async () => [entry], prepareDelete: vi.fn(), deleteEntity: vi.fn(), restore: async () => {
+      committed = true;
+      if (outcome === "refresh-failure") throw new CommittedRestoreRefreshError(entry.id);
+      if (outcome === "sync-failure") throw new LocallyCommittedTrashError(canonical);
+      return canonical;
+    } };
+    render(<WorkspaceOrganizer {...options} trashRepository={trashRepository} />);
+    await userEvent.click(await screen.findByRole("button", { name: `Edit ${edited.title}` }));
+    await userEvent.clear(screen.getByLabelText("Title"));
+    await userEvent.type(screen.getByLabelText("Title"), "Rejected edit");
+    await userEvent.click(screen.getByRole("button", { name: "Save link" }));
+    await screen.findByText("Rejected edit");
+    await userEvent.click(screen.getByRole("button", { name: "Trash" }));
+    await userEvent.click(await screen.findByRole("button", { name: `Restore ${link.title}` }));
+    expect(committed).toBe(false);
+    await act(async () => gate.reject(new Error("edit rejected")));
+    await waitFor(() => expect(committed).toBe(true));
+    await userEvent.click(await screen.findByRole("button", { name: "Close Trash" }));
+    expect(await screen.findByRole("link", { name: outcome === "refresh-failure" ? new RegExp(link.title) : /Canonical restoration/ })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Open Native bookmarks" })).toBeVisible();
+    expect(screen.getByText(edited.title)).toBeVisible();
+    if (outcome === "refresh-failure") {
+      await userEvent.click(screen.getByRole("button", { name: "Refresh" }));
+      expect(await screen.findByRole("link", { name: /Canonical restoration/ })).toBeVisible();
+      expect(screen.queryByRole("button", { name: "Refresh" })).not.toBeInTheDocument();
+    }
+    if (outcome === "sync-failure") expect(screen.getByRole("button", { name: "Retry" })).toBeVisible();
+  });
+
   it("holds first content until selected space, rail, and collection preferences resolve", async () => {
     const { options, values } = setup();
     values.set("tabloom:selected-space:account", "space-research");

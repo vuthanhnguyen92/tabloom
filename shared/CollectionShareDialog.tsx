@@ -1,9 +1,10 @@
 "use client";
 
 import { Check, Copy, Link2, RefreshCw, RotateCw, Trash2, X } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import type { Collection } from "./domain";
+import { registerModal } from "./organizer/modal-stack";
 import {
   collectionShareUrl,
   type CollectionShare,
@@ -45,6 +46,14 @@ export function CollectionShareDialog({
   const [error, setError] = useState("");
   const [failedAction, setFailedAction] = useState<FailedAction>(null);
   const closeRef = useRef<HTMLButtonElement>(null);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const modalState = useRef({ busy, confirmation, onClose });
+  useLayoutEffect(() => { modalState.current = { busy, confirmation, onClose }; });
+  useLayoutEffect(() => registerModal({
+    root: rootRef.current!, owner: "collection-share", initialFocus: ".dialog-close",
+    isBusy: () => modalState.current.busy,
+    onClose: () => { if (modalState.current.confirmation) setConfirmation(null); else modalState.current.onClose(); },
+  }), []);
 
   const load = useCallback(async () => {
     if (availability !== "ready" || !repository) return;
@@ -63,26 +72,10 @@ export function CollectionShareDialog({
   }, [availability, collection.id, repository]);
 
   useEffect(() => {
-    const invokingControl = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    closeRef.current?.focus();
-    return () => invokingControl?.focus();
-  }, []);
-
-  useEffect(() => {
     if (availability !== "ready") return;
     const timer = window.setTimeout(() => void load(), 0);
     return () => window.clearTimeout(timer);
   }, [availability, load]);
-
-  useEffect(() => {
-    function closeWithEscape(event: KeyboardEvent) {
-      if (event.key !== "Escape") return;
-      if (confirmation) setConfirmation(null);
-      else onClose();
-    }
-    document.addEventListener("keydown", closeWithEscape);
-    return () => document.removeEventListener("keydown", closeWithEscape);
-  }, [confirmation, onClose]);
 
   async function enable() {
     if (!repository) return;
@@ -159,6 +152,8 @@ export function CollectionShareDialog({
   }
 
   const content = <div
+    ref={rootRef}
+    tabIndex={-1}
     className="collection-share-backdrop"
     role="presentation"
     onMouseDown={(event) => {

@@ -63,12 +63,7 @@ export function WorkspaceOrganizerView({ controller: c, accountControls, current
       {!active && <p>Create a space to start organizing your links.</p>}
     </WorkspaceShell>
     <WorkspaceDialogs dialog={c.dialog} onClose={c.closeDialog} onSubmit={(command) => { void c.submitDialog(command); }} busy={c.busy} />
-    {props.trashRepository && <TrashDialog repository={props.trashRepository} snapshot={c.snapshot} open={c.trashOpen} onClose={() => c.setTrashOpen(false)} onRestored={(snapshot, entry, destinationId, pendingSync) => {
-      const restored = structuredClone(entry.snapshot);
-      if (destinationId && entry.rootType === "collection") restored.collections[0].space_id = destinationId;
-      if (destinationId && entry.rootType === "link") restored.links[0].collection_id = destinationId;
-      c.acceptTrashRestoration(snapshot, restored, pendingSync);
-    }} />}
+    {props.trashRepository && <TrashDialog repository={props.trashRepository} snapshot={c.snapshot} open={c.trashOpen} onClose={() => c.setTrashOpen(false)} onRestore={c.restoreTrashEntry} />}
     <ToastRegion toasts={c.toasts} onDismiss={c.dismissToast} />
   </div>;
 }

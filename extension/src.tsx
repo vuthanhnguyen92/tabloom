@@ -360,7 +360,7 @@ function useExtensionRuntime() {
       if (activationGenerationRef.current !== generation) return;
       await cache.write(mergeAccountWorkspaceIntoLocal(localSnapshot, accountSnapshot));
     } else {
-      await cache.write(accountSnapshot);
+      await cache.write(mergeAccountWorkspaceIntoLocal({ spaces: [], collections: [], links: [] }, accountSnapshot));
     }
     if (activationGenerationRef.current !== generation) return;
     const nextLocal = await createLocalWorkspaceRepository();

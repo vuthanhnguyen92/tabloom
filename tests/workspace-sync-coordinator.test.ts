@@ -158,6 +158,51 @@ async function setup(input: {
 }
 
 describe("WorkspaceSyncCoordinator reads", () => {
+  it("reconciles rejected stale deletion and drains later waiting work without retrying the deletion", async () => {
+    const deletion: WorkspaceOperation = { ...renameOperation(), action: "delete", payload: {}, baseRevision: 3 };
+    const later = laterRenameOperation("After rejection");
+    const calls: string[][] = [];
+    const syncTransport = transport({ applyOperations: async (sent) => {
+      calls.push(sent.map((item) => item.operationId));
+      if (sent[0].action === "delete") return { revision: 6, outcomes: [{ operationId: deletion.operationId, status: "rejected", message: "Item was restored. Refresh and delete again." }], patches: workspace("Restored and edited"), tombstones: [], conflicts: [] };
+      return { revision: 7, outcomes: [{ operationId: later.operationId, status: "applied" }], patches: workspace("After rejection"), tombstones: [], conflicts: [] };
+    } });
+    const { coordinator, storage, snapshots } = await setup({ syncTransport, initial: state({ revision: 6, snapshot: { spaces: [], collections: [], links: [] }, queue: [{ operation: deletion, state: "failed", error: "Offline" }, { operation: later, state: "waiting" }], nextSequence: 3 }) });
+    await expect(coordinator.retryFailed()).rejects.toBeInstanceOf(WorkspaceConflictActionRequiredError);
+    expect(calls).toEqual([[deletion.operationId], [later.operationId]]);
+    expect(snapshots.some((item) => item.spaces[0]?.id === SPACE_ID)).toBe(true);
+    expect((await storage.loadOrThrow()).snapshot.spaces[0].name).toBe("After rejection");
+    expect((await storage.loadOrThrow()).queue).toEqual([]);
+    await coordinator.retryFailed();
+    expect(calls).toHaveLength(2);
+  });
+
+  it("does no normalization or network work after stopping while waiting for its lock", async () => {
+    const acquired = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const runner: WorkspaceSyncExclusiveRunner = { runExclusive: async (_userId, callback) => {
+      acquired.resolve(); await release.promise; return callback();
+    } };
+    const interrupted = state({ queue: [{ operation: renameOperation(), state: "waiting", attemptedAt: NOW }], nextSequence: 2 });
+    const { coordinator, storage, syncTransport } = await setup({ runner, initial: interrupted });
+    const starting = coordinator.start();
+    await acquired.promise;
+    coordinator.stop(); release.resolve(); await starting;
+    expect((await storage.loadOrThrow()).queue).toEqual(interrupted.queue);
+    expect(syncTransport.getRevision).not.toHaveBeenCalled();
+  });
+
+  it("does no network work after stopping during read preparation", async () => {
+    const prepared = Promise.withResolvers<AccountWorkspaceState>();
+    const entered = Promise.withResolvers<void>();
+    const { coordinator, storage, syncTransport } = await setup();
+    vi.spyOn(storage, "normalizeInterruptedAttempts").mockImplementationOnce(() => { entered.resolve(); return prepared.promise; });
+    const starting = coordinator.start();
+    await entered.promise;
+    coordinator.stop(); prepared.resolve(state()); await starting;
+    expect(syncTransport.getRevision).not.toHaveBeenCalled();
+  });
+
   it("retries every interrupted operation without discarding attempt history", async () => {
     const operations = [renameOperation(), laterRenameOperation()];
     const syncTransport = transport({ applyOperations: vi.fn<WorkspaceSyncTransport["applyOperations"]>(async (sent) => ({ revision: 2, outcomes: sent.map((operation) => ({ operationId: operation.operationId, status: "applied" })), patches: workspace("Later"), tombstones: [], conflicts: [] })) });

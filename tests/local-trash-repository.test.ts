@@ -23,6 +23,21 @@ async function fixture() {
 }
 
 describe("local Trash", () => {
+  it("rejects a malformed owner before committing any deletion or Trash storage", async () => {
+    const { storage, workspace, trash, link } = await fixture();
+    const snapshot = await workspace.load();
+    snapshot.links[0].user_id = crypto.randomUUID();
+    await storage.set({ [LOCAL_WORKSPACE_KEY]: { version: 2, snapshot, bookmarkSources: [], cachedAt: new Date().toISOString() } });
+    await expect(trash.deleteEntity("link", link.id, "extension", crypto.randomUUID())).rejects.toThrow("Invalid Trash owner");
+    expect((await workspace.load()).links).toHaveLength(1);
+    expect(await trash.list()).toEqual([]);
+    snapshot.links[0].user_id = "local-user";
+    await storage.set({ [LOCAL_WORKSPACE_KEY]: { version: 2, snapshot, bookmarkSources: [], cachedAt: new Date().toISOString() } });
+    const receipt = await trash.deleteEntity("link", link.id, "extension", crypto.randomUUID());
+    expect((await trash.list())[0].id).toBe(receipt.trashId);
+    expect((await trash.restore(receipt.trashId)).links[0].id).toBe(link.id);
+  });
+
   it.each(["local", "account"] as const)("really moves a restored collection to another space in %s mode", async (mode) => {
     const { storage, workspace, trash: localTrash, link } = await fixture();
     const target = await workspace.createSpace({ name: "Target space", color: "#7357e6" });
