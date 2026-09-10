@@ -123,6 +123,7 @@ export class WorkspaceSyncCoordinator implements WorkspaceSyncCoordinatorContrac
   async start(): Promise<void> {
     this.stopped = false;
     const local = await this.input.storage.loadOrThrow();
+    if (this.stopped) return;
     this.observeLocal(local);
     this.unsubscribeStorage?.();
     this.unsubscribeStorage = this.input.storage.subscribe((next) => this.observeLocal(next));

@@ -156,6 +156,20 @@ async function setup(input: {
 }
 
 describe("WorkspaceSyncCoordinator reads", () => {
+  it("does not attach storage listeners when stopped during its initial read", async () => {
+    const { coordinator, storage, syncTransport, snapshots } = await setup();
+    const gate = Promise.withResolvers<AccountWorkspaceState>();
+    vi.spyOn(storage, "loadOrThrow").mockReturnValueOnce(gate.promise);
+    const subscribe = vi.spyOn(storage, "subscribe");
+    const starting = coordinator.start();
+    coordinator.stop();
+    gate.resolve(state());
+    await starting;
+    expect(subscribe).not.toHaveBeenCalled();
+    expect(syncTransport.getRevision).not.toHaveBeenCalled();
+    expect(snapshots).toEqual([]);
+  });
+
   it("renders local state then checks one unchanged revision without flushing writes", async () => {
     const syncTransport = transport();
     const { coordinator, snapshots, states } = await setup({ syncTransport });

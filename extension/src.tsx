@@ -66,8 +66,17 @@ function waitForStorageKey(key: string, expiresAt: number): Promise<void> {
 
 function useExtensionRuntime() {
   const [bootstrapReady, setBootstrapReady] = useState(false);
-  const [repository, setRepository] = useState<WorkspaceRepository | null>(null);
-  const [bookmarkRepository, setBookmarkRepository] = useState<BookmarkRepository | null>(null);
+  // Repository, identity and preference namespace must become visible in one render.
+  const [workspace, setWorkspace] = useState<{
+    repository: WorkspaceRepository;
+    scope: string;
+    userId: string;
+    bookmarkRepository: BookmarkRepository | null;
+  } | null>(null);
+  const repository = workspace?.repository ?? null;
+  const bookmarkRepository = workspace?.bookmarkRepository ?? null;
+  const workspaceScope = workspace?.scope ?? LOCAL_SPACE_SCOPE;
+  const workspaceUserId = workspace?.userId ?? "local-user";
   const [refreshVersion, setRefreshVersion] = useState(0);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
@@ -76,7 +85,6 @@ function useExtensionRuntime() {
   const [workspaceSync, setWorkspaceSync] = useState<{ coordinator: FirstSyncCoordinator; preview: WorkspaceMergePlan; generation: number } | null>(null);
   const [workspaceSyncBusy, setWorkspaceSyncBusy] = useState(false);
   const [workspaceSyncError, setWorkspaceSyncError] = useState<string | null>(null);
-  const [workspaceScope, setWorkspaceScope] = useState(LOCAL_SPACE_SCOPE);
   const [recoverySuggested, setRecoverySuggested] = useState(false);
   const [signInOpenRequest, setSignInOpenRequest] = useState(0);
   const online = useOnlineStatus();
@@ -113,13 +121,10 @@ function useExtensionRuntime() {
 
   async function activateCanonical(userId: string, generation: number) {
     if (!extensionSupabase || activationGenerationRef.current !== generation) return;
-    const selectionScope = accountSpaceScope(userId);
-    setWorkspaceScope(selectionScope);
     stopActiveCoordinator();
     const storage = new LocalFirstStorage(browserAdapter.storage, userId, {
       subscribeToChanges: (listener) => browserAdapter.storageChanges.subscribe(listener),
     });
-    localFirstStorageRef.current = storage;
     const coordinator = new WorkspaceSyncCoordinator({
       userId,
       storage,
@@ -128,7 +133,9 @@ function useExtensionRuntime() {
         area: browserAdapter.storage,
         waitForLeaseChange: waitForStorageKey,
       }),
-      onActionRequired: setError,
+      onActionRequired: (message) => {
+        if (coordinatorRef.current === coordinator && activationGenerationRef.current === generation) setError(message);
+      },
       onSnapshotCommitted: () => {
         if (coordinatorRef.current !== coordinator || syncUserIdRef.current !== userId || activationGenerationRef.current !== generation) return;
         setRefreshVersion((value) => value + 1);
@@ -142,7 +149,8 @@ function useExtensionRuntime() {
         for (const operation of operations) await coordinator.submit(operation);
       },
     });
-    if (activationGenerationRef.current !== generation) return;
+    if (activationGenerationRef.current !== generation) { coordinator.stop(); return; }
+    localFirstStorageRef.current = storage;
     const unsubscribe = coordinator.subscribe((state) => {
       if (coordinatorRef.current !== coordinator || activationGenerationRef.current !== generation) return;
       setCoordinatorState(state);
@@ -153,7 +161,7 @@ function useExtensionRuntime() {
       unsubscribe();
       unregisterLifecycle();
     };
-    setRepository(localFirst);
+    setWorkspace({ repository: localFirst, scope: accountSpaceScope(userId), userId, bookmarkRepository: new SupabaseBookmarkRepository(extensionSupabase, userId) });
     setError("");
     void coordinator.start().catch((reason) => {
       if (coordinatorRef.current === coordinator) setError(reason instanceof Error ? reason.message : "Could not refresh the synced workspace.");
@@ -166,8 +174,6 @@ function useExtensionRuntime() {
     setWorkspaceSyncError(null);
     setSyncStatus("checking");
     syncUserIdRef.current = userId;
-    const bookmarks = new SupabaseBookmarkRepository(extensionSupabase, userId);
-    setBookmarkRepository(bookmarks);
     const cached = await cache.loadCloud(userId);
     if (activationGenerationRef.current !== generation) return;
     if (cached) {
@@ -213,7 +219,6 @@ function useExtensionRuntime() {
   async function activateRecoveredSession(userId: string, generation: number) {
     if (!extensionSupabase || activationGenerationRef.current !== generation) return;
     syncUserIdRef.current = userId;
-    setBookmarkRepository(new SupabaseBookmarkRepository(extensionSupabase, userId));
     setSyncStatus("checking");
     await activateCanonical(userId, generation);
   }
@@ -261,7 +266,7 @@ function useExtensionRuntime() {
 
         const local = result.localRepository;
         localRepositoryRef.current = local;
-        setRepository(local);
+        setWorkspace({ repository: local, scope: LOCAL_SPACE_SCOPE, userId: "local-user", bookmarkRepository: null });
         if (!active || activationGenerationRef.current !== generation) return;
         setBootstrapReady(true);
 
@@ -293,6 +298,7 @@ function useExtensionRuntime() {
       const session = await recoverExtensionSessionSilently();
       if (activationGenerationRef.current !== generation) return;
       await authRecoveryPreference.clear();
+      if (activationGenerationRef.current !== generation) return;
       setRecoverySuggested(false);
       setUser(session.user);
       await beginWorkspaceSync(session.user.id, local, generation);
@@ -330,6 +336,7 @@ function useExtensionRuntime() {
     const local = localRepositoryRef.current;
     if (!extensionSupabase || !local || activationGenerationRef.current !== generation) return;
     await authRecoveryPreference.clear();
+    if (activationGenerationRef.current !== generation) return;
     setRecoverySuggested(false);
     setUser(session.user);
     await beginWorkspaceSync(session.user.id, local, generation);
@@ -343,13 +350,17 @@ function useExtensionRuntime() {
     if (!extensionSupabase || !accountRepository || !userId) return;
     stopActiveCoordinator();
     const accountSnapshot = await accountRepository.load();
+    if (activationGenerationRef.current !== generation) return;
     if (local) {
       const localSnapshot = await local.load();
+      if (activationGenerationRef.current !== generation) return;
       await cache.write(mergeAccountWorkspaceIntoLocal(localSnapshot, accountSnapshot));
     } else {
       await cache.write(accountSnapshot);
     }
+    if (activationGenerationRef.current !== generation) return;
     const nextLocal = await createLocalWorkspaceRepository();
+    if (activationGenerationRef.current !== generation) return;
     try {
       const { error: signOutError } = await extensionSupabase.auth.signOut();
       if (signOutError) throw signOutError;
@@ -359,14 +370,13 @@ function useExtensionRuntime() {
     }
     if (activationGenerationRef.current !== generation) return;
     await authRecoveryPreference.suppress();
+    if (activationGenerationRef.current !== generation) return;
     syncUserIdRef.current = null;
     localRepositoryRef.current = nextLocal;
-    setBookmarkRepository(null);
     setWorkspaceSync(null);
     setSyncStatus("local");
     setUser(null);
-    setRepository(nextLocal);
-    setWorkspaceScope(LOCAL_SPACE_SCOPE);
+    setWorkspace({ repository: nextLocal, scope: LOCAL_SPACE_SCOPE, userId: "local-user", bookmarkRepository: null });
     setMessage("Logged out · workspace kept on this device");
   }
 
@@ -450,7 +460,7 @@ function useExtensionRuntime() {
 
 
   return {
-    bootstrapReady, repository, bookmarkRepository, workspaceScope, refreshVersion,
+    bootstrapReady, repository, bookmarkRepository, workspaceScope, workspaceUserId, refreshVersion,
     message, setMessage, error, setError, user, syncStatus, coordinatorState,
     workspaceSync, workspaceSyncBusy, workspaceSyncError, confirmWorkspaceSync, cancelWorkspaceSync,
     signIn, logout, retryWorkspaceSync, recoverySuggested, signInOpenRequest, setSignInOpenRequest,
@@ -496,7 +506,7 @@ function ExtensionOrganizer({ runtime, repository, trashRepository }: { runtime:
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }), [setError, setMessage]);
   const organizerOptions = {
-    repository, trashRepository, deleteSource: "extension" as const, userId: user?.id ?? "local-user",
+    repository, trashRepository, deleteSource: "extension" as const, userId: runtime.workspaceUserId,
     preferenceStore, preferenceScope: workspaceScope, capabilities,
     mutationPolicy: "preserveLocalOnFailure" as const, onRetry: runtime.retryFailed,
   };
@@ -516,12 +526,12 @@ function ExtensionOrganizer({ runtime, repository, trashRepository }: { runtime:
   }, [controller.ready, message, error, setMessage, setError]);
   const refreshSeen = useRef(runtime.refreshVersion);
   useEffect(() => {
-    if (refreshSeen.current === runtime.refreshVersion) return;
+    if (!controller.ready || refreshSeen.current === runtime.refreshVersion) return;
     refreshSeen.current = runtime.refreshVersion;
     void controller.reload();
-  // Coordinator commits request a canonical reload through the sole organizer owner.
+  // Leave pending commits unconsumed during initialization, then coalesce into one canonical read.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [runtime.refreshVersion]);
+  }, [runtime.refreshVersion, controller.ready]);
   const load = () => controller.reload();
   async function confirmDroppedTab(closeAfterSave: boolean) {
     if (!repository || !pendingTab || savingDroppedTabRef.current) return;
