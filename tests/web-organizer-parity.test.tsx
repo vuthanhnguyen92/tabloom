@@ -23,6 +23,16 @@ function renderWorkspace() {
 }
 
 describe("web shared organizer parity", () => {
+  it("keeps sync status inside Account so the shared header keeps extension geometry", async () => {
+    render(<WorkspaceClient repository={new MemoryWorkspaceRepository("demo-user", createDemoSnapshot())} mode="synced" />);
+    const organizer = await screen.findByTestId("shared-workspace-organizer");
+    expect(organizer.querySelector(".organizer-status-subtitle")).toBeNull();
+    await userEvent.click(screen.getByLabelText("Account"));
+    const menu = screen.getByRole("link", { name: "Home" }).parentElement!;
+    expect(within(menu).getByRole("status", { name: "Workspace sync" })).toHaveTextContent("Synced");
+    expect(within(menu).getByRole("status", { name: "Workspace sync" })).toHaveClass("sync-state-synced");
+  });
+
   it("renders the shared organizer with search and no browser-only controls", async () => {
     renderWorkspace();
     expect(await screen.findByTestId("shared-workspace-organizer")).toBeVisible();

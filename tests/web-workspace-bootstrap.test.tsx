@@ -155,8 +155,9 @@ describe("web session bootstrap", () => {
     localStorage.setItem("tabloom:selected-space:account:alice", "space-research");
     const view = render(<WorkspaceBootstrap />);
     expect(await screen.findByRole("heading", { name: "Research" })).toBeVisible();
-    expect(screen.getByText("Synced")).toBeVisible();
+    expect(screen.getByText("Synced")).not.toBeVisible();
     await userEvent.click(screen.getByLabelText("Account"));
+    expect(screen.getByText("Synced")).toBeVisible();
     expect(screen.getByText("alice@example.com")).toBeVisible();
     expect(screen.getByRole("link", { name: "Home" })).toHaveAttribute("href", "/");
     await userEvent.click(screen.getByRole("button", { name: "Sign out" }));

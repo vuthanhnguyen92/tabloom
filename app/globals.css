@@ -138,6 +138,9 @@ button { color: inherit; }
 .web-organizer-account > summary:focus-visible { outline: 3px solid var(--focus-ring); outline-offset: 3px; }
 .web-organizer-account-menu { position: absolute; z-index: 30; top: calc(100% + 8px); right: 0; width: 240px; max-width: calc(100vw - 32px); padding: 8px; border: 1px solid var(--border-default); border-radius: 12px; color: var(--text-primary); background: var(--surface-panel); box-shadow: 0 14px 36px rgba(0,0,0,.16); }
 .web-organizer-account-menu > span { display: block; padding: 10px; overflow-wrap: anywhere; color: var(--text-muted); font-size: 12px; }
+.web-organizer-sync { display: grid; gap: 3px; padding: 10px; border-block: 1px solid var(--border-default); color: var(--sync-state-color); }
+.web-organizer-sync strong { font-size: 12px; font-weight: 500; }
+.web-organizer-sync small { font-size: 11px; }
 .web-organizer-account-menu > a, .web-organizer-account-menu > button { display: flex; align-items: center; gap: 8px; width: 100%; min-height: 40px; padding: 10px; border: 0; border-radius: 7px; color: inherit; background: transparent; text-align: left; font-size: 12px; }
 .web-organizer-account-menu > a:hover, .web-organizer-account-menu > button:hover { background: var(--surface-accent); }
 

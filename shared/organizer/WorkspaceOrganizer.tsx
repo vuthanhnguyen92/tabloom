@@ -47,7 +47,7 @@ export function WorkspaceOrganizerView({ controller: c, accountControls, current
   const active = c.activeSpace;
   return <div data-testid="shared-workspace-organizer">
     <WorkspaceShell rail={<SpaceRail spaces={[...c.snapshot.spaces].sort((a, b) => a.position - b.position)} activeSpaceId={c.selectedSpaceId} collapsed={c.railCollapsed} onCollapsedChange={c.setRailCollapsed} onSelect={c.selectSpace} isPending={(space) => c.isPending(space.id)}
-      brand={<TabloomMark />} beforeSpaces={railBeforeSpaces}
+      brand={<span className="organizer-brand ext-brand"><TabloomMark className="ext-brand-mark" />tabloom</span>} beforeSpaces={railBeforeSpaces}
       actions={<button aria-label="New space" onClick={() => c.openDialog({ type: "create-space" })}><Plus size={16} /></button>}
       spaceActions={(space) => isWritable(space) && !c.isPending(space.id) ? <div className="space-row-actions">
         <button aria-label={`Edit ${space.name}`} onClick={() => c.openDialog({ type: "edit-space", space })}><Pencil size={14} /></button>

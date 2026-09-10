@@ -343,6 +343,19 @@ describe("ExtensionApp bootstrap", () => {
     expect(screen.getByRole("button", { name: "Save all as collection" })).toBeDisabled();
   });
 
+  it("offers native bookmark sync before the first bookmark snapshot exists", async () => {
+    const userId = "11111111-1111-4111-8111-111111111111";
+    const snapshot = accountSnapshot(userId);
+    mocks.supabase = { from: () => ({ select: () => ({ order: async () => ({ data: [], error: null }) }) }) } as unknown as SupabaseClient;
+    await new ChromeSnapshotCache(browserAdapter.storage).saveCloud(userId, { revision: 1, snapshot });
+    mocks.bootstrapWorkspace.mockResolvedValue({ mode: "local-session", localRepository: new MemoryWorkspaceRepository("local-user", snapshot), session: { user: { id: userId } }, recoverySuggested: false });
+    render(<ExtensionApp />);
+    await userEvent.click(await screen.findByRole("button", { name: "Open Browser Bookmarks" }));
+    expect(await screen.findByRole("button", { name: "Sync browser bookmarks" })).toBeVisible();
+    expect(screen.queryByRole("button", { name: "New collection" })).toBeNull();
+    expect((await new LocalFirstStorage(browserAdapter.storage, userId).loadOrThrow()).queue).toHaveLength(0);
+  });
+
   it("coalesces sync commits until deferred preferences finish, then reloads canonical data once", async () => {
     const userId = "11111111-1111-4111-8111-111111111111";
     const snapshot = accountSnapshot(userId);

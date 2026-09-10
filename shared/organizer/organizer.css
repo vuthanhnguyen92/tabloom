@@ -28,12 +28,13 @@
 
 *, *::before, *::after { box-sizing: border-box; }
 button, input, select, textarea { margin: 0; color: inherit; font: inherit; line-height: 1.2; letter-spacing: inherit; -webkit-appearance: none; appearance: none; }
+:where(.organizer-shell) button { border: 0; background: transparent; }
 .organizer-shell, .organizer-shell * { scrollbar-color: var(--scroll-thumb) var(--scroll-track); scrollbar-width: thin; }
 .organizer-shell button, .organizer-shell input { color: inherit; font: inherit; }
 .organizer-shell button { cursor: pointer; }
 .organizer-shell button:focus-visible, .organizer-shell input:focus-visible { outline: 3px solid var(--focus-ring); outline-offset: 3px; }
 
-.organizer-shell { height: 100vh; min-height: 0; overflow: hidden; display: grid; grid-template-columns: 230px minmax(0, 1fr); color: var(--text-primary); background: var(--surface-page); }
+.organizer-shell { height: 100vh; min-height: 0; overflow: hidden; display: grid; grid-template-columns: 230px minmax(0, 1fr); color: var(--text-primary); background: var(--surface-page); font: 12px/normal Poppins, sans-serif; }
 .organizer-shell:has(> :last-child:not(.organizer-main)) { grid-template-columns: 230px minmax(0, 1fr) 360px; }
 .organizer-shell:has(.organizer-space-rail.collapsed) { grid-template-columns: 68px minmax(0, 1fr); }
 .organizer-shell:has(.organizer-space-rail.collapsed) > :last-child:not(.organizer-main) { grid-column: 3; }
@@ -44,6 +45,8 @@ button, input, select, textarea { margin: 0; color: inherit; font: inherit; line
 
 .organizer-space-rail { min-height: 0; overflow-x: hidden; overflow-y: auto; padding: 26px 17px; color: white; background: var(--sidebar); display: flex; flex-direction: column; gap: 7px; transition: padding var(--motion-slow) var(--ease-standard); }
 .organizer-rail-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 0 2px 29px; }
+.organizer-rail-top .organizer-brand { min-width: 0; display: flex; align-items: center; gap: 9px; font-size: 21px; font-weight: 700; }
+.organizer-brand > img { flex: none; width: 30px; height: 30px; display: block; }
 .organizer-rail-toggle { flex: none; width: 30px; height: 30px; padding: 0; border: 0; border-radius: 8px; color: #c8c3db; background: transparent; display: grid; place-items: center; }
 .organizer-rail-toggle:hover { color: white; background: rgba(255,255,255,.1); }
 .organizer-rail-actions { display: flex; align-items: center; justify-content: space-between; padding: 0 6px 7px 10px; }
@@ -75,7 +78,7 @@ button, input, select, textarea { margin: 0; color: inherit; font: inherit; line
 .organizer-workspace-header { position: relative; z-index: 25; isolation: isolate; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 18px; align-items: center; }
 .organizer-header-title { min-width: 0; }
 .organizer-header-title > small:first-child { color: var(--danger); font-size: 9px; font-weight: 700; letter-spacing: .14em; }
-.organizer-header-title h1 { margin: 5px 0; overflow: hidden; font-size: 26px; line-height: 1.2; letter-spacing: -.04em; text-overflow: ellipsis; white-space: nowrap; }
+.organizer-header-title h1 { margin: 5px 0; overflow: hidden; font-size: 26px; font-weight: 700; line-height: 1.2; letter-spacing: -.04em; text-overflow: ellipsis; white-space: nowrap; }
 .organizer-header-actions { min-width: 0; display: flex; align-items: center; justify-content: flex-end; gap: 9px; }
 .organizer-shell .organizer-new-collection { flex: none; height: var(--control-height); display: inline-flex; align-items: center; justify-content: center; gap: 7px; padding: 0 13px; border: 1px solid var(--accent); border-radius: 10px; color: white; background: var(--accent); font-weight: 500; white-space: nowrap; }
 .organizer-shell .organizer-new-collection:hover { background: var(--accent-strong); border-color: var(--accent-strong); }
@@ -267,6 +270,8 @@ button, input, select, textarea { margin: 0; color: inherit; font: inherit; line
 
 .collection-drag-handle { display: grid; place-items: center; flex: none; width: 18px; height: 22px; padding: 0; border: 0; border-radius: 4px; background: transparent; color: var(--text-muted); cursor: grab; }
 .collection-drag-handle:active, .collection-dragging .collection-drag-handle { cursor: grabbing; }
+/* Overlay the insertion marker so starting a native drag does not move its source. */
+.collection-reordering > .collection-drop-preview { margin-bottom: -28px; z-index: 1; pointer-events: auto; }
 /* Shared full-viewport search and organizer forms. */
 .global-search-trigger { flex: none; height: var(--control-height); padding: 0 10px; border: 1px solid var(--border-default); border-radius: 10px; color: var(--text-muted); background: var(--surface-panel); display: inline-flex; align-items: center; justify-content: center; gap: 7px; font-weight: 500; }.global-search-trigger > span { font-size: 12px; }.global-search-trigger kbd { padding: 3px 5px; border: 1px solid var(--border-default); border-radius: 5px; color: var(--text-muted); background: var(--surface-muted); font: 500 10px/1 Poppins,sans-serif; }.global-search-trigger:hover { color: var(--accent); border-color: #9d89ef; background: var(--surface-accent); transform: translateY(-1px); }
 .global-search-overlay { position: fixed; z-index: 100; inset: 0; padding: 8vh 24px 24px; color: var(--text-primary); display: flex; justify-content: center; align-items: flex-start; animation: motion-search-overlay-in var(--motion-base) var(--ease-out) both; }.global-search-backdrop { position: absolute; z-index: 0; inset: 0; width: 100%; height: 100%; padding: 0; border: 0; border-radius: 0; background: var(--search-backdrop); -webkit-backdrop-filter: blur(8px) saturate(.82); backdrop-filter: blur(8px) saturate(.82); cursor: default; }.global-search-backdrop:active { transform: none; }.global-search-shell { position: relative; z-index: 1; width: min(920px,100%); max-height: calc(100vh - 16vh); border: 1px solid var(--border-default); border-radius: 18px; background: var(--surface-panel); box-shadow: 0 30px 90px rgba(37,35,58,.2); overflow: hidden; display: grid; grid-template-rows: auto minmax(0,1fr) auto; animation: motion-search-shell-in var(--motion-slow) var(--ease-out) both; }

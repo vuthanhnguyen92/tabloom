@@ -5,7 +5,7 @@ import "@fontsource/poppins/latin-500.css";
 import "@fontsource/poppins/latin-600.css";
 import "@fontsource/poppins/latin-700.css";
 import { X } from "lucide-react";
-import { BROWSER_BOOKMARKS_SPACE_ID } from "../shared/bookmarks";
+import { BROWSER_BOOKMARKS_SPACE_ID, toBookmarkWorkspace } from "../shared/bookmarks";
 import { CombinedWorkspaceRepository, SupabaseBookmarkRepository, copyBookmarkToCollection, type BookmarkRepository } from "../shared/bookmark-repository";
 import { findDuplicateLink, type SavedLink } from "../shared/domain";
 import type { WorkspaceRepository } from "../shared/repository";
@@ -494,6 +494,21 @@ function ExtensionOrganizer({ runtime, repository, trashRepository }: { runtime:
   const [browserTabDrag, setBrowserTabDrag] = useState({ active: false, session: 0 });
 
   const savingDroppedTabRef = useRef(false);
+  // The native bookmark entry must exist before the first manual sync, without
+  // requiring a network read or writing a system space into the saved workspace.
+  const organizerRepository = useMemo(() => !bookmarkRepository || !browserAdapter.capabilities.bookmarks ? repository : new Proxy(repository, {
+    get(target, property) {
+      if (property === "load") return async () => {
+        const snapshot = await target.load();
+        return snapshot.spaces.some((space) => space.id === BROWSER_BOOKMARKS_SPACE_ID) ? snapshot : {
+          ...snapshot,
+          spaces: [...snapshot.spaces, ...toBookmarkWorkspace(runtime.workspaceUserId, []).spaces],
+        };
+      };
+      const value = Reflect.get(target, property);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  }), [repository, bookmarkRepository, runtime.workspaceUserId]);
   const preferenceStore = useMemo(() => createExtensionPreferenceStore(browserAdapter.storage), []);
   const capabilities = useMemo<OrganizerCapabilities>(() => ({
     currentTabs: {
@@ -511,7 +526,7 @@ function ExtensionOrganizer({ runtime, repository, trashRepository }: { runtime:
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }), [setError, setMessage]);
   const organizerOptions = {
-    repository, trashRepository: trashRepository ?? localTrash, deleteSource: "extension" as const, userId: runtime.workspaceUserId,
+    repository: organizerRepository, trashRepository: trashRepository ?? localTrash, deleteSource: "extension" as const, userId: runtime.workspaceUserId,
     preferenceStore, preferenceScope: workspaceScope, capabilities,
     mutationPolicy: "preserveLocalOnFailure" as const, onRetry: runtime.retryFailed,
   };

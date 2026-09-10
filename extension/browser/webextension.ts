@@ -4,7 +4,9 @@ export function createWebExtensionAdapter(target: BrowserTarget, api: WebExtensi
   return {
     target,
     capabilities: {
-      bookmarks: Boolean(api.bookmarks),
+      // Chromium/Firefox hide this optional API until permission is granted.
+      // Support must remain discoverable so the user can initiate that request.
+      bookmarks: target !== "safari" || Boolean(api.bookmarks),
       identity: Boolean(api.identity),
       tabGroups: Boolean(api.tabs.group && api.tabs.ungroup),
     },
