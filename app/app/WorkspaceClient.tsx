@@ -59,13 +59,14 @@ export function WorkspaceClient({ repository, trashRepository, mode, userId = "d
     return () => { document.removeEventListener("keydown", closeAccount); document.removeEventListener("pointerdown", closeAccount); };
   }, []);
   const status = controller.refreshRequired ? { state: "failed" as const, subtitle: "Refresh required" } : controller.busy ? { state: "syncing" as const, subtitle: "Saving…" } : { state: "synced" as const, subtitle: mode === "synced" ? "Synced" : "Demo workspace" };
-  return <WorkspaceOrganizerView {...options} controller={controller} status={status} savedLinkNewTab={false}
+  return <WorkspaceOrganizerView {...options} controller={controller} status={status} savedLinkNewTab={false} trashInAccount
     share={sharing ? { ...sharing, onRequestSyncRetry: () => { void controller.reload(); }, onToast: (message) => controller.notify(message) } : undefined}
     accountControls={<details className="web-organizer-account" ref={account}>
       <summary aria-label="Account"><UserRound size={18} /></summary>
       <div className="web-organizer-account-menu">
         <span>{email || (mode === "synced" ? "Your account" : "Demo workspace")}</span>
         <Link href="/">Home</Link>
+        {trashRepository && <button onClick={() => { if (account.current) { account.current.open = false; account.current.querySelector("summary")?.focus(); } controller.setTrashOpen(true); }}>Trash</button>}
         {onSignOut && <button onClick={() => {
           if (account.current) account.current.open = false;
           void Promise.resolve().then(onSignOut).catch(() => controller.notify("Could not sign out. Please try again.", "error"));

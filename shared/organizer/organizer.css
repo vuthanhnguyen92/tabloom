@@ -295,3 +295,15 @@ button, input, select, textarea { margin: 0; color: inherit; font: inherit; line
 .organizer-dialog button:disabled { opacity: .5; cursor: wait; }
 .organizer-dialog [role="alert"] { color: var(--danger); }
 @media (prefers-reduced-motion: reduce) { .global-search-overlay, .global-search-shell, .organizer-dialog-backdrop, .organizer-dialog { animation: none; transition: none; } }
+:where(.organizer-trash-overlay) { position: fixed; inset: 0; z-index: 1100; background: rgb(0 0 0 / 45%); display: grid; place-items: center; padding: 20px; font-family: Poppins, sans-serif; }
+.organizer-trash-dialog { width: min(640px, 100%); max-height: 85dvh; overflow: auto; background: var(--surface, #fff); color: var(--text, #202124); border: 1px solid var(--border, #ddd); border-radius: 20px; padding: 24px; box-shadow: 0 20px 80px rgb(0 0 0 / 20%); }
+.organizer-trash-dialog header, .organizer-trash-dialog li { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.organizer-trash-dialog ul { list-style: none; padding: 0; }
+.organizer-trash-dialog li { border-top: 1px solid var(--border, #ddd); padding: 16px 0; }
+.organizer-trash-dialog h3 { margin: 4px 0; overflow-wrap: anywhere; }
+.organizer-trash-dialog p, .organizer-trash-dialog small { font-size: 12px; }
+.organizer-trash-dialog button, .organizer-trash-dialog select { font: inherit; color: inherit; background: var(--surface, #fff); border: 1px solid var(--border, #ddd); border-radius: 8px; padding: 8px 12px; cursor: pointer; }
+.organizer-trash-dialog button:disabled { opacity: .5; cursor: default; }
+.organizer-trash-dialog label { display: grid; gap: 8px; margin-bottom: 16px; }
+.organizer-trash-dialog :focus-visible { outline: 2px solid #7c5ce7; outline-offset: 3px; }
+@media (prefers-color-scheme: dark) { .organizer-trash-dialog { background: #202124; color: #f5f5f5; } .organizer-trash-dialog button, .organizer-trash-dialog select { background: #292a2d; } }

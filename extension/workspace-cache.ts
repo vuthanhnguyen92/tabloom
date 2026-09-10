@@ -80,14 +80,14 @@ export class BrowserWorkspaceCache implements WorkspaceCache {
     return (await this.readEnvelope())?.snapshot ?? null;
   }
 
-  async saveLocal(snapshot: WorkspaceSnapshot): Promise<void> {
+  async saveLocal(snapshot: WorkspaceSnapshot, additionalValues: Record<string, unknown> = {}): Promise<void> {
     const existing = await this.readEnvelope();
     await this.writeEnvelope({
       version: 2,
       snapshot,
       bookmarkSources: existing?.bookmarkSources ?? [],
       cachedAt: new Date().toISOString(),
-    });
+    }, additionalValues);
   }
 
   async loadCloud(userId: string): Promise<VersionedWorkspaceSnapshot | null> {
@@ -150,8 +150,8 @@ export class BrowserWorkspaceCache implements WorkspaceCache {
     return this.loadLocal();
   }
 
-  async write(snapshot: WorkspaceSnapshot): Promise<void> {
-    await this.saveLocal(snapshot);
+  async write(snapshot: WorkspaceSnapshot, additionalValues: Record<string, unknown> = {}): Promise<void> {
+    await this.saveLocal(snapshot, additionalValues);
   }
 
   async readEnvelope(): Promise<WorkspaceCacheEnvelope | null> {
@@ -170,7 +170,7 @@ export class BrowserWorkspaceCache implements WorkspaceCache {
     return null;
   }
 
-  async writeEnvelope(envelope: WorkspaceCacheEnvelope): Promise<void> {
-    await this.area.set({ [LOCAL_WORKSPACE_KEY]: envelope });
+  async writeEnvelope(envelope: WorkspaceCacheEnvelope, additionalValues: Record<string, unknown> = {}): Promise<void> {
+    await this.area.set({ ...additionalValues, [LOCAL_WORKSPACE_KEY]: envelope });
   }
 }

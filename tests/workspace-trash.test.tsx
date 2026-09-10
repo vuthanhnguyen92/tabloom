@@ -67,6 +67,22 @@ function withBookmarks(repository: MemoryWorkspaceRepository) {
 }
 
 describe("web Trash deletion composition", () => {
+  it("restores from the account Trash list and preserves browser bookmarks", async () => {
+    const value = fixture();
+    const link = value.initial.links[0];
+    render(<WorkspaceClient {...value} repository={withBookmarks(value.repository)} mode="synced" />);
+    await userEvent.click(await screen.findByRole("button", { name: "Delete Product roadmap" }));
+    vi.mocked(value.trashRepository.list).mockResolvedValue([{ id: "receipt-trash-1", rootId: link.id, rootType: "link", rootName: link.title, source: "mcp", deletedAt: "2026-09-10T00:00:00Z", expiresAt: "2099-01-01T00:00:00Z", restoredAt: null, snapshot: { version: 1, rootType: "link", spaces: [], collections: [], links: [link] } }]);
+    await userEvent.click(screen.getByLabelText("Account"));
+    await userEvent.click(screen.getByRole("button", { name: "Trash" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Restore Product roadmap" }));
+    expect(await screen.findByText("Trash is empty.")).toBeVisible();
+    await userEvent.click(screen.getByRole("button", { name: "Close Trash" }));
+    expect(screen.getByRole("link", { name: /Product roadmap/ })).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Undo" })).toBeNull();
+    await userEvent.click(screen.getByRole("button", { name: /Browser Bookmarks/ }));
+    expect(await screen.findByText("Chrome docs")).toBeVisible();
+  });
   it("retains the combined read-only bookmark tree after a saved-only Trash restore", async () => {
     const value = fixture();
     render(<WorkspaceClient {...value} repository={withBookmarks(value.repository)} mode="synced" />);

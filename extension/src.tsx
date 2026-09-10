@@ -11,7 +11,8 @@ import { findDuplicateLink, type SavedLink } from "../shared/domain";
 import type { WorkspaceRepository } from "../shared/repository";
 import type { WorkspaceMergePlan } from "../shared/workspace-merge";
 import { SupabaseWorkspaceSyncRepository } from "../shared/workspace-sync-repository";
-import type { WorkspaceTrashRepository } from "../shared/trash-repository";
+import { SupabaseTrashRepository, type WorkspaceTrashRepository } from "../shared/trash-repository";
+import { LocalTrashRepository } from "./local-trash-repository";
 import { WorkspaceOrganizerView } from "../shared/organizer/WorkspaceOrganizer";
 import { useWorkspaceController } from "../shared/organizer/useWorkspaceController";
 import type { OrganizerCapabilities } from "../shared/organizer/capabilities";
@@ -129,6 +130,8 @@ function useExtensionRuntime() {
       userId,
       storage,
       transport: new SupabaseWorkspaceSyncTransport(extensionSupabase),
+      onDeleteReceipt: (receipt) => new LocalTrashRepository(browserAdapter.storage, localFirst, accountSpaceScope(userId)).reconcileRemote(receipt.operationId, receipt),
+      onRestoreCommitted: (operationId) => new LocalTrashRepository(browserAdapter.storage, localFirst, accountSpaceScope(userId)).completeRestore(operationId),
       exclusiveRunner: new WorkspaceSyncLock({
         area: browserAdapter.storage,
         waitForLeaseChange: waitForStorageKey,
@@ -480,6 +483,7 @@ export function ExtensionApp({ trashRepository }: { trashRepository?: WorkspaceT
 }
 
 function ExtensionOrganizer({ runtime, repository, trashRepository }: { runtime: ExtensionRuntime; repository: WorkspaceRepository; trashRepository?: WorkspaceTrashRepository }) {
+  const localTrash = useMemo(() => new LocalTrashRepository(browserAdapter.storage, repository, runtime.workspaceScope, { remote: extensionSupabase && runtime.workspaceScope === accountSpaceScope(runtime.workspaceUserId) ? new SupabaseTrashRepository(extensionSupabase) : undefined }), [repository, runtime.workspaceScope, runtime.workspaceUserId]);
   const { bookmarkRepository, workspaceScope, user, message, error, setMessage, setError, syncStatus, coordinatorState, signIn, logout, retryWorkspaceSync, recoverySuggested, signInOpenRequest, setSignInOpenRequest, shareAvailability, shareRepository, bookmarkCache, workspaceSync, workspaceSyncBusy, workspaceSyncError, confirmWorkspaceSync, cancelWorkspaceSync } = runtime;
   const [tabsExpanded, setTabsExpanded] = useState(true);
   const [tabsRefreshVersion, setTabsRefreshVersion] = useState(0);
@@ -506,7 +510,7 @@ function ExtensionOrganizer({ runtime, repository, trashRepository }: { runtime:
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }), [setError, setMessage]);
   const organizerOptions = {
-    repository, trashRepository, deleteSource: "extension" as const, userId: runtime.workspaceUserId,
+    repository, trashRepository: trashRepository ?? localTrash, deleteSource: "extension" as const, userId: runtime.workspaceUserId,
     preferenceStore, preferenceScope: workspaceScope, capabilities,
     mutationPolicy: "preserveLocalOnFailure" as const, onRetry: runtime.retryFailed,
   };

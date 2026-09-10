@@ -9,6 +9,8 @@ import {
 } from "../shared/repository";
 import { coalesceWorkspaceOperations, type WorkspaceOperation } from "../shared/workspace-operations";
 import { LocalFirstStorage } from "./local-first-storage";
+import type { LocalTrashMutation, LocalTrashCommit } from "./local-trash-repository";
+import { LocallyCommittedTrashError } from "../shared/trash";
 
 export type LocalMutationListener = (operations: WorkspaceOperation[]) => Promise<void>;
 
@@ -35,6 +37,8 @@ function createIntent(entity: WorkspaceOperation["entity"], record: Space | Coll
 }
 
 export class LocalFirstWorkspaceRepository implements WorkspaceRepository {
+  readonly syncsTrash = true;
+  get trashOwnerId() { return this.userId; }
   private constructor(
     private readonly userId: string,
     private readonly storage: LocalFirstStorage,
@@ -59,6 +63,26 @@ export class LocalFirstWorkspaceRepository implements WorkspaceRepository {
 
   async load(): Promise<WorkspaceSnapshot> {
     return (await this.storage.loadOrThrow()).snapshot;
+  }
+
+  async commitTrash(mutation: LocalTrashMutation | undefined, beforeCommit: (before: WorkspaceSnapshot) => Promise<LocalTrashCommit>): Promise<WorkspaceSnapshot> {
+    const committed = await this.storage.update<{ snapshot: WorkspaceSnapshot; operation: WorkspaceOperation | undefined }>(async (state) => {
+      const { snapshot, values } = await beforeCommit(state.snapshot);
+      if (!mutation) return [{ ...state, snapshot }, { snapshot, operation: undefined }, values];
+      const existing = state.queue.find((entry) => entry.operation.operationId === mutation.operationId);
+      const operation = { operationId: mutation.operationId, deviceId: this.deviceId, sequence: existing?.operation.sequence ?? state.nextSequence, entity: mutation.rootType,
+        entityId: mutation.rootId, action: mutation.action, createdAt: new Date().toISOString(), baseRevision: state.revision,
+        payload: mutation.action === "delete" ? {} : { ...(mutation.trashId ? { trashId: mutation.trashId } : { deleteOperationId: mutation.deleteOperationId! }), snapshot: mutation.snapshot!, ...(mutation.destinationId ? { destinationId: mutation.destinationId } : {}) },
+      } as WorkspaceOperation;
+      const queue = existing ? state.queue.map((entry) => entry === existing ? { operation, state: "waiting" as const } : entry) : [...state.queue, { operation, state: "waiting" as const }];
+      const next = { ...state, snapshot, queue, nextSequence: state.nextSequence + (existing ? 0 : 1) };
+      return [next, { snapshot, operation }, values] as const;
+    });
+    if (committed.operation) {
+      try { await this.onMutation([committed.operation]); }
+      catch (cause) { throw new LocallyCommittedTrashError(committed.snapshot, undefined, { cause }); }
+    }
+    return committed.operation ? this.load() : committed.snapshot;
   }
 
   private async mutate<T>(

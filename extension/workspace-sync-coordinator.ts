@@ -19,6 +19,7 @@ import {
 } from "./workspace-sync-errors";
 import type { WorkspaceSyncExclusiveRunner } from "./workspace-sync-lock";
 import type { WorkspaceSyncTransport } from "./workspace-sync-transport";
+import type { DeleteReceipt } from "../shared/trash";
 
 export type WorkspaceSyncState =
   | { phase: "synced"; revision: number; failed: 0; waiting: 0; lastSyncedAt?: string }
@@ -42,6 +43,8 @@ type CoordinatorInput = {
   now?: () => number;
   onSnapshotCommitted?: (snapshot: WorkspaceSnapshot) => void;
   onActionRequired?: (message: string) => void;
+  onDeleteReceipt?: (receipt: DeleteReceipt) => Promise<void>;
+  onRestoreCommitted?: (operationId: string) => Promise<void>;
 };
 
 function errorMessage(error: unknown): string {
@@ -366,6 +369,11 @@ export class WorkspaceSyncCoordinator implements WorkspaceSyncCoordinatorContrac
           .map((outcome) => outcome.operationId));
         if (acknowledged.size !== sentIds.size) {
           throw new WorkspaceWriteFailedError("The server did not acknowledge every workspace change.", sent[0]?.operationId);
+        }
+        for (const outcome of result.outcomes) {
+          const operation = sent.find((item) => item.operationId === outcome.operationId && item.action === "delete");
+          if (operation && outcome.trashId && outcome.restoreUntil) await this.input.onDeleteReceipt?.({ operationId: operation.operationId, rootType: operation.entity, rootId: operation.entityId, trashId: outcome.trashId, restoreUntil: outcome.restoreUntil });
+          if (sent.some((item) => item.operationId === outcome.operationId && item.action === "restore") && outcome.status !== "rejected") await this.input.onRestoreCommitted?.(outcome.operationId);
         }
         const completed = await this.input.storage.update(async (current) => {
           const patched = applyWorkspacePatch(current.snapshot, { ...result.patches, tombstones: result.tombstones });

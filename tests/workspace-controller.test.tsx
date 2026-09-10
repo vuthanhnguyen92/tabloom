@@ -12,6 +12,9 @@ import { useWorkspaceController } from "../shared/organizer/useWorkspaceControll
 import { WorkspaceOrganizer } from "../shared/organizer/WorkspaceOrganizer";
 import { SupabaseTrashRepository } from "../shared/trash-repository";
 import type { SupabaseClient } from "@supabase/supabase-js";
+import { LocalTrashRepository } from "../extension/local-trash-repository";
+import { LocalFirstWorkspaceRepository } from "../extension/local-first-repository";
+import { LocalFirstStorage } from "../extension/local-first-storage";
 
 const snapshot = createDemoSnapshot();
 const link = snapshot.links[0];
@@ -29,6 +32,26 @@ function setup() {
 }
 
 describe("workspace mutation policy", () => {
+  it("offers receipt Undo after an offline local delete and keeps Retry after local restoration", async () => {
+    const userId = crypto.randomUUID();
+    const initial = structuredClone(snapshot);
+    const ids = new Map([...initial.spaces, ...initial.collections, ...initial.links].map((item) => [item.id, crypto.randomUUID()]));
+    for (const item of [...initial.spaces, ...initial.collections, ...initial.links]) { item.id = ids.get(item.id)!; item.user_id = userId; }
+    for (const item of initial.collections) item.space_id = ids.get(item.space_id)!;
+    for (const item of initial.links) item.collection_id = ids.get(item.collection_id)!;
+    const values: Record<string, unknown> = {};
+    const area = { async get(key: string) { return { [key]: values[key] }; }, async set(items: Record<string, unknown>) { Object.assign(values, structuredClone(items)); } };
+    const storage = new LocalFirstStorage(area, userId);
+    await storage.saveCanonical(initial, 1);
+    const repository = await LocalFirstWorkspaceRepository.create({ userId, storage, onMutation: async () => { throw new Error("offline"); } });
+    const trashRepository = new LocalTrashRepository(area, repository, userId);
+    render(<WorkspaceOrganizer {...setup().options} repository={repository} userId={userId} trashRepository={trashRepository} mutationPolicy="preserveLocalOnFailure" onRetry={async () => undefined} />);
+    await userEvent.click(await screen.findByRole("button", { name: "Delete Product roadmap" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Undo" }));
+    expect(await screen.findByText("Product roadmap")).toBeVisible();
+    expect(screen.getByRole("button", { name: "Retry" })).toBeVisible();
+    expect((await storage.loadOrThrow()).queue.map(({ operation }) => operation.action)).toEqual(["delete", "restore"]);
+  });
   it("restores the captured web snapshot and preserves extension optimistic state", () => {
     const optimistic = { ...snapshot, links: [] };
     expect(applyMutationFailure("rollbackOnFailure", snapshot, optimistic)).toEqual({ snapshot, retryRequired: false });

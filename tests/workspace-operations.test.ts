@@ -44,6 +44,23 @@ function operation(overrides: Partial<WorkspaceOperation> = {}): WorkspaceOperat
 }
 
 describe("workspace operations", () => {
+  it("retains explicit restore intents through tombstones without treating their snapshots as creates", () => {
+    const tree = workspace();
+    const restore = operation({ action: "restore", payload: { deleteOperationId: "50000000-0000-4000-8000-000000000001", snapshot: { spaces: [], collections: [], links: tree.links } } });
+    expect(isWorkspaceOperation(restore)).toBe(true);
+    const result = rebaseWorkspaceOperations({ ...tree, links: [] }, [{ entity: "link", entityId: LINK_ID, deletedRevision: 5, deletedAt: NOW }], [restore], USER_ID);
+    expect(result.pending).toEqual([restore]);
+    expect(result.snapshot.links).toEqual(tree.links);
+    expect(result.rejected).toEqual([]);
+    expect(isWorkspaceOperation({ ...restore, payload: { ...restore.payload, deleteOperationId: "invalid" } })).toBe(false);
+    const edit = operation({ operationId: crypto.randomUUID(), sequence: 2, payload: { title: "Edited after restore" } });
+    const edited = rebaseWorkspaceOperations({ ...tree, links: [] }, [{ entity: "link", entityId: LINK_ID, deletedRevision: 5, deletedAt: NOW }], [restore, edit], USER_ID);
+    expect(edited.snapshot.links[0].title).toBe("Edited after restore");
+    expect(edited.pending).toHaveLength(2);
+    const missingParent = rebaseWorkspaceOperations({ ...tree, links: [], collections: [] }, [], [restore], USER_ID);
+    expect(missingParent.pending).toEqual([restore]);
+    expect(missingParent.snapshot.links).toEqual([]);
+  });
   it("keeps create and update as separate identities so cross-page acknowledgements cannot erase the update", () => {
     const create = operation({
       action: "create",

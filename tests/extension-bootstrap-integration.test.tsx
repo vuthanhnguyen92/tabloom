@@ -7,7 +7,7 @@ import { createDemoSnapshot } from "../shared/domain";
 import { MemoryWorkspaceRepository } from "../shared/repository";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { BROWSER_BOOKMARKS_SPACE_ID, toBookmarkWorkspace } from "../shared/bookmarks";
-import { ChromeSnapshotCache } from "../extension/storage";
+import { ChromeSnapshotCache, createLocalWorkspaceRepository } from "../extension/storage";
 import { LocalFirstStorage } from "../extension/local-first-storage";
 import { LocalFirstWorkspaceRepository } from "../extension/local-first-repository";
 import { browserAdapter } from "../extension/browser";
@@ -97,6 +97,19 @@ function accountSnapshot(userId: string, offset = 0) {
 }
 
 describe("ExtensionApp bootstrap", () => {
+  it("provides local Trash and Undo while signed out", async () => {
+    const repository = await createLocalWorkspaceRepository(browserAdapter.storage);
+    const snapshot = await repository.load();
+    await repository.createLink({ collection_id: snapshot.collections[0].id, title: "Offline recovery", url: "https://example.com", description: "", favicon_url: null });
+    mocks.bootstrapWorkspace.mockResolvedValue({ mode: "local-only", localRepository: repository, session: null, recoverySuggested: false });
+    render(<ExtensionApp />);
+    await userEvent.click(await screen.findByRole("button", { name: "Delete Offline recovery" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Undo" }));
+    expect(await screen.findByRole("link", { name: /Offline recovery/ })).toBeVisible();
+    await userEvent.click(screen.getByRole("button", { name: "Trash" }));
+    expect(await screen.findByRole("dialog", { name: "Trash" })).toBeVisible();
+    expect(await screen.findByText("Trash is empty.")).toBeVisible();
+  });
   afterEach(() => vi.restoreAllMocks());
   beforeEach(() => {
     mocks.bootstrapWorkspace.mockReset();

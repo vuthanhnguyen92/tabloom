@@ -8,6 +8,8 @@ import {
 
 export interface WorkspaceTrashRepository {
   list(): Promise<WorkspaceTrashEntry[]>;
+  /** Optional sync view adds operation identity without changing the legacy list payload. */
+  listForSync?(): Promise<Array<WorkspaceTrashEntry & { operationId: string }>>;
   prepareDelete(rootType: "space" | "collection", rootId: string): Promise<DeleteIntent>;
   deleteEntity(rootType: TrashRootType, rootId: string, source: TrashSource, operationId: string, confirmationIntentId?: string): Promise<DeleteReceipt>;
   /** CommittedRestoreRefreshError means restore succeeded but its canonical read failed. */
@@ -36,6 +38,16 @@ export class SupabaseTrashRepository implements WorkspaceTrashRepository {
     throwTrashError(error);
     if (!Array.isArray(data)) throw new Error("invalid trash list");
     return data.map(decodeTrashEntry);
+  }
+  async listForSync(): Promise<Array<WorkspaceTrashEntry & { operationId: string }>> {
+    const { data, error } = await this.client.rpc("list_workspace_trash_for_sync");
+    throwTrashError(error);
+    if (!Array.isArray(data)) throw new Error("invalid trash list");
+    return data.map((value) => {
+      if (!value || typeof value !== "object" || typeof value.operationId !== "string" || !UUID.test(value.operationId)) throw new Error("invalid trash operation identity");
+      const { operationId, ...entry } = value;
+      return { ...decodeTrashEntry(entry), operationId };
+    });
   }
 
   async prepareDelete(rootType: "space" | "collection", rootId: string): Promise<DeleteIntent> {

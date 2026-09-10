@@ -16,6 +16,8 @@ import {
 } from "../shared/workspace-sync-repository";
 import type { WorkspaceSyncExclusiveRunner } from "../extension/workspace-sync-lock";
 import type { WorkspaceSyncTransport } from "../extension/workspace-sync-transport";
+import { LocalTrashRepository } from "../extension/local-trash-repository";
+import { LocalFirstWorkspaceRepository } from "../extension/local-first-repository";
 
 const USER_ID = "00000000-0000-4000-8000-00000000000a";
 const SPACE_ID = "10000000-0000-4000-8000-000000000001";
@@ -301,6 +303,23 @@ describe("WorkspaceSyncCoordinator reads", () => {
 });
 
 describe("WorkspaceSyncCoordinator writes", () => {
+  it("reconciles a local Trash receipt before acknowledging its durable delete", async () => {
+    const { area } = observableMemoryArea();
+    const storage = new LocalFirstStorage(area, USER_ID);
+    await storage.save(state());
+    const remoteId = crypto.randomUUID();
+    const coordinator = new WorkspaceSyncCoordinator({ userId: USER_ID, storage, exclusiveRunner: serialRunner(),
+      onDeleteReceipt: (receipt) => trash.reconcileRemote(receipt.operationId, receipt),
+      transport: transport({ applyOperations: async (operations) => ({ revision: 2, outcomes: operations.map((operation) => ({ operationId: operation.operationId, status: "applied", trashId: remoteId, restoreUntil: "2099-01-01T00:00:00Z" })), patches: { spaces: [], collections: [], links: [] }, tombstones: [{ entity: "space", entityId: SPACE_ID, deletedRevision: 2, deletedAt: NOW }], conflicts: [] }) }),
+    });
+    const repository = await LocalFirstWorkspaceRepository.create({ userId: USER_ID, storage, onMutation: async (operations) => { for (const operation of operations) await coordinator.submit(operation); } });
+    const trash = new LocalTrashRepository(area, repository, USER_ID);
+    const intent = await trash.prepareDelete("space", SPACE_ID);
+    await trash.deleteEntity("space", SPACE_ID, "extension", crypto.randomUUID(), intent.intentId);
+    expect((await storage.loadOrThrow()).queue).toEqual([]);
+    expect((await trash.list())[0].id).toBe(remoteId);
+    coordinator.stop();
+  });
   it("persists an optimistic mutation before its one immediate write settles", async () => {
     let resolveApply!: (value: Awaited<ReturnType<WorkspaceSyncTransport["applyOperations"]>>) => void;
     const pendingApply = new Promise<Awaited<ReturnType<WorkspaceSyncTransport["applyOperations"]>>>((resolve) => { resolveApply = resolve; });

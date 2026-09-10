@@ -25,6 +25,8 @@ export type WorkspaceTrashEntry = {
   expiresAt: string;
   restoredAt: string | null;
   snapshot: TrashSnapshot;
+  /** Local restoration is durable and awaiting remote acknowledgement. */
+  restorePending?: boolean;
 };
 
 export type RestoreDestination = { spaceId?: string; collectionId?: string };
@@ -66,6 +68,14 @@ export class CommittedRestoreRefreshError extends Error {
   constructor(readonly trashId: string, options?: ErrorOptions) {
     super("Restored, but the workspace could not be refreshed.", options);
     this.name = "CommittedRestoreRefreshError";
+  }
+}
+
+/** Durable local snapshot/outbox committed; only remote synchronization failed. */
+export class LocallyCommittedTrashError extends Error {
+  constructor(readonly snapshot: WorkspaceSnapshot, readonly receipt?: DeleteReceipt, options?: ErrorOptions) {
+    super(options?.cause instanceof Error ? options.cause.message : "Changes are saved locally. Failed to sync.", options);
+    this.name = "LocallyCommittedTrashError";
   }
 }
 

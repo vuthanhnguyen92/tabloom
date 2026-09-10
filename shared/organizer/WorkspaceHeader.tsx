@@ -1,4 +1,5 @@
 import { Children, Fragment, isValidElement, type ReactNode } from "react";
+import { Trash2 } from "lucide-react";
 
 export type OrganizerStatus = {
   state: "synced" | "syncing" | "failed" | "offline";
@@ -11,6 +12,7 @@ export type WorkspaceHeaderProps = {
   eyebrow?: ReactNode;
   status?: OrganizerStatus;
   title: ReactNode;
+  onOpenTrash?: () => void;
 };
 
 function renderableChildren(children: ReactNode): ReactNode[] {
@@ -26,7 +28,7 @@ function renderableChildren(children: ReactNode): ReactNode[] {
   return rendered;
 }
 
-export function WorkspaceHeader({ actions, className, eyebrow, status, title }: WorkspaceHeaderProps) {
+export function WorkspaceHeader({ actions, className, eyebrow, status, title, onOpenTrash }: WorkspaceHeaderProps) {
   const classes = ["organizer-workspace-header", className].filter(Boolean).join(" ");
   const renderedActions = renderableChildren(actions);
 
@@ -36,6 +38,6 @@ export function WorkspaceHeader({ actions, className, eyebrow, status, title }: 
       <h1 title={typeof title === "string" ? title : undefined}>{title}</h1>
       {status && <small className={`organizer-status-subtitle sync-state-${status.state}`}>{status.subtitle}</small>}
     </div>
-    {!!renderedActions.length && <div className="organizer-header-actions">{renderedActions}</div>}
+    {(!!renderedActions.length || onOpenTrash) && <div className="organizer-header-actions">{onOpenTrash && <button aria-label="Trash" onClick={onOpenTrash}><Trash2 size={17} /></button>}{renderedActions}</div>}
   </header>;
 }

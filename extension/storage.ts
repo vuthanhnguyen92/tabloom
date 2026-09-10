@@ -8,6 +8,7 @@ import {
   type WorkspaceRepository,
 } from "../shared/repository";
 import { browserAdapter } from "./browser";
+import type { LocalTrashMutation, LocalTrashCommit } from "./local-trash-repository";
 import {
   BrowserWorkspaceCache,
   type StorageArea,
@@ -92,6 +93,7 @@ function createDefaultCollection(spaceId: string, timestamp = new Date().toISOSt
 }
 
 class LocalWorkspaceRepository implements WorkspaceRepository {
+  readonly trashOwnerId = "local-user";
   private constructor(
     private memory: MemoryWorkspaceRepository,
     private readonly cache: ChromeSnapshotCache,
@@ -126,6 +128,15 @@ class LocalWorkspaceRepository implements WorkspaceRepository {
   }
 
   load() { return this.memory.load(); }
+  async commitTrash(_mutation: LocalTrashMutation | undefined, beforeCommit: (before: WorkspaceSnapshot) => Promise<LocalTrashCommit>): Promise<WorkspaceSnapshot> {
+    return withLocalWorkspaceLock(async () => {
+      const latest = await this.cache.read() ?? await this.memory.load();
+      const next = await beforeCommit(latest);
+      await this.cache.write(next.snapshot, next.values);
+      this.memory = new MemoryWorkspaceRepository("local-user", next.snapshot);
+      return next.snapshot;
+    });
+  }
   private async mutate<T>(operation: (memory: MemoryWorkspaceRepository) => Promise<T>): Promise<T> {
     return withLocalWorkspaceLock(async () => {
       const latest = await this.cache.read() ?? await this.memory.load();

@@ -370,8 +370,9 @@ export class LocalFirstStorage {
     });
   }
 
-  async save(state: AccountWorkspaceState): Promise<void> {
+  async save(state: AccountWorkspaceState, additionalValues: Record<string, unknown> = {}): Promise<void> {
     await this.area.set({
+      ...additionalValues,
       [accountWorkspaceKey(this.userId)]: {
         version: 2,
         snapshot: state.snapshot,
@@ -391,11 +392,11 @@ export class LocalFirstStorage {
     });
   }
 
-  async update<T>(mutator: (state: AccountWorkspaceState) => Promise<[AccountWorkspaceState, T]>): Promise<T> {
+  async update<T>(mutator: (state: AccountWorkspaceState) => Promise<[AccountWorkspaceState, T, Record<string, unknown>?]>): Promise<T> {
     return withWorkspaceLock(`tabloom-workspace-lock:${this.userId}`, async () => {
       const current = await this.loadOrThrow();
-      const [next, result] = await mutator(structuredClone(current));
-      await this.save(next);
+      const [next, result, additionalValues] = await mutator(structuredClone(current));
+      await this.save(next, additionalValues);
       return result;
     });
   }

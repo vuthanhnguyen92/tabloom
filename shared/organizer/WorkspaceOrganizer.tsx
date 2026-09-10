@@ -9,6 +9,7 @@ import { GlobalSearch } from "./GlobalSearch";
 import { SavedLinkCard, type OrganizerFaviconResolver } from "./SavedLinkCard";
 import { SpaceRail } from "./SpaceRail";
 import { ToastRegion } from "./ToastRegion";
+import { TrashDialog } from "./TrashDialog";
 import { WorkspaceDialogs } from "./WorkspaceDialogs";
 import { WorkspaceHeader, type OrganizerStatus } from "./WorkspaceHeader";
 import { WorkspaceShell } from "./WorkspaceShell";
@@ -29,6 +30,7 @@ export type WorkspaceOrganizerProps = WorkspaceControllerOptions & {
   resolveFavicon?: OrganizerFaviconResolver;
   savedLinkNewTab?: boolean;
   highlightedLinkId?: string;
+  trashInAccount?: boolean;
 };
 
 export function WorkspaceOrganizer(props: WorkspaceOrganizerProps) {
@@ -51,7 +53,7 @@ export function WorkspaceOrganizerView({ controller: c, accountControls, current
         <button aria-label={`Edit ${space.name}`} onClick={() => c.openDialog({ type: "edit-space", space })}><Pencil size={14} /></button>
         {props.trashRepository && <button aria-label={`Delete ${space.name}`} onClick={() => { void c.requestDelete("space", space.id); }}><Trash2 size={14} /></button>}
       </div> : null}
-    />} sidePanel={currentTabs} header={<WorkspaceHeader title={active?.name ?? "Your workspace"} status={status} actions={<>
+    />} sidePanel={currentTabs} header={<WorkspaceHeader title={active?.name ?? "Your workspace"} status={status} onOpenTrash={props.trashRepository && !props.trashInAccount ? () => c.setTrashOpen(true) : undefined} actions={<>
       {active && isWritable(active) && !c.isPending(active.id) && <button className="organizer-new-collection" onClick={() => c.openDialog({ type: "create-collection", spaceId: active.id })}><Plus size={15} />New collection</button>}
       <GlobalSearch snapshot={c.snapshot} capabilities={props.capabilities} open={c.searchOpen} onOpenChange={c.setSearchOpen} savedLinkNewTab={props.savedLinkNewTab} resolveFavicon={props.resolveFavicon} onError={(message) => c.notify(message, "error")} />
       {headerActions}{accountControls}
@@ -61,6 +63,12 @@ export function WorkspaceOrganizerView({ controller: c, accountControls, current
       {!active && <p>Create a space to start organizing your links.</p>}
     </WorkspaceShell>
     <WorkspaceDialogs dialog={c.dialog} onClose={c.closeDialog} onSubmit={(command) => { void c.submitDialog(command); }} busy={c.busy} />
+    {props.trashRepository && <TrashDialog repository={props.trashRepository} snapshot={c.snapshot} open={c.trashOpen} onClose={() => c.setTrashOpen(false)} onRestored={(snapshot, entry, destinationId, pendingSync) => {
+      const restored = structuredClone(entry.snapshot);
+      if (destinationId && entry.rootType === "collection") restored.collections[0].space_id = destinationId;
+      if (destinationId && entry.rootType === "link") restored.links[0].collection_id = destinationId;
+      c.acceptTrashRestoration(snapshot, restored, pendingSync);
+    }} />}
     <ToastRegion toasts={c.toasts} onDismiss={c.dismissToast} />
   </div>;
 }

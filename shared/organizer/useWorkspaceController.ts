@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { findDuplicateLink, type Collection, type SavedLink, type WorkspaceSnapshot } from "../domain";
 import { WorkspaceConflictError, type WebWorkspaceRepository } from "../repository";
 import type { DeleteIntent, DeleteReceipt, TrashSource } from "../trash";
-import { CommittedRestoreRefreshError } from "../trash";
+import { CommittedRestoreRefreshError, LocallyCommittedTrashError } from "../trash";
 import type { WorkspaceTrashRepository } from "../trash-repository";
 import type { OrganizerCapabilities } from "./capabilities";
 import { previewCollectionDrop, type OrganizerDragState } from "./drag-model";
@@ -37,6 +37,7 @@ export function useWorkspaceController(options: WorkspaceControllerOptions) {
   const [state, setState] = useState({ session, snapshot: emptySnapshot, ready: false, selected: "", collapsed: new Set<string>(), railCollapsed: true });
   const [dialog, setDialog] = useState<WorkspaceDialogState>(null);
   const [searchOpen, setSearchOpen] = useState(false);
+  const [trashOpen, setTrashOpen] = useState(false);
   const [drag, setDrag] = useState<OrganizerDragState>(null);
   const [externalDropTarget, setExternalDropTarget] = useState<{ collectionId: string; session: number } | null>(null);
   const [toasts, setToasts] = useState<OrganizerToast[]>([]);
@@ -47,6 +48,7 @@ export function useWorkspaceController(options: WorkspaceControllerOptions) {
   const intent = useRef<DeleteIntent | null>(null);
   const dialogGeneration = useRef(0);
   const duplicateAction = useRef<(() => Promise<unknown>) | null>(null);
+  const undoRoots = useRef(new Map<string, string>());
 
   const current = state.session === session ? state : { session, snapshot: emptySnapshot, ready: false, selected: "", collapsed: new Set<string>(), railCollapsed: true };
   function notify(message: string, tone: "success" | "error" = "success") {
@@ -64,10 +66,11 @@ export function useWorkspaceController(options: WorkspaceControllerOptions) {
     session.active = true;
     const generation = ++session.generation;
     intent.current = null; duplicateAction.current = null; dialogGeneration.current++;
+    undoRoots.current.clear();
     void (async () => {
       await Promise.resolve();
       if (!session.active || generation !== session.generation) return;
-      setDialog(null); setSearchOpen(false); setDrag(null); setExternalDropTarget(null); setToasts([]); setBusy(false); setRetryRequired(false); setRefreshRequired(false); setBootError(false);
+      setDialog(null); setSearchOpen(false); setTrashOpen(false); setDrag(null); setExternalDropTarget(null); setToasts([]); setBusy(false); setRetryRequired(false); setRefreshRequired(false); setBootError(false);
       try {
         const [snapshot, rail] = await Promise.all([repository.load(), preferenceStore.get(railKey)]);
         const [selected, collapsed] = await Promise.all([
@@ -222,17 +225,20 @@ export function useWorkspaceController(options: WorkspaceControllerOptions) {
     const operationId = session.deleteOperations.get(key) ?? globalThis.crypto.randomUUID();
     session.deleteOperations.set(key, operationId);
     let removed = emptySnapshot;
+    let localReceipt: DeleteReceipt | undefined;
     const receipt = await mutate({ type: "delete", rootType, id }, async (optimistic, before) => {
       removed = {
         spaces: before.spaces.filter((item) => !optimistic.spaces.some((kept) => kept.id === item.id)),
         collections: before.collections.filter((item) => !optimistic.collections.some((kept) => kept.id === item.id)),
         links: before.links.filter((item) => !optimistic.links.some((kept) => kept.id === item.id)),
       };
-      return trashRepository.deleteEntity(rootType, id, deleteSource, operationId, intentId);
-    }, "");
+      try { return await trashRepository.deleteEntity(rootType, id, deleteSource, operationId, intentId); }
+      catch (error) { if (error instanceof LocallyCommittedTrashError) localReceipt = error.receipt; throw error; }
+    }, "") ?? localReceipt;
     if (!receipt || !session.active) return receipt;
     session.deleteOperations.delete(key);
     const toastId = `undo:${receipt.operationId}`;
+    undoRoots.current.set(toastId, id);
     let undoing = false;
     const undo = async () => {
       if (undoing || !session.active) return;
@@ -253,6 +259,20 @@ export function useWorkspaceController(options: WorkspaceControllerOptions) {
   function restore(trashId: string, restored: WorkspaceSnapshot, destinationId?: string) {
     return restoreWithOutcome(trashId, restored, destinationId).then((outcome) => outcome.snapshot);
   }
+  function acceptTrashRestoration(snapshot: WorkspaceSnapshot | undefined, restored: WorkspaceSnapshot, pendingSync = false) {
+    if (!session.active) return;
+    const ids = new Set([...restored.spaces, ...restored.collections, ...restored.links].map((item) => item.id));
+    setToasts((items) => items.filter((item) => !ids.has(undoRoots.current.get(item.id) ?? "")));
+    if (snapshot) {
+      publish({ spaces: retainBookmarks(snapshot.spaces, session.snapshot.spaces), collections: retainBookmarks(snapshot.collections, session.snapshot.collections), links: retainBookmarks(snapshot.links, session.snapshot.links) });
+      notify("Restored");
+      if (pendingSync) failure("preserveLocalOnFailure", session.snapshot, session.snapshot, session.selected);
+    } else {
+      try { publish(reduceWorkspaceSnapshot(session.snapshot, { type: "restore", snapshot: restored })); } catch { /* Canonical refresh remains available if the local tree changed. */ }
+      setRefreshRequired(true);
+      setToasts((items) => [...items.filter((item) => item.id !== "workspace-refresh"), { id: "workspace-refresh", message: "Restored, but the workspace needs a refresh.", persistent: true, action: { label: "Refresh", onAction: () => { void reload(); } } }]);
+    }
+  }
   async function restoreWithOutcome(trashId: string, restored: WorkspaceSnapshot, destinationId?: string, publishOptimistic = true) {
     if (!trashRepository) return { committed: false, snapshot: undefined };
     let committed = false;
@@ -262,7 +282,7 @@ export function useWorkspaceController(options: WorkspaceControllerOptions) {
         committed = true;
         return snapshot;
       } catch (error) {
-        committed = error instanceof CommittedRestoreRefreshError;
+        committed = error instanceof CommittedRestoreRefreshError || error instanceof LocallyCommittedTrashError;
         throw error;
       }
     }, "Restored", { publishOptimistic, notifyFailure: publishOptimistic, canonical: (snapshot) => ({
@@ -351,7 +371,7 @@ export function useWorkspaceController(options: WorkspaceControllerOptions) {
     collapsedCollections: current.collapsed, railCollapsed: current.railCollapsed,
     dialog, searchOpen, drag, externalDropTarget, toasts, busy, retryRequired, refreshRequired, isPending,
     selectSpace, setRailCollapsed, toggleCollection, openDialog, closeDialog, submitDialog,
-    requestDelete, deleteLink, restore, reload, retry, mutate, notify, openCollection, moveLink, moveCollection,
+    requestDelete, deleteLink, restore, acceptTrashRestoration, trashOpen, setTrashOpen, reload, retry, mutate, notify, openCollection, moveLink, moveCollection,
     setSearchOpen, setDrag: (value: OrganizerDragState) => {
       if (value?.kind === "collection" && isPending(value.id) || value?.kind === "saved-link" && (isPending(value.id) || isPending(value.targetCollectionId))) return;
       setDrag(value);
