@@ -1,4 +1,7 @@
 import { isSaveableUrl, normalizePositions, type Collection, type SavedLink, type Space, type WorkspaceSnapshot } from "./domain";
+import { decodeTrashSnapshot } from "./trash";
+import { reduceWorkspaceSnapshot } from "./organizer/mutation-policy";
+import { moveWorkspaceCollection } from "./repository";
 
 export type WorkspaceEntity = "space" | "collection" | "link";
 
@@ -36,7 +39,13 @@ export type WorkspaceReorderOperation = OperationMeta<"collection" | "link"> & {
   payload: { parentId: string; orderedIds: string[] };
 };
 
-export type WorkspaceOperation = WorkspaceCreateOperation | WorkspaceUpdateOperation | WorkspaceDeleteOperation | WorkspaceReorderOperation;
+export type WorkspaceRestoreOperation = OperationMeta & {
+  action: "restore";
+  /** Snapshot is local rebase data only; the server restores its owned Trash snapshot. */
+  payload: { deleteOperationId?: string; trashId?: string; destinationId?: string; snapshot: WorkspaceSnapshot };
+};
+export type WorkspaceCollectionMoveOperation = OperationMeta<"collection"> & { action: "move"; payload: { sourceSpaceId: string; destinationSpaceId: string } };
+export type WorkspaceOperation = WorkspaceCreateOperation | WorkspaceUpdateOperation | WorkspaceDeleteOperation | WorkspaceReorderOperation | WorkspaceRestoreOperation | WorkspaceCollectionMoveOperation;
 
 export type WorkspaceTombstone = {
   entity: WorkspaceEntity;
@@ -55,7 +64,7 @@ export type WorkspacePatchSet = {
 export type WorkspaceRebaseResult = {
   snapshot: WorkspaceSnapshot;
   pending: WorkspaceOperation[];
-  rejected: Array<{ operationId: string; code: "deleted" | "deleted_parent" }>;
+  rejected: Array<{ operationId: string; code: "deleted" | "deleted_parent" | "conflict" }>;
 };
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -147,7 +156,19 @@ export function isWorkspaceOperation(value: unknown): value is WorkspaceOperatio
   if (!Number.isSafeInteger(value.sequence) || Number(value.sequence) < 1) return false;
   if (!Number.isSafeInteger(value.baseRevision) || Number(value.baseRevision) < 0) return false;
   if (!["space", "collection", "link"].includes(String(value.entity)) || !UUID_PATTERN.test(String(value.entityId))) return false;
-  if (!["create", "update", "delete", "reorder"].includes(String(value.action)) || !isTimestamp(value.createdAt) || !isRecord(value.payload)) return false;
+  if (!["create", "update", "delete", "reorder", "restore", "move"].includes(String(value.action)) || !isTimestamp(value.createdAt) || !isRecord(value.payload)) return false;
+  if (value.action === "move") return value.entity === "collection"
+    && hasExactKeys(value.payload, ["sourceSpaceId", "destinationSpaceId"])
+    && UUID_PATTERN.test(String(value.payload.sourceSpaceId)) && UUID_PATTERN.test(String(value.payload.destinationSpaceId))
+    && value.payload.sourceSpaceId !== value.payload.destinationSpaceId;
+  if (value.action === "restore") {
+    if (!hasExactKeys(value.payload, ["deleteOperationId", "trashId", "destinationId", "snapshot"], ["snapshot"])
+      || (Object.hasOwn(value.payload, "deleteOperationId") === Object.hasOwn(value.payload, "trashId"))
+      || !UUID_PATTERN.test(String(value.payload.deleteOperationId ?? value.payload.trashId))
+      || (value.payload.destinationId !== undefined && !UUID_PATTERN.test(String(value.payload.destinationId)))
+      || !isRecord(value.payload.snapshot)) return false;
+    try { decodeTrashSnapshot({ ...value.payload.snapshot, version: 1, rootType: value.entity }); return true; } catch { return false; }
+  }
   if (value.action === "delete") return Object.keys(value.payload).length === 0;
   if (value.action === "reorder") {
     return ["collection", "link"].includes(String(value.entity))
@@ -288,8 +309,16 @@ function entityExists(snapshot: WorkspaceSnapshot, entity: WorkspaceEntity, enti
 }
 
 function applyOperation(snapshot: WorkspaceSnapshot, operation: WorkspaceOperation, userId: string): WorkspaceSnapshot {
+  if (operation.action === "move") return moveWorkspaceCollection(snapshot, { id: operation.entityId, ...operation.payload }, operation.createdAt);
   const next = clone(snapshot);
-  if (operation.action === "create") {
+  if (operation.action === "restore") {
+    const restored = operation.payload.snapshot;
+    return reduceWorkspaceSnapshot(next, { type: "restore", snapshot: {
+      spaces: restored.spaces.filter((item) => !next.spaces.some((live) => live.id === item.id)),
+      collections: restored.collections.filter((item) => !next.collections.some((live) => live.id === item.id)),
+      links: restored.links.filter((item) => !next.links.some((live) => live.id === item.id)),
+    } });
+  } else if (operation.action === "create") {
     if (operation.entity === "space") next.spaces = upsert(next.spaces, [{ ...operation.payload, user_id: userId, origin: "saved", read_only: false }]);
     if (operation.entity === "collection") next.collections = upsert(next.collections, [{ ...operation.payload, user_id: userId, origin: "saved", read_only: false }]);
     if (operation.entity === "link") next.links = upsert(next.links, [{ ...operation.payload, user_id: userId, origin: "saved", read_only: false, device_label: null }]);
@@ -326,21 +355,33 @@ export function rebaseWorkspaceOperations(
   userId: string,
 ): WorkspaceRebaseResult {
   let snapshot = clone(canonical);
+  let activeTombstones = tombstones;
   const surviving: WorkspaceOperation[] = [];
   const rejected: WorkspaceRebaseResult["rejected"] = [];
   for (const operation of [...pending].sort((left, right) => left.sequence - right.sequence)) {
     if (operation.action === "delete" && !entityExists(snapshot, operation.entity, operation.entityId)) {
+      // An offline Undo needs this operation's server receipt, even if another
+      // device already deleted the root. Let the server resolve that identity.
+      if (pending.some((item) => item.action === "restore" && item.payload.deleteOperationId === operation.operationId)) surviving.push(operation);
       continue;
     }
-    if (isTombstoned(tombstones, operation.entity, operation.entityId)) {
+    if (operation.action !== "restore" && isTombstoned(activeTombstones, operation.entity, operation.entityId)) {
       rejected.push({ operationId: operation.operationId, code: "deleted" });
       continue;
     }
-    if (parentDeleted(snapshot, tombstones, operation)) {
+    if (parentDeleted(snapshot, activeTombstones, operation)) {
       rejected.push({ operationId: operation.operationId, code: "deleted_parent" });
       continue;
     }
-    snapshot = applyOperation(snapshot, operation, userId);
+    if (operation.action === "restore") {
+      try {
+        snapshot = applyOperation(snapshot, operation, userId);
+        activeTombstones = activeTombstones.filter((item) => !entityExists(operation.payload.snapshot, item.entity, item.entityId));
+      } catch { /* Missing ancestors require a new destination; retain the recovery operation. */ }
+    } else if (operation.action === "move") {
+      try { snapshot = applyOperation(snapshot, operation, userId); }
+      catch { rejected.push({ operationId: operation.operationId, code: "conflict" }); continue; }
+    } else snapshot = applyOperation(snapshot, operation, userId);
     surviving.push(operation);
   }
   return { snapshot, pending: surviving, rejected };

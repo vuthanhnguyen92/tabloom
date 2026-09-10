@@ -19,7 +19,7 @@
     "test": "npm run test:unit && npm run build && node --test tests/rendered-html.test.mjs",
     "test:unit": "vitest run",
     "test:unit:watch": "vitest",
-    "test:supabase": "supabase db reset && supabase test db supabase/tests/*.test.sql",
+    "test:supabase": "supabase db reset && supabase test db supabase/tests/*.test.sql && node --test --test-concurrency=1 tests/database/*.test.mjs",
     "test:e2e:bookmarks": "playwright test tests/e2e/browser-bookmarks.spec.ts --project=chromium",
     "test:e2e:visual": "playwright test tests/e2e/visual-consistency.spec.ts --project=chromium-visual --project=firefox-visual --project=webkit-visual",
     "build:extension": "node extension/scripts/build-extension.mjs",

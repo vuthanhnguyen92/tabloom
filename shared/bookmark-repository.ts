@@ -8,7 +8,7 @@ import {
   type BookmarkUploadEntry,
 } from "./bookmarks";
 import type { Collection, SavedLink, Space, WorkspaceSnapshot } from "./domain";
-import type { CreateCollectionInput, CreateLinkInput, CreateSpaceInput, WorkspaceRepository } from "./repository";
+import type { CreateCollectionInput, CreateLinkInput, CreateSpaceInput, MoveLinkInput, WorkspaceRepository } from "./repository";
 
 export interface BookmarkRepository {
   beginSync(deviceKey: string, deviceName: string, expectedEntryCount: number): Promise<{ runId: string; sourceId: string; generation: number }>;
@@ -128,9 +128,10 @@ export class CombinedWorkspaceRepository implements WorkspaceRepository {
   deleteLink(id: string) { return this.normal.deleteLink(id); }
   reorderCollections(spaceId: string, orderedIds: string[]) { return this.normal.reorderCollections(spaceId, orderedIds); }
   reorderLinks(collectionId: string, orderedIds: string[]) { return this.normal.reorderLinks(collectionId, orderedIds); }
+  moveLink(input: MoveLinkInput) { return this.normal.moveLink(input); }
 }
 
-export function copyBookmarkToCollection(repository: WorkspaceRepository, link: SavedLink, collectionId: string) {
+export function copyBookmarkToCollection(repository: Pick<WorkspaceRepository, "createLink">, link: SavedLink, collectionId: string) {
   if (link.origin !== "browser-bookmark") return Promise.reject(new Error("Only browser bookmarks can be copied with this action."));
   return repository.createLink({
     collection_id: collectionId,

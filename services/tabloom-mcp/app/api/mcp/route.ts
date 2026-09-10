@@ -1,41 +1,48 @@
 import { createMcpHandler, withMcpAuth } from "mcp-handler";
+import { z } from "zod";
 import { loadFacadeAuthConfig } from "../../../src/auth/config";
 import { createTokenVerifier } from "../../../src/auth/verify-token";
 import { oauthError, oauthJson } from "../../../src/oauth/responses";
+import { registerWorkspaceTools } from "../../../src/workspace/register-tools";
 
-export function serviceStatusResult() {
+export function serviceStatusResult(mutationsEnabled = false) {
   return {
     content: [
       {
         type: "text" as const,
-        text: JSON.stringify({ service: "tabloom-mcp", status: "ok" }),
+        text: JSON.stringify({ service: "tabloom-mcp", status: "ok", mutationsEnabled }),
       },
     ],
-    structuredContent: { service: "tabloom-mcp", status: "ok" },
+    structuredContent: { service: "tabloom-mcp", status: "ok", mutationsEnabled },
   };
 }
 
-const handler = createMcpHandler(
-  (server) => {
-    server.registerTool(
-      "get_service_status",
-      {
-        title: "Get service status",
-        description: "Report whether the Tabloom MCP service is available.",
-        annotations: {
-          readOnlyHint: true,
-          destructiveHint: false,
-          idempotentHint: true,
-          openWorldHint: false,
+function createHandler(mutationsEnabled: boolean) {
+  return createMcpHandler(
+    (server) => {
+      server.registerTool(
+        "get_service_status",
+        {
+          title: "Get service status",
+          description: "Report whether the Tabloom MCP service is available.",
+          inputSchema: z.strictObject({}),
+          outputSchema: z.object({ service: z.literal("tabloom-mcp"), status: z.literal("ok"), mutationsEnabled: z.boolean() }),
+          annotations: {
+            readOnlyHint: true,
+            destructiveHint: false,
+            idempotentHint: true,
+            openWorldHint: false,
+          },
         },
-      },
-      async () => serviceStatusResult(),
-    );
-  },
-  {
-    serverInfo: { name: "tabloom-mcp", version: "0.1.0" },
-  },
-);
+        async () => serviceStatusResult(mutationsEnabled),
+      );
+      registerWorkspaceTools(server, { mutationsEnabled });
+    },
+    {
+      serverInfo: { name: "tabloom-mcp", version: "0.1.0" },
+    },
+  );
+}
 
 type AuthenticatedHandler = ReturnType<typeof withMcpAuth>;
 
@@ -49,7 +56,7 @@ function getAuthenticatedHandler(): AuthenticatedHandler | undefined {
   const config = loadFacadeAuthConfig(process.env);
   if (!config.oauthEnabled) return undefined;
   const verifier = createTokenVerifier(config);
-  const authenticatedHandler = withMcpAuth(handler, verifier, {
+  const authenticatedHandler = withMcpAuth(createHandler(config.mutationsEnabled), verifier, {
     required: true,
     requiredScopes: ["tabloom:workspace"],
     resourceMetadataPath: "/.well-known/oauth-protected-resource/mcp",

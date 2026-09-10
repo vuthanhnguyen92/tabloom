@@ -64,10 +64,10 @@ describe("OAuth facade discovery", () => {
       content: [
         {
           type: "text",
-          text: JSON.stringify({ service: "tabloom-mcp", status: "ok" }),
+          text: JSON.stringify({ service: "tabloom-mcp", status: "ok", mutationsEnabled: false }),
         },
       ],
-      structuredContent: { service: "tabloom-mcp", status: "ok" },
+      structuredContent: { service: "tabloom-mcp", status: "ok", mutationsEnabled: false },
     });
     expect(JSON.stringify(result)).not.toMatch(/supabase|user|client|identity|token|config/i);
   });

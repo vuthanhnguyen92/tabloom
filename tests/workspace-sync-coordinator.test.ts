@@ -16,6 +16,8 @@ import {
 } from "../shared/workspace-sync-repository";
 import type { WorkspaceSyncExclusiveRunner } from "../extension/workspace-sync-lock";
 import type { WorkspaceSyncTransport } from "../extension/workspace-sync-transport";
+import { LocalTrashRepository } from "../extension/local-trash-repository";
+import { LocalFirstWorkspaceRepository } from "../extension/local-first-repository";
 
 const USER_ID = "00000000-0000-4000-8000-00000000000a";
 const SPACE_ID = "10000000-0000-4000-8000-000000000001";
@@ -156,6 +158,101 @@ async function setup(input: {
 }
 
 describe("WorkspaceSyncCoordinator reads", () => {
+  it("reconciles rejected stale deletion and drains later waiting work without retrying the deletion", async () => {
+    const deletion: WorkspaceOperation = { ...renameOperation(), action: "delete", payload: {}, baseRevision: 3 };
+    const later = laterRenameOperation("After rejection");
+    const calls: string[][] = [];
+    const syncTransport = transport({ applyOperations: async (sent) => {
+      calls.push(sent.map((item) => item.operationId));
+      if (sent[0].action === "delete") return { revision: 6, outcomes: [{ operationId: deletion.operationId, status: "rejected", message: "Item was restored. Refresh and delete again." }], patches: workspace("Restored and edited"), tombstones: [], conflicts: [] };
+      return { revision: 7, outcomes: [{ operationId: later.operationId, status: "applied" }], patches: workspace("After rejection"), tombstones: [], conflicts: [] };
+    } });
+    const { coordinator, storage, snapshots } = await setup({ syncTransport, initial: state({ revision: 6, snapshot: { spaces: [], collections: [], links: [] }, queue: [{ operation: deletion, state: "failed", error: "Offline" }, { operation: later, state: "waiting" }], nextSequence: 3 }) });
+    await expect(coordinator.retryFailed()).rejects.toBeInstanceOf(WorkspaceConflictActionRequiredError);
+    expect(calls).toEqual([[deletion.operationId], [later.operationId]]);
+    expect(snapshots.some((item) => item.spaces[0]?.id === SPACE_ID)).toBe(true);
+    expect((await storage.loadOrThrow()).snapshot.spaces[0].name).toBe("After rejection");
+    expect((await storage.loadOrThrow()).queue).toEqual([]);
+    await coordinator.retryFailed();
+    expect(calls).toHaveLength(2);
+  });
+
+  it("does no normalization or network work after stopping while waiting for its lock", async () => {
+    const acquired = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const runner: WorkspaceSyncExclusiveRunner = { runExclusive: async (_userId, callback) => {
+      acquired.resolve(); await release.promise; return callback();
+    } };
+    const interrupted = state({ queue: [{ operation: renameOperation(), state: "waiting", attemptedAt: NOW }], nextSequence: 2 });
+    const { coordinator, storage, syncTransport } = await setup({ runner, initial: interrupted });
+    const starting = coordinator.start();
+    await acquired.promise;
+    coordinator.stop(); release.resolve(); await starting;
+    expect((await storage.loadOrThrow()).queue).toEqual(interrupted.queue);
+    expect(syncTransport.getRevision).not.toHaveBeenCalled();
+  });
+
+  it("does no network work after stopping during read preparation", async () => {
+    const prepared = Promise.withResolvers<AccountWorkspaceState>();
+    const entered = Promise.withResolvers<void>();
+    const { coordinator, storage, syncTransport } = await setup();
+    vi.spyOn(storage, "normalizeInterruptedAttempts").mockImplementationOnce(() => { entered.resolve(); return prepared.promise; });
+    const starting = coordinator.start();
+    await entered.promise;
+    coordinator.stop(); prepared.resolve(state()); await starting;
+    expect(syncTransport.getRevision).not.toHaveBeenCalled();
+  });
+
+  it("retries every interrupted operation without discarding attempt history", async () => {
+    const operations = [renameOperation(), laterRenameOperation()];
+    const syncTransport = transport({ applyOperations: vi.fn<WorkspaceSyncTransport["applyOperations"]>(async (sent) => ({ revision: 2, outcomes: sent.map((operation) => ({ operationId: operation.operationId, status: "applied" })), patches: workspace("Later"), tombstones: [], conflicts: [] })) });
+    const { coordinator, storage } = await setup({ syncTransport, initial: state({ queue: operations.map((operation) => ({ operation, state: "failed", attemptedAt: NOW, error: "Interrupted" })), nextSequence: 3 }) });
+    const observed: string[] = [];
+    const apply = syncTransport.applyOperations;
+    syncTransport.applyOperations = async (...args) => {
+      observed.push(...(await storage.loadOrThrow()).queue.map((entry) => entry.attemptedAt!));
+      return apply(...args);
+    };
+    await coordinator.retryFailed();
+    expect((await storage.loadOrThrow()).queue).toEqual([]);
+    expect(observed.every((timestamp) => timestamp === NOW)).toBe(true);
+  });
+  it("retries waiting operations even when a rejected dependency removed the failed head", async () => {
+    const operation = renameOperation();
+    const syncTransport = transport({ applyOperations: vi.fn(async () => ({ revision: 2, outcomes: [{ operationId: operation.operationId, status: "applied" as const }], patches: workspace("Optimistic"), tombstones: [], conflicts: [] })) });
+    const { coordinator, storage } = await setup({ syncTransport, initial: state({ queue: [{ operation, state: "waiting", attemptedAt: NOW }], nextSequence: 2, sync: { phase: "failed", error: "Earlier restore was rejected" } }) });
+    await coordinator.retryFailed();
+    expect(syncTransport.applyOperations).toHaveBeenCalledOnce();
+    expect((await storage.loadOrThrow()).queue).toEqual([]);
+  });
+
+  it("quarantines a rejected restore while acknowledging other operations in its batch", async () => {
+    const deletion: WorkspaceOperation = { ...renameOperation(), action: "delete", payload: {} };
+    const restoration: WorkspaceOperation = { ...laterRenameOperation(), action: "restore", payload: { deleteOperationId: deletion.operationId, snapshot: workspace() } };
+    const later = { ...renameOperation("Later"), operationId: crypto.randomUUID(), sequence: 3 };
+    const syncTransport = transport({ applyOperations: vi.fn(async () => ({ revision: 2, outcomes: [
+      { operationId: deletion.operationId, status: "deleted" as const }, { operationId: restoration.operationId, status: "rejected" as const, message: "Recovery receipt unavailable" },
+      { operationId: later.operationId, status: "applied" as const },
+    ], patches: workspace("Later"), tombstones: [], conflicts: [] })) });
+    const { coordinator, storage } = await setup({ syncTransport, initial: state({ queue: [deletion, restoration, later].map((operation) => ({ operation, state: "waiting" })), nextSequence: 4 }) });
+    await expect(coordinator.submit(later)).rejects.toThrow("Recovery receipt unavailable");
+    expect((await storage.loadOrThrow()).queue).toEqual([]);
+    expect((await storage.loadOrThrow()).snapshot.spaces[0].name).toBe("Later");
+  });
+  it("does not attach storage listeners when stopped during its initial read", async () => {
+    const { coordinator, storage, syncTransport, snapshots } = await setup();
+    const gate = Promise.withResolvers<AccountWorkspaceState>();
+    vi.spyOn(storage, "loadOrThrow").mockReturnValueOnce(gate.promise);
+    const subscribe = vi.spyOn(storage, "subscribe");
+    const starting = coordinator.start();
+    coordinator.stop();
+    gate.resolve(state());
+    await starting;
+    expect(subscribe).not.toHaveBeenCalled();
+    expect(syncTransport.getRevision).not.toHaveBeenCalled();
+    expect(snapshots).toEqual([]);
+  });
+
   it("renders local state then checks one unchanged revision without flushing writes", async () => {
     const syncTransport = transport();
     const { coordinator, snapshots, states } = await setup({ syncTransport });
@@ -287,6 +384,43 @@ describe("WorkspaceSyncCoordinator reads", () => {
 });
 
 describe("WorkspaceSyncCoordinator writes", () => {
+  it("invalidates local Trash when the server definitively rejects a delete", async () => {
+    const { area } = observableMemoryArea();
+    const storage = new LocalFirstStorage(area, USER_ID);
+    await storage.save(state());
+    const rejected: string[] = [];
+    const trash = { current: null as LocalTrashRepository | null };
+    const coordinator = new WorkspaceSyncCoordinator({ userId: USER_ID, storage, exclusiveRunner: serialRunner(),
+      onDeleteRejected: async (operationId) => { rejected.push(operationId); await trash.current!.discardRejectedDelete(operationId); },
+      transport: transport({ applyOperations: async (operations) => ({ revision: 2, outcomes: operations.map((operation) => ({ operationId: operation.operationId, status: "rejected", message: "Item was restored. Refresh and delete again." })), patches: workspace("Canonical"), tombstones: [], conflicts: [] }) }),
+    });
+    const repository = await LocalFirstWorkspaceRepository.create({ userId: USER_ID, storage, onMutation: async (operations) => { for (const operation of operations) await coordinator.submit(operation); } });
+    trash.current = new LocalTrashRepository(area, repository, USER_ID);
+    const intent = await trash.current.prepareDelete("space", SPACE_ID);
+    await expect(trash.current.deleteEntity("space", SPACE_ID, "extension", crypto.randomUUID(), intent.intentId)).rejects.toBeTruthy();
+    expect(rejected).toHaveLength(1);
+    expect(await trash.current.list()).toEqual([]);
+    expect((await storage.loadOrThrow()).snapshot.spaces[0].name).toBe("Canonical");
+    expect((await storage.loadOrThrow()).queue).toEqual([]);
+    coordinator.stop();
+  });
+  it("reconciles a local Trash receipt before acknowledging its durable delete", async () => {
+    const { area } = observableMemoryArea();
+    const storage = new LocalFirstStorage(area, USER_ID);
+    await storage.save(state());
+    const remoteId = crypto.randomUUID();
+    const coordinator = new WorkspaceSyncCoordinator({ userId: USER_ID, storage, exclusiveRunner: serialRunner(),
+      onDeleteReceipt: (receipt) => trash.reconcileRemote(receipt.operationId, receipt),
+      transport: transport({ applyOperations: async (operations) => ({ revision: 2, outcomes: operations.map((operation) => ({ operationId: operation.operationId, status: "applied", trashId: remoteId, restoreUntil: "2099-01-01T00:00:00Z" })), patches: { spaces: [], collections: [], links: [] }, tombstones: [{ entity: "space", entityId: SPACE_ID, deletedRevision: 2, deletedAt: NOW }], conflicts: [] }) }),
+    });
+    const repository = await LocalFirstWorkspaceRepository.create({ userId: USER_ID, storage, onMutation: async (operations) => { for (const operation of operations) await coordinator.submit(operation); } });
+    const trash = new LocalTrashRepository(area, repository, USER_ID);
+    const intent = await trash.prepareDelete("space", SPACE_ID);
+    await trash.deleteEntity("space", SPACE_ID, "extension", crypto.randomUUID(), intent.intentId);
+    expect((await storage.loadOrThrow()).queue).toEqual([]);
+    expect((await trash.list())[0].id).toBe(remoteId);
+    coordinator.stop();
+  });
   it("persists an optimistic mutation before its one immediate write settles", async () => {
     let resolveApply!: (value: Awaited<ReturnType<WorkspaceSyncTransport["applyOperations"]>>) => void;
     const pendingApply = new Promise<Awaited<ReturnType<WorkspaceSyncTransport["applyOperations"]>>>((resolve) => { resolveApply = resolve; });

@@ -15,6 +15,8 @@ function createStorage() {
   } as BrowserAdapter["storage"];
 }
 
+const SELECTED_SPACES_STORAGE_KEY = "tabloom:selected-spaces:v1";
+
 const spaces = [{ id: "space-one" }, { id: "space-two" }];
 
 describe("SelectedSpacePreference", () => {
@@ -45,5 +47,15 @@ describe("SelectedSpacePreference", () => {
     const preference = new SelectedSpacePreference(storage);
     expect(await preference.reconcile("account:user-1", [{ id: "space-one" }])).toBe("space-one");
     expect(await new SelectedSpacePreference(storage).reconcile("account:user-1", [...spaces].reverse())).toBe("space-one");
+  });
+
+  it("keeps the existing extension storage key and value shape", async () => {
+    const storage = createStorage();
+
+    await new SelectedSpacePreference(storage).select("account:user-1", "space-two");
+
+    await expect(storage.get(SELECTED_SPACES_STORAGE_KEY)).resolves.toEqual({
+      [SELECTED_SPACES_STORAGE_KEY]: { "account:user-1": "space-two" },
+    });
   });
 });

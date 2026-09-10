@@ -42,6 +42,19 @@ function renderSearch(overrides: Partial<SearchProps> = {}): RenderResult & {
 }
 
 describe("GlobalSearch", () => {
+  it("keeps extension search keyboard focus inside the overlay and restores its trigger", async () => {
+    const user = userEvent.setup();
+    const { container } = renderSearch();
+    const trigger = screen.getByRole("button", { name: "Search all links" });
+    await user.click(trigger);
+    expect(container).toHaveAttribute("inert");
+    await user.tab({ shift: true });
+    expect(screen.getByRole("button", { name: "Close search" })).toHaveFocus();
+    await user.keyboard("{Escape}");
+    expect(trigger).toHaveFocus();
+    expect(container).not.toHaveAttribute("inert");
+  });
+
   it("opens from the compact trigger and searches every saved space with source context", async () => {
     const user = userEvent.setup();
     renderSearch();

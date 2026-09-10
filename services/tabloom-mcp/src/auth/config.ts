@@ -19,6 +19,7 @@ export type McpAuthConfig = {
 
 export type FacadeAuthConfig = McpAuthConfig & {
   oauthEnabled: boolean;
+  mutationsEnabled: boolean;
   issuerUrl: URL;
   signingKeys: SigningKeyRing;
   encryptionKeys: EncryptionKeyRing;
@@ -166,6 +167,7 @@ export function loadFacadeAuthConfig(env: NodeJS.ProcessEnv): FacadeAuthConfig {
   return {
     ...base,
     oauthEnabled,
+    mutationsEnabled: env.TABLOOM_MCP_MUTATIONS_ENABLED === "true",
     issuerUrl,
     signingKeys,
     encryptionKeys,

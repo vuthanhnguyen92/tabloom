@@ -1,8 +1,10 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useState } from "react";
 import { CollectionShareDialog } from "../shared/CollectionShareDialog";
+import { GlobalSearch } from "../shared/organizer/GlobalSearch";
+import { webOrganizerCapabilities } from "../shared/organizer/capabilities";
 import type {
   CollectionShare,
   CollectionShareRepository,
@@ -63,6 +65,28 @@ function renderDialog(options: {
 }
 
 describe("CollectionShareDialog", () => {
+  it.each([{ ctrlKey: true }, { metaKey: true }])("owns modal focus and excludes search shortcuts for %j", async (modifier) => {
+    function Harness() {
+      const [open, setOpen] = useState(false);
+      return <><GlobalSearch snapshot={{ spaces: [], collections: [], links: [] }} capabilities={webOrganizerCapabilities({ openUrl: async () => {} })} />
+        <button onClick={() => setOpen(true)}>Share collection</button>
+        {open && <CollectionShareDialog availability="offline" collection={collection} repository={null} siteUrl="https://tabloom.nickvu.dev" onRequestSignIn={vi.fn()} onRequestSyncRetry={vi.fn()} onToast={vi.fn()} onClose={() => setOpen(false)} />}
+      </>;
+    }
+    const { container } = render(<Harness />);
+    const trigger = screen.getByRole("button", { name: "Share collection" });
+    await userEvent.click(trigger);
+    fireEvent.keyDown(window, { key: "f", ...modifier });
+    expect(screen.queryByRole("dialog", { name: "Search Tabloom" })).not.toBeInTheDocument();
+    expect(container).toHaveAttribute("inert");
+    const close = screen.getByRole("button", { name: "Close sharing" });
+    await userEvent.tab();
+    expect(close).toHaveFocus();
+    await userEvent.keyboard("{Escape}");
+    expect(container).not.toHaveAttribute("inert");
+    expect(trigger).toHaveFocus();
+  });
+
   beforeEach(() => {
     Object.defineProperty(navigator, "clipboard", {
       configurable: true,

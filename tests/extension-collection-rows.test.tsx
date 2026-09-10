@@ -8,7 +8,7 @@ import { mergeBookmarkEntries, toBookmarkWorkspace } from "../shared/bookmarks";
 import { MemoryWorkspaceRepository } from "../shared/repository";
 import type { CollectionShareRepository } from "../shared/collection-sharing";
 import type { FaviconResolver } from "../extension/browser/types";
-const extensionStyles = readFileSync("extension/style.css", "utf8");
+const extensionStyles = readFileSync("shared/organizer/organizer.css", "utf8") + readFileSync("extension/style.css", "utf8");
 
 let styleElement: HTMLStyleElement;
 beforeAll(() => {
@@ -41,6 +41,12 @@ function shareRepository(): CollectionShareRepository {
 }
 
 const createDataTransfer = (types: string[] = []) => ({ effectAllowed: "none", dropEffect: "none", types, getData: () => "" });
+
+function dragHandleFor(source: HTMLElement) {
+  if (source.matches("button")) return source;
+  if (source.matches("article")) return within(source).getByRole("button", { name: `Drag ${source.getAttribute("aria-label")}` });
+  return within(source.closest<HTMLElement>(".ext-link-card")!).getByRole("button", { name: /^Drag / });
+}
 
 describe("CollectionRows", () => {
   it("does not paint expanded collections before stored collapse state is ready", async () => {
@@ -86,21 +92,24 @@ describe("CollectionRows", () => {
     setup();
 
     const card = screen.getByRole("link", { name: /Product roadmap/i });
-    const indicator = card.querySelector(".card-drag-indicator");
+    const indicator = screen.getByRole("button", { name: "Drag Product roadmap" });
     expect(getComputedStyle(card).cursor).toBe("pointer");
     expect(indicator).toBeInTheDocument();
-    expect(getComputedStyle(indicator!).pointerEvents).toBe("none");
+    expect(getComputedStyle(indicator).pointerEvents).toBe("auto");
+    expect(getComputedStyle(indicator).cursor).toBe("grab");
   });
 
-  it("shows the grabbing cursor after a saved-link drag starts", () => {
+  it("shows grabbing only on the handle after a saved-link drag starts", () => {
     setup();
     const card = screen.getByRole("link", { name: /Product roadmap/i });
 
     expect(getComputedStyle(card).cursor).toBe("pointer");
-    fireEvent.dragStart(card, { dataTransfer: createDataTransfer() });
+    const handle = screen.getByRole("button", { name: "Drag Product roadmap" });
+    fireEvent.dragStart(dragHandleFor(handle), { dataTransfer: createDataTransfer() });
 
     expect(card).toHaveClass("dragging");
-    expect(getComputedStyle(card).cursor).toBe("grabbing");
+    expect(getComputedStyle(card).cursor).toBe("pointer");
+    expect(getComputedStyle(handle).cursor).toBe("grabbing");
   });
 
   it("restores and toggles a collection's locally remembered collapsed state", async () => {
@@ -499,7 +508,7 @@ describe("CollectionRows", () => {
     expect(screen.getByText("Only on Work Mac")).toBeVisible();
     const bookmarkCard = screen.getByRole("link", { name: /Browser example/i });
     const dataTransfer = createDataTransfer();
-    fireEvent.dragStart(bookmarkCard, { dataTransfer });
+    fireEvent.dragStart(dragHandleFor(bookmarkCard), { dataTransfer });
     expect(dataTransfer.effectAllowed).toBe("copy");
     fireEvent.dragOver(screen.getByRole("group", { name: "Plan collection" }), { dataTransfer });
     expect(screen.getByRole("group", { name: "Plan collection" })).toHaveClass("bookmark-drop-target");
@@ -600,10 +609,10 @@ describe("CollectionRows", () => {
       onBookmarkDrop={onBookmarkDrop}
     />);
     const transfer = createDataTransfer();
-    fireEvent.dragStart(screen.getByRole("link", { name: /Browser example/i }), { dataTransfer: transfer });
+    fireEvent.dragStart(dragHandleFor(screen.getByRole("link", { name: /Browser example/i })), { dataTransfer: transfer });
     fireEvent.drop(screen.getByRole("group", { name: "Imported collection" }), { dataTransfer: transfer });
     expect(onBookmarkDrop).not.toHaveBeenCalled();
-    fireEvent.dragStart(screen.getByRole("link", { name: /Browser example/i }), { dataTransfer: transfer });
+    fireEvent.dragStart(dragHandleFor(screen.getByRole("link", { name: /Browser example/i })), { dataTransfer: transfer });
     fireEvent.drop(screen.getByRole("group", { name: "Plan collection" }), { dataTransfer: transfer });
     await waitFor(() => expect(onBookmarkDrop).toHaveBeenCalledWith(expect.objectContaining({ title: "Browser example" }), "collection-plan"));
     expect(onReload).toHaveBeenCalledOnce();
@@ -626,7 +635,7 @@ describe("CollectionRows", () => {
       onBookmarkDrop={onBookmarkDrop}
     />);
     const transfer = createDataTransfer();
-    fireEvent.dragStart(screen.getByRole("link", { name: /Browser example/i }), { dataTransfer: transfer });
+    fireEvent.dragStart(dragHandleFor(screen.getByRole("link", { name: /Browser example/i })), { dataTransfer: transfer });
     const target = screen.getByRole("group", { name: "Plan copy target" });
     expect(target).toBeVisible();
     fireEvent.dragOver(target, { dataTransfer: transfer });
@@ -675,7 +684,7 @@ describe("CollectionRows", () => {
   it("reveals collection drop zones while a saved-link card is dragged", () => {
     const { container } = setup();
     const source = screen.getByRole("link", { name: /Product roadmap/i });
-    fireEvent.dragStart(source, { dataTransfer: createDataTransfer() });
+    fireEvent.dragStart(dragHandleFor(source), { dataTransfer: createDataTransfer() });
 
     expect(container.querySelector(".ext-columns")).toHaveClass("link-dragging");
     expect(source).toHaveClass("dragging");
@@ -709,7 +718,7 @@ describe("CollectionRows", () => {
     const source = screen.getByRole("link", { name: /Product roadmap/i });
     const target = screen.getByRole("link", { name: /Brand system/i });
     const dataTransfer = createDataTransfer();
-    fireEvent.dragStart(source, { dataTransfer });
+    fireEvent.dragStart(dragHandleFor(source), { dataTransfer });
     fireEvent.dragOver(target, { dataTransfer });
 
     const grid = screen.getByRole("group", { name: "Design collection" }).querySelector(".ext-link-grid")!;
@@ -724,7 +733,7 @@ describe("CollectionRows", () => {
     const source = screen.getByRole("link", { name: /Product roadmap/i });
     const targetCollection = screen.getByRole("group", { name: "Design collection" });
     const dataTransfer = createDataTransfer();
-    fireEvent.dragStart(source, { dataTransfer });
+    fireEvent.dragStart(dragHandleFor(source), { dataTransfer });
     fireEvent.dragOver(targetCollection, { dataTransfer });
 
     const grid = targetCollection.querySelector(".ext-link-grid")!;
@@ -737,7 +746,7 @@ describe("CollectionRows", () => {
   it("persists collection order when a row is dragged", async () => {
     const { repository, onReload } = setup();
     const dataTransfer = createDataTransfer();
-    fireEvent.dragStart(screen.getByRole("group", { name: "Learn collection" }), { dataTransfer });
+    fireEvent.dragStart(dragHandleFor(screen.getByRole("group", { name: "Learn collection" })), { dataTransfer });
     fireEvent.dragOver(screen.getByRole("group", { name: "Plan collection" }), { dataTransfer });
     fireEvent.drop(screen.getByRole("group", { name: "Plan collection" }), { dataTransfer });
 
@@ -753,7 +762,7 @@ describe("CollectionRows", () => {
     vi.spyOn(target, "getBoundingClientRect").mockReturnValue({ top: 100, height: 100, bottom: 200, left: 0, right: 600, width: 600, x: 0, y: 100, toJSON: () => ({}) });
     const dataTransfer = createDataTransfer();
 
-    fireEvent.dragStart(source, { dataTransfer });
+    fireEvent.dragStart(dragHandleFor(source), { dataTransfer });
     fireEvent.dragOver(target, { clientY: 120, dataTransfer });
 
     const preview = container.querySelector(".collection-drop-preview");
@@ -784,7 +793,7 @@ describe("CollectionRows", () => {
     vi.spyOn(target, "getBoundingClientRect").mockReturnValue({ top: 100, height: 100, bottom: 200, left: 0, right: 600, width: 600, x: 0, y: 100, toJSON: () => ({}) });
     const dataTransfer = createDataTransfer();
 
-    fireEvent.dragStart(source, { dataTransfer });
+    fireEvent.dragStart(dragHandleFor(source), { dataTransfer });
     const dragOver = createEvent.dragOver(target, { dataTransfer });
     Object.defineProperty(dragOver, "clientY", { value: 180 });
     fireEvent(target, dragOver);
@@ -816,7 +825,7 @@ describe("CollectionRows", () => {
   it("persists link position and collection when a tile is dragged", async () => {
     const { repository, onReload } = setup();
     const dataTransfer = createDataTransfer();
-    fireEvent.dragStart(screen.getByRole("link", { name: /Product roadmap/i }), { dataTransfer });
+    fireEvent.dragStart(dragHandleFor(screen.getByRole("link", { name: /Product roadmap/i })), { dataTransfer });
     fireEvent.dragOver(screen.getByRole("link", { name: /Brand system/i }), { dataTransfer });
     fireEvent.drop(screen.getByRole("link", { name: /Brand system/i }), { dataTransfer });
 
@@ -835,7 +844,7 @@ describe("CollectionRows", () => {
     render(<CollectionRows collections={snapshot.collections} links={snapshot.links} repository={repository} onReload={onReload} />);
     const source = within(screen.getByRole("group", { name: "Plan collection" })).getByRole("link", { name: /Product roadmap/i });
     const dataTransfer = createDataTransfer();
-    fireEvent.dragStart(source, { dataTransfer });
+    fireEvent.dragStart(dragHandleFor(source), { dataTransfer });
     fireEvent.drop(screen.getByRole("group", { name: "Design collection" }), { dataTransfer });
 
     expect(await screen.findByRole("dialog", { name: "Duplicate link" })).toBeInTheDocument();
@@ -855,7 +864,7 @@ describe("CollectionRows", () => {
     render(<CollectionRows collections={snapshot.collections} links={snapshot.links} repository={repository} onReload={onReload} />);
     const source = within(screen.getByRole("group", { name: "Plan collection" })).getByRole("link", { name: /Product roadmap/i });
     const dataTransfer = createDataTransfer();
-    fireEvent.dragStart(source, { dataTransfer });
+    fireEvent.dragStart(dragHandleFor(source), { dataTransfer });
     fireEvent.drop(screen.getByRole("group", { name: "Design collection" }), { dataTransfer });
     await userEvent.click(await screen.findByRole("button", { name: "Move anyway" }));
 
@@ -876,7 +885,7 @@ describe("CollectionRows", () => {
     const onReload = vi.fn(async () => undefined);
     render(<CollectionRows collections={snapshot.collections} links={snapshot.links} repository={repository} onReload={onReload} />);
     const dataTransfer = createDataTransfer();
-    fireEvent.dragStart(screen.getByRole("link", { name: /Launch checklist/i }), { dataTransfer });
+    fireEvent.dragStart(dragHandleFor(screen.getByRole("link", { name: /Launch checklist/i })), { dataTransfer });
     fireEvent.drop(screen.getByRole("link", { name: /Product roadmap/i }), { dataTransfer });
     await waitFor(() => expect(onReload).toHaveBeenCalledOnce());
     const plan = (await repository.load()).links.filter((item) => item.collection_id === "collection-plan").sort((a, b) => a.position - b.position);
@@ -912,7 +921,7 @@ describe("CollectionRows", () => {
     const visibleLinks = snapshot.links.filter((link) => link.title !== "Customer brief");
     render(<CollectionRows collections={snapshot.collections} links={visibleLinks} allLinks={snapshot.links} repository={repository} onReload={onReload} />);
     const dataTransfer = createDataTransfer();
-    fireEvent.dragStart(screen.getByRole("link", { name: /Launch checklist/i }), { dataTransfer });
+    fireEvent.dragStart(dragHandleFor(screen.getByRole("link", { name: /Launch checklist/i })), { dataTransfer });
     fireEvent.drop(screen.getByRole("link", { name: /Product roadmap/i }), { dataTransfer });
 
     await waitFor(() => expect(onReload).toHaveBeenCalledOnce());

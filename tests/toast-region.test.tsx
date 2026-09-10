@@ -1,16 +1,16 @@
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { useState } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ToastRegion } from "../extension/ToastRegion";
+import { ToastRegion } from "../shared/organizer/ToastRegion";
 
 function MessageHarness() {
   const [message, setMessage] = useState("Task deleted");
-  return <ToastRegion error="" message={message} onDismissError={() => undefined} onDismissMessage={() => setMessage("")} />;
+  return <ToastRegion toasts={message ? [{ id: "message", message, tone: "success" }] : []} onDismiss={() => setMessage("")} />;
 }
 
 function ErrorHarness() {
   const [error, setError] = useState("Could not delete task");
-  return <ToastRegion error={error} message="" onDismissError={() => setError("")} onDismissMessage={() => undefined} />;
+  return <ToastRegion toasts={error ? [{ id: "error", message: error, tone: "error" }] : []} onDismiss={() => setError("")} />;
 }
 
 describe("ToastRegion", () => {

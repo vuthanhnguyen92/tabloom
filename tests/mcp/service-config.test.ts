@@ -2,8 +2,22 @@ import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 import nextConfig from "../../services/tabloom-mcp/next.config";
 import { GET } from "../../services/tabloom-mcp/app/api/health/route";
+import { loadFacadeAuthConfig } from "../../services/tabloom-mcp/src/auth/config";
 
 describe("Tabloom MCP service configuration", () => {
+  it.each([undefined, "false", "TRUE", "1", " true ", "true"])("enables mutations only for literal true (%s)", (flag) => {
+    const config = loadFacadeAuthConfig({
+      NODE_ENV: "test",
+      SUPABASE_URL: "https://example.supabase.co", SUPABASE_ANON_KEY: "test-anon-key",
+      TABLOOM_MCP_RESOURCE_URL: "https://tabloom.nickvu.dev/mcp",
+      TABLOOM_OAUTH_ISSUER_URL: "https://tabloom.nickvu.dev", TABLOOM_OAUTH_ENABLED: "false",
+      TABLOOM_MCP_MUTATIONS_ENABLED: flag,
+    });
+    expect(config.mutationsEnabled).toBe(flag === "true");
+    expect(config.resourceUrl.href).toBe("https://tabloom.nickvu.dev/mcp");
+    expect(config.issuerUrl.origin).toBe("https://tabloom.nickvu.dev");
+  });
+
   it("pins the supported MCP server runtime and dependencies", async () => {
     const manifest = JSON.parse(
       await readFile("services/tabloom-mcp/package.json", "utf8"),

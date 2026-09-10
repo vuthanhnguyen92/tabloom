@@ -214,6 +214,20 @@ describe("BrowserAdapter", () => {
     expect(() => adapter.identity.getRedirectURL("auth-callback")).toThrow("safari does not provide the identity API");
   });
 
+  it.each(["chromium", "firefox"] as const)("offers %s bookmark sync before optional permission exposes the API", async (target) => {
+    const namespace = createNamespace();
+    const getTree = vi.fn(async () => [{ id: "0", title: "", children: [] }]);
+    let granted = false;
+    Object.defineProperty(namespace, "bookmarks", { get: () => granted ? { getTree } : undefined });
+    namespace.permissions.request.mockImplementation(async () => { granted = true; return true; });
+    const adapter = createWebExtensionAdapter(target, namespace);
+    expect(adapter.capabilities.bookmarks).toBe(true);
+    expect(getTree).not.toHaveBeenCalled();
+    await expect(adapter.permissions.request("bookmarks")).resolves.toBe(true);
+    await expect(adapter.bookmarks.getTree()).resolves.toHaveLength(1);
+    expect(getTree).toHaveBeenCalledOnce();
+  });
+
   it("completes Safari OAuth through the native bridge", async () => {
     const base = createNamespace();
     const sendNativeMessage = vi.fn(async () => ({

@@ -246,6 +246,7 @@ git commit -m "feat: add transactional workspace trash"
 
 **Files:**
 - Create: `supabase/migrations/202609100002_workspace_trash_sync.sql`
+- Create: `supabase/operations/workspace_trash_privilege_cutover.sql` (operator-run, outside automatic migrations)
 - Modify: `shared/repository.ts`
 - Create: `shared/trash-repository.ts`
 - Modify: `shared/workspace-sync-repository.ts`
@@ -316,7 +317,7 @@ Return optional `trashId` and `restoreUntil` fields in delete outcomes. Extend `
 
 - [ ] **Step 5: Remove direct authenticated delete access**
 
-After all synchronized and web repository paths call Trash RPCs, revoke direct table DELETE from `authenticated` and replace permissive delete policies with RPC-only access. Verify creates and updates still use their existing RLS policies, and verify accidental calls to the legacy Supabase delete methods fail closed rather than bypassing Trash.
+Keep automatic migrations compatible with the deployed web client. After all synchronized and web clients that call Trash RPCs are deployed and acceptance-tested, run the separate operator cutover SQL to revoke direct table DELETE from `authenticated` and replace permissive delete policies with SELECT/INSERT/UPDATE ownership policies. Require explicit client-readiness attestation and schema/grant preconditions; verify final privileges and rollback the statement on any failed postcheck. Verify creates and updates still use their existing RLS policies, and verify accidental calls to the legacy Supabase delete methods fail closed after cutover. See `docs/mcp-setup.md` for exact commands, stale-client refresh, and compatible rollback targets.
 
 - [ ] **Step 6: Run focused and database tests**
 
@@ -604,4 +605,4 @@ Apply migrations to project `tctjlsvfufzxhauhywsm`, deploy the MCP service with 
 
 - [ ] **Step 7: Enable mutations after acceptance**
 
-Set `TABLOOM_MCP_MUTATIONS_ENABLED=true`, redeploy, then verify create, stale-update conflict, prepare/confirm collection deletion, link deletion, Trash listing, restore, and revocation through `https://tabloom.nickvu.dev/mcp`.
+Deploy the compatible web/MCP clients first, run the explicit operator privilege cutover and postchecks, then set `TABLOOM_MCP_MUTATIONS_ENABLED=true`, redeploy, and verify create, stale-update conflict, prepare/confirm collection deletion, link deletion, Trash listing, restore, and revocation through `https://tabloom.nickvu.dev/mcp`. Production execution remains deferred until the full release is approved.

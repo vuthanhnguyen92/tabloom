@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
-const extensionStyles = readFileSync(resolve(process.cwd(), "extension/style.css"), "utf8");
+const extensionStyles = readFileSync(resolve(process.cwd(), "shared/organizer/organizer.css"), "utf8") + readFileSync(resolve(process.cwd(), "extension/style.css"), "utf8");
 
 function mountExtensionStyles() {
   const style = document.createElement("style");

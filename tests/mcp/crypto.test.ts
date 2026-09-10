@@ -29,6 +29,7 @@ async function config() {
     jwksUrl: new URL("https://example.supabase.co/auth/v1/.well-known/jwks.json"),
     anonKey: "test-anon-key",
     oauthEnabled: true,
+    mutationsEnabled: false,
     issuerUrl: new URL(ISSUER),
     resourceUrl: new URL(RESOURCE),
     signingKeys: await createSigningKeyRing([await signing("current", true)]),

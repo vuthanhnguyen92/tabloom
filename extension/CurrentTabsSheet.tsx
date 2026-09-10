@@ -3,7 +3,7 @@ import { type DragEvent, type FormEvent, useCallback, useEffect, useRef, useStat
 import { normalizeUrlForDuplicate, type Collection } from "../shared/domain";
 import type { WorkspaceRepository } from "../shared/repository";
 import { findDuplicateTabIds, listCurrentWindowTabs, type CaptureTab } from "./chrome-api";
-import { FaviconTile } from "./FaviconTile";
+import { FaviconTile } from "../shared/organizer/FaviconTile";
 import { browserAdapter } from "./browser";
 import type { FaviconResolver } from "./browser/types";
 
@@ -151,9 +151,9 @@ export function CurrentTabsSheet({ activeSpaceId, expanded, repository, refreshV
     }
   }
 
-  if (!expanded) return <aside className="current-tabs-sheet collapsed"><button aria-label="Expand current tabs" onClick={() => onExpandedChange(true)}><ChevronLeft size={18} /><span>Current tabs</span></button></aside>;
+  if (!expanded) return <aside aria-label="Current tabs" className="current-tabs-sheet collapsed"><button aria-label="Expand current tabs" onClick={() => onExpandedChange(true)}><ChevronLeft size={18} /><span>Current tabs</span></button></aside>;
 
-  return <aside className="current-tabs-sheet">
+  return <aside aria-label="Current tabs" className="current-tabs-sheet">
     <header><div><small>CURRENT WINDOW</small><h2>Current tabs</h2></div><div><button aria-label="Close duplicate tabs" disabled={loading || closingDuplicates || !duplicateTabIds.length} onClick={() => setConfirmingDuplicates(true)}><CopyMinus size={16} /></button><button aria-label="Refresh current tabs" disabled={closingDuplicates} onClick={() => void refresh()}><RefreshCw size={16} /></button><button aria-label="Collapse current tabs" disabled={closingDuplicates} onClick={() => onExpandedChange(false)}><ChevronRight size={18} /></button></div></header>
     <p className="current-tabs-hint">Drag a tab into any collection to save it.</p>
     <div className="current-tab-list">{loading ? <p>Reading this window…</p> : tabs.map((tab, index) => <div

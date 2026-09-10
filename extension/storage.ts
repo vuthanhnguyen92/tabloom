@@ -4,9 +4,12 @@ import {
   type CreateCollectionInput,
   type CreateLinkInput,
   type CreateSpaceInput,
+  type MoveLinkInput,
+  type MoveCollectionInput,
   type WorkspaceRepository,
 } from "../shared/repository";
 import { browserAdapter } from "./browser";
+import type { LocalTrashMutation, LocalTrashCommit } from "./local-trash-repository";
 import {
   BrowserWorkspaceCache,
   type StorageArea,
@@ -91,6 +94,7 @@ function createDefaultCollection(spaceId: string, timestamp = new Date().toISOSt
 }
 
 class LocalWorkspaceRepository implements WorkspaceRepository {
+  readonly trashOwnerId = "local-user";
   private constructor(
     private memory: MemoryWorkspaceRepository,
     private readonly cache: ChromeSnapshotCache,
@@ -125,6 +129,15 @@ class LocalWorkspaceRepository implements WorkspaceRepository {
   }
 
   load() { return this.memory.load(); }
+  async commitTrash(_mutation: LocalTrashMutation | undefined, beforeCommit: (before: WorkspaceSnapshot) => Promise<LocalTrashCommit>): Promise<WorkspaceSnapshot> {
+    return withLocalWorkspaceLock(async () => {
+      const latest = await this.cache.read() ?? await this.memory.load();
+      const next = await beforeCommit(latest);
+      await this.cache.write(next.snapshot, next.values);
+      this.memory = new MemoryWorkspaceRepository("local-user", next.snapshot);
+      return next.snapshot;
+    });
+  }
   private async mutate<T>(operation: (memory: MemoryWorkspaceRepository) => Promise<T>): Promise<T> {
     return withLocalWorkspaceLock(async () => {
       const latest = await this.cache.read() ?? await this.memory.load();
@@ -147,6 +160,8 @@ class LocalWorkspaceRepository implements WorkspaceRepository {
   deleteLink(id: string): Promise<void> { return this.mutate((memory) => memory.deleteLink(id)); }
   reorderCollections(spaceId: string, orderedIds: string[]): Promise<void> { return this.mutate((memory) => memory.reorderCollections(spaceId, orderedIds)); }
   reorderLinks(collectionId: string, orderedIds: string[]): Promise<void> { return this.mutate((memory) => memory.reorderLinks(collectionId, orderedIds)); }
+  moveLink(input: MoveLinkInput): Promise<void> { return this.mutate((memory) => memory.moveLink(input)); }
+  moveCollection(input: MoveCollectionInput): Promise<void> { return this.mutate((memory) => memory.moveCollection(input)); }
 }
 
 export function createLocalWorkspaceRepository(area: StorageArea = browserAdapter.storage): Promise<WorkspaceRepository> {

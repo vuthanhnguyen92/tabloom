@@ -1,0 +1,633 @@
+import type { SupabaseClient } from "@supabase/supabase-js";
+import { describe, expect, it, vi } from "vitest";
+import type { WorkspaceSnapshot } from "../../shared/domain";
+import { isWorkspaceOperation, type WorkspaceOperation } from "../../shared/workspace-operations";
+import type { TabloomRequestContext } from "../../services/tabloom-mcp/src/auth/request-context";
+import { WorkspaceCommandService } from "../../services/tabloom-mcp/src/workspace/command-service";
+import { mapWorkspaceCommandError, WorkspaceCommandError } from "../../services/tabloom-mcp/src/workspace/errors";
+
+const USER = "10000000-0000-4000-8000-000000000001";
+const SPACE_ID = "20000000-0000-4000-8000-000000000001";
+const COLLECTION_ID = "30000000-0000-4000-8000-000000000001";
+const DESTINATION_ID = "30000000-0000-4000-8000-000000000002";
+const ITEM_ID = "40000000-0000-4000-8000-000000000001";
+const OTHER_ITEM_ID = "40000000-0000-4000-8000-000000000002";
+const KEY = "50000000-0000-4000-8000-000000000001";
+const OLD = "2026-09-09T00:00:00.000Z";
+const NOW = "2026-09-10T00:00:00.000Z";
+const LATER = "2026-09-10T01:00:00.000Z";
+const META = { user_id: USER, created_at: OLD, updated_at: NOW, origin: "saved" as const, read_only: false, position: 0 };
+const SPACE = { ...META, id: SPACE_ID, name: "Research", color: "#7357e6" };
+const COLLECTION = { ...META, id: COLLECTION_ID, space_id: SPACE_ID, name: "Reading" };
+const LINK = { ...META, id: ITEM_ID, collection_id: COLLECTION_ID, title: "Tabloom notes", description: "Useful", url: "https://example.com", favicon_url: null, device_label: null };
+const INITIAL = { spaces: [SPACE], collections: [COLLECTION], links: [LINK] };
+const INTENT_ID = "60000000-0000-4000-8000-000000000001";
+const TRASH_ID = "70000000-0000-4000-8000-000000000001";
+const EXPIRES = "2099-09-10T00:10:00.000Z";
+const RESTORE_UNTIL = "2099-10-10T00:00:00.000Z";
+
+function trashSetup(initial: WorkspaceSnapshot = INITIAL) {
+  const base = setup(initial);
+  const trash = { id: TRASH_ID, user_id: USER, root_type: "link", root_id: ITEM_ID, root_name: LINK.title,
+    source: "mcp", deleted_at: NOW, expires_at: RESTORE_UNTIL, restored_at: null as string | null,
+    created_operation_id: KEY, snapshot: { version: 1, rootType: "link", spaces: [], collections: [], links: [LINK] } };
+  let intent: Record<string, unknown> | null = { id: INTENT_ID, user_id: USER, target_type: "collection", target_id: COLLECTION_ID };
+  let receipt: typeof trash | null = null;
+  const reads: Array<{ table: string; filters: Record<string, unknown> }> = [];
+  const from = vi.fn((table: string) => {
+    const filters: Record<string, unknown> = {};
+    reads.push({ table, filters });
+    const query = { select: () => query, eq: (key: string, value: unknown) => { filters[key] = value; return query; },
+      maybeSingle: async () => ({ data: structuredClone(table === "workspace_delete_intents" ? intent
+        : table === "workspace_trash" ? (filters.created_operation_id ? receipt : trash) : null), error: null }) };
+    return query;
+  });
+  const originalRpc = base.rpc.getMockImplementation()!;
+  base.rpc.mockImplementation(async (name, args) => {
+    if (name === "prepare_workspace_delete") return { data: { intentId: INTENT_ID, targetType: args?.p_target_type,
+      targetId: args?.p_target_id, targetName: args?.p_target_type === "space" ? SPACE.name : COLLECTION.name,
+      collectionCount: 1, linkCount: 1, expiresAt: EXPIRES }, error: null };
+    if (name === "trash_workspace_entity") return { data: { operationId: args?.p_operation_id, trashId: TRASH_ID,
+      rootType: args?.p_root_type, rootId: args?.p_root_id, restoreUntil: RESTORE_UNTIL }, error: null };
+    if (name === "trash_workspace_link_if_unchanged") return { data: { operationId: args?.p_operation_id, trashId: TRASH_ID,
+      rootType: "link", rootId: args?.p_link_id, restoreUntil: RESTORE_UNTIL }, error: null };
+    if (name === "list_workspace_trash") return { data: [{ id: TRASH_ID, rootType: "link", rootId: ITEM_ID,
+      rootName: LINK.title, source: "mcp", deletedAt: NOW, expiresAt: RESTORE_UNTIL, restoredAt: null, snapshot: trash.snapshot }], error: null };
+    if (name === "restore_workspace_trash") return { data: { status: "restored", trashId: TRASH_ID, rootType: "link", rootId: ITEM_ID, revision: 8 }, error: null };
+    return originalRpc(name, args);
+  });
+  const context = { ...base.context, supabase: { rpc: base.rpc, from } as unknown as SupabaseClient };
+  return { ...base, service: new WorkspaceCommandService(context), context, trash, reads,
+    setIntent: (value: Record<string, unknown> | null) => { intent = value; },
+    committedReceipt: () => { receipt = structuredClone(trash); },
+  };
+}
+
+describe("recoverable destructive workspace commands", () => {
+  it.each(["space", "collection"] as const)("prepares %s deletion with exact authoritative counts and expiry", async (type) => {
+    const { service, rpc } = trashSetup();
+    const result = type === "space" ? await service.prepareDeleteSpace({ spaceId: SPACE_ID }) : await service.prepareDeleteCollection({ collectionId: COLLECTION_ID });
+    expect(result).toEqual({ intentId: INTENT_ID, targetType: type, targetId: type === "space" ? SPACE_ID : COLLECTION_ID,
+      targetName: type === "space" ? "Research" : "Reading", collectionCount: 1, linkCount: 1, expiresAt: EXPIRES });
+    expect(rpc).toHaveBeenCalledWith("prepare_workspace_delete", { p_target_type: type, p_target_id: type === "space" ? SPACE_ID : COLLECTION_ID });
+    expect(rpc.mock.calls.some(([name]) => name === "trash_workspace_entity")).toBe(false);
+  });
+
+  it.each(["space", "collection"] as const)("confirms %s by owner-scoped intent and uses a stable operation for retries", async (type) => {
+    const { service, context, rpc, reads, setIntent } = trashSetup();
+    setIntent({ id: INTENT_ID, user_id: USER, target_type: type, target_id: type === "space" ? SPACE_ID : COLLECTION_ID });
+    const call = (command: WorkspaceCommandService) => type === "space" ? command.confirmDeleteSpace({ intentId: INTENT_ID }) : command.confirmDeleteCollection({ intentId: INTENT_ID });
+    const first = await call(service);
+    expect(first).toMatchObject({ rootType: type, rootId: type === "space" ? SPACE_ID : COLLECTION_ID, trashId: TRASH_ID, restoreUntil: RESTORE_UNTIL });
+    expect(await call(new WorkspaceCommandService(context))).toEqual(first);
+    expect(reads).toContainEqual({ table: "workspace_delete_intents", filters: { user_id: USER, id: INTENT_ID } });
+    const calls = rpc.mock.calls.filter(([name]) => name === "trash_workspace_entity");
+    expect(calls).toHaveLength(2);
+    expect(calls[0][1]).toEqual({ p_root_type: type, p_root_id: first.rootId, p_source: "mcp", p_operation_id: first.operationId, p_intent_id: INTENT_ID });
+    expect(calls[1][1]).toEqual(calls[0][1]);
+  });
+
+  it.each([{}, { intentId: INTENT_ID, collectionId: COLLECTION_ID }, { intentId: INTENT_ID, source: "web" }, { intentId: "fabricated" }])("rejects invalid confirmation input %# before database access", async (input) => {
+    const { service, rpc, reads } = trashSetup();
+    await expect(service.confirmDeleteCollection(input)).rejects.toMatchObject({ code: "validation_failed" });
+    expect(rpc).not.toHaveBeenCalled();
+    expect(reads).toEqual([]);
+  });
+
+  it.each([null, { id: INTENT_ID, user_id: KEY, target_type: "collection", target_id: COLLECTION_ID },
+    { id: INTENT_ID, user_id: USER, target_type: "space", target_id: SPACE_ID }])("rejects fabricated, foreign, or wrong-kind intents %#", async (intent) => {
+    const { service, rpc, setIntent } = trashSetup();
+    setIntent(intent);
+    await expect(service.confirmDeleteCollection({ intentId: INTENT_ID })).rejects.toMatchObject({ code: "confirmation_required" });
+    expect(rpc.mock.calls.some(([name]) => name === "trash_workspace_entity")).toBe(false);
+  });
+
+  it.each([["P0001", "confirmation_expired", "confirmation_expired"], ["P0001", "confirmation_required", "confirmation_required"],
+    ["40001", "workspace delete target changed SQL secret", "conflict"]])("preserves authoritative rejection %s/%s without retrying deletion", async (code, message, expected) => {
+    const { service, rpc } = trashSetup();
+    const original = rpc.getMockImplementation()!;
+    rpc.mockImplementation((name, args) => name === "trash_workspace_entity" ? Promise.resolve({ data: null, error: { code, message } }) : original(name, args));
+    const error = await service.confirmDeleteCollection({ intentId: INTENT_ID }).catch((value: unknown) => value);
+    expect(error).toMatchObject({ code: expected });
+    expect(String(error)).not.toContain("secret");
+    expect(rpc.mock.calls.filter(([name]) => name === "trash_workspace_entity")).toHaveLength(1);
+  });
+
+  it("deletes a saved link immediately through the caller RPC with recovery metadata", async () => {
+    const { service, rpc } = trashSetup();
+    expect(await service.deleteCollectionItem({ itemId: ITEM_ID, expectedUpdatedAt: NOW, idempotencyKey: KEY }))
+      .toEqual({ operationId: KEY, trashId: TRASH_ID, rootType: "link", rootId: ITEM_ID, restoreUntil: RESTORE_UNTIL });
+    expect(rpc).toHaveBeenCalledWith("trash_workspace_link_if_unchanged", { p_link_id: ITEM_ID, p_expected_updated_at: NOW, p_operation_id: KEY });
+    expect(rpc.mock.calls.some(([name]) => name === "trash_workspace_entity")).toBe(false);
+  });
+
+  it("replays the original link receipt after target absence", async () => {
+    const { service, committedReceipt, rpc } = trashSetup({ ...INITIAL, links: [] });
+    committedReceipt();
+    expect(await service.deleteCollectionItem({ itemId: ITEM_ID, expectedUpdatedAt: NOW, idempotencyKey: KEY }))
+      .toMatchObject({ operationId: KEY, trashId: TRASH_ID, rootId: ITEM_ID });
+    expect(rpc.mock.calls.some(([name]) => name === "trash_workspace_entity")).toBe(false);
+  });
+
+  it("recovers the committed link receipt when the deleting RPC response is lost", async () => {
+    const { service, committedReceipt, rpc } = trashSetup();
+    const original = rpc.getMockImplementation()!;
+    rpc.mockImplementation((name, args) => {
+      if (name !== "trash_workspace_link_if_unchanged") return original(name, args);
+      committedReceipt();
+      return Promise.resolve({ data: null, error: { code: "XX000", message: "connection lost after commit token=secret" } });
+    });
+    expect(await service.deleteCollectionItem({ itemId: ITEM_ID, expectedUpdatedAt: NOW, idempotencyKey: KEY }))
+      .toEqual({ operationId: KEY, trashId: TRASH_ID, rootType: "link", rootId: ITEM_ID, restoreUntil: RESTORE_UNTIL });
+    expect(rpc.mock.calls.filter(([name]) => name === "trash_workspace_link_if_unchanged")).toHaveLength(1);
+  });
+
+  it.each([{ itemId: ITEM_ID, expectedUpdatedAt: NOW }, { itemId: ITEM_ID, idempotencyKey: KEY },
+    { itemId: ITEM_ID, expectedUpdatedAt: NOW, idempotencyKey: KEY, source: "web" }])("rejects incomplete or spoofed immediate deletion input %#", async (input) => {
+    const { service, rpc, reads } = trashSetup();
+    await expect(service.deleteCollectionItem(input)).rejects.toMatchObject({ code: "validation_failed" });
+    expect(rpc).not.toHaveBeenCalled();
+    expect(reads).toEqual([]);
+  });
+
+  it("does not replay a different operation after a link disappeared", async () => {
+    const { service } = trashSetup({ ...INITIAL, links: [] });
+    await expect(service.deleteCollectionItem({ itemId: ITEM_ID, expectedUpdatedAt: NOW, idempotencyKey: OTHER_ITEM_ID })).rejects.toMatchObject({ code: "not_found" });
+  });
+
+  it("rejects reusing a deletion operation for a different target", async () => {
+    const { service, committedReceipt } = trashSetup();
+    committedReceipt();
+    await expect(service.deleteCollectionItem({ itemId: OTHER_ITEM_ID, expectedUpdatedAt: NOW, idempotencyKey: KEY })).rejects.toMatchObject({ code: "conflict" });
+  });
+
+  it("rejects stale link deletion without writing", async () => {
+    const { service, rpc } = trashSetup();
+    await expect(service.deleteCollectionItem({ itemId: ITEM_ID, expectedUpdatedAt: OLD, idempotencyKey: KEY })).rejects.toMatchObject({ code: "conflict" });
+    expect(rpc.mock.calls.some(([name]) => name === "trash_workspace_entity")).toBe(false);
+  });
+
+  it.each(["space", "collection", "link"] as const)("rejects destructive operations with read-only %s membership", async (type) => {
+    const initial: WorkspaceSnapshot = structuredClone(INITIAL);
+    if (type === "space") initial.spaces[0].read_only = true;
+    if (type === "collection") initial.collections[0].read_only = true;
+    if (type === "link") initial.links[0] = { ...initial.links[0], origin: "browser-bookmark", read_only: true };
+    const { service, rpc } = trashSetup(initial);
+    await expect(service.prepareDeleteSpace({ spaceId: SPACE_ID })).rejects.toMatchObject({ code: "read_only" });
+    await expect(service.prepareDeleteCollection({ collectionId: COLLECTION_ID })).rejects.toMatchObject({ code: "read_only" });
+    await expect(service.deleteCollectionItem({ itemId: ITEM_ID, expectedUpdatedAt: NOW, idempotencyKey: KEY })).rejects.toMatchObject({ code: "read_only" });
+    expect(rpc.mock.calls.every(([name]) => name === "load_workspace_snapshot")).toBe(true);
+  });
+
+  it("lists decoded Trash entries using the request client", async () => {
+    const { service, rpc } = trashSetup();
+    expect(await service.listTrash()).toMatchObject([{ id: TRASH_ID, rootType: "link", rootId: ITEM_ID, restoredAt: null, snapshot: { links: [LINK] } }]);
+    expect(rpc).toHaveBeenCalledWith("list_workspace_trash");
+  });
+
+  it("excludes expired and restored Trash entries", async () => {
+    const { service, rpc } = trashSetup();
+    const original = rpc.getMockImplementation()!;
+    rpc.mockImplementation(async (name, args) => {
+      const response = await original(name, args);
+      if (name !== "list_workspace_trash") return response;
+      const [entry] = response.data as Array<Record<string, unknown>>;
+      return { data: [entry, { ...entry, restoredAt: NOW }, { ...entry, expiresAt: OLD }], error: null };
+    });
+    expect(await service.listTrash()).toHaveLength(1);
+  });
+
+  it("does not expose another owner's Trash snapshot", async () => {
+    const { service, trash } = trashSetup();
+    trash.snapshot.links = [{ ...LINK, user_id: KEY }];
+    await expect(service.listTrash()).rejects.toMatchObject({ code: "validation_failed" });
+  });
+
+  it("rejects foreign Trash rows before restoration", async () => {
+    const { service, trash, rpc, reads } = trashSetup();
+    trash.user_id = KEY;
+    await expect(service.restoreTrashItem({ trashId: TRASH_ID })).rejects.toMatchObject({ code: "not_found" });
+    expect(reads).toContainEqual({ table: "workspace_trash", filters: { user_id: USER, id: TRASH_ID } });
+    expect(rpc).not.toHaveBeenCalled();
+  });
+
+  it("rejects browser data in a recovery snapshot before writing", async () => {
+    const { service, trash, rpc } = trashSetup();
+    trash.snapshot.links = [{ ...LINK, read_only: true }];
+    await expect(service.restoreTrashItem({ trashId: TRASH_ID })).rejects.toMatchObject({ code: "validation_failed" });
+    expect(rpc).not.toHaveBeenCalled();
+  });
+
+  it("surfaces an expired Trash rejection without leaking database details", async () => {
+    const { service, rpc } = trashSetup();
+    const original = rpc.getMockImplementation()!;
+    rpc.mockImplementation((name, args) => name === "restore_workspace_trash"
+      ? Promise.resolve({ data: null, error: { code: "P0002", message: "expired trash private SQL token=secret" } }) : original(name, args));
+    const error = await service.restoreTrashItem({ trashId: TRASH_ID }).catch((value: unknown) => value);
+    expect(error).toMatchObject({ code: "not_found" });
+    expect(String(error)).not.toContain("secret");
+  });
+
+  it("returns structured destination_required when the original collection is missing", async () => {
+    const { service, rpc } = trashSetup({ ...INITIAL, collections: [], links: [] });
+    const original = rpc.getMockImplementation()!;
+    rpc.mockImplementation((name, args) => name === "restore_workspace_trash" ? Promise.resolve({ data: { status: "destination_required", trashId: TRASH_ID, rootType: "link", rootId: ITEM_ID, destinationType: "collection" }, error: null }) : original(name, args));
+    expect(await service.restoreTrashItem({ trashId: TRASH_ID })).toEqual({ status: "destination_required", trashId: TRASH_ID, rootType: "link", rootId: ITEM_ID, destinationType: "collection" });
+    expect(rpc).toHaveBeenCalledWith("restore_workspace_trash", { p_trash_id: TRASH_ID, p_destination_id: null });
+  });
+
+  it("reads the fresh post-restore snapshot after an absent link appears in an alternate destination", async () => {
+    const { service, rpc } = trashSetup({ ...INITIAL, collections: [{ ...COLLECTION, id: DESTINATION_ID }], links: [] });
+    const original = rpc.getMockImplementation()!;
+    let restored = false;
+    rpc.mockImplementation(async (name, args) => {
+      if (name === "restore_workspace_trash") restored = true;
+      if (name === "load_workspace_snapshot" && restored) return { data: { revision: 8, snapshot: {
+        ...INITIAL, collections: [{ ...COLLECTION, id: DESTINATION_ID }], links: [{ ...LINK, collection_id: DESTINATION_ID, position: 2, updated_at: LATER }],
+      } }, error: null };
+      return original(name, args);
+    });
+    expect((await service.getWorkspace()).snapshot.links).toEqual([]);
+    expect(await service.restoreTrashItem({ trashId: TRASH_ID, destinationId: DESTINATION_ID }))
+      .toMatchObject({ status: "restored", trashId: TRASH_ID, revision: 8, snapshot: { links: [{ id: ITEM_ID, collection_id: DESTINATION_ID, position: 2, updated_at: LATER }] } });
+    expect(rpc).toHaveBeenCalledWith("restore_workspace_trash", { p_trash_id: TRASH_ID, p_destination_id: DESTINATION_ID });
+  });
+
+  it("lets the database replay already-restored entries even if the old destination is gone", async () => {
+    const { service, trash, rpc } = trashSetup({ ...INITIAL, collections: [], links: [] });
+    trash.restored_at = LATER;
+    expect(await service.restoreTrashItem({ trashId: TRASH_ID, destinationId: DESTINATION_ID })).toMatchObject({ status: "restored", trashId: TRASH_ID });
+    expect(rpc).toHaveBeenCalledWith("restore_workspace_trash", { p_trash_id: TRASH_ID, p_destination_id: DESTINATION_ID });
+  });
+
+  it.each(["missing", "read_only"])("rejects a %s alternate restore destination before writing", async (kind) => {
+    const { service, rpc } = trashSetup({ ...INITIAL, collections: kind === "missing" ? [COLLECTION] : [COLLECTION, { ...COLLECTION, id: DESTINATION_ID, read_only: true }] });
+    await expect(service.restoreTrashItem({ trashId: TRASH_ID, destinationId: DESTINATION_ID })).rejects.toMatchObject({ code: kind === "missing" ? "not_found" : "read_only" });
+    expect(rpc.mock.calls.some(([name]) => name === "restore_workspace_trash")).toBe(false);
+  });
+
+  it.each(["list_workspace_trash", "prepare_workspace_delete", "trash_workspace_entity", "restore_workspace_trash"])("rejects malformed %s responses", async (badRpc) => {
+    const { service, rpc } = trashSetup();
+    const original = rpc.getMockImplementation()!;
+    rpc.mockImplementation((name, args) => name === badRpc ? Promise.resolve({ data: { secret: "private" }, error: null }) : original(name, args));
+    const call = badRpc === "list_workspace_trash" ? service.listTrash() : badRpc === "prepare_workspace_delete" ? service.prepareDeleteCollection({ collectionId: COLLECTION_ID })
+      : badRpc === "trash_workspace_entity" ? service.confirmDeleteCollection({ intentId: INTENT_ID }) : service.restoreTrashItem({ trashId: TRASH_ID });
+    await expect(call).rejects.toMatchObject({ code: "validation_failed" });
+  });
+});
+
+// Only the external database boundary is substituted. Commands, validation,
+// ownership filtering, replay handling, and concurrency decisions stay real.
+function setup(initial: WorkspaceSnapshot = INITIAL) {
+  let snapshot = structuredClone(initial);
+  let revision = 7;
+  let beforeApply: (() => void) | undefined;
+  let beforeLoad: (() => Promise<void>) | undefined;
+  let rpcError: { code: string; message: string } | undefined;
+  const receipts = new Map<string, { operation_id: string; command_name: string; command_hash: string; response: { revision: number; snapshot: WorkspaceSnapshot } }>();
+  const appliedIds = new Set<string>();
+  const writes: WorkspaceOperation[] = [];
+  const tableFor = (entity: string) => entity === "space" ? "spaces" : entity === "collection" ? "collections" : "links";
+  const rpc = vi.fn(async (name: string, args?: Record<string, unknown>): Promise<{ data: unknown; error: { code: string; message: string } | null }> => {
+    if (rpcError) return { data: null, error: rpcError };
+    if (name === "load_workspace_snapshot") {
+      if (beforeLoad) { const hook = beforeLoad; beforeLoad = undefined; await hook(); }
+      return { data: { revision, snapshot: structuredClone(snapshot) }, error: null };
+    }
+    if (name !== "apply_workspace_command") throw new Error(`Unexpected RPC ${name}`);
+    if (beforeApply) { const hook = beforeApply; beforeApply = undefined; hook(); }
+    const receipt = receipts.get(String(args?.p_operation_id));
+    if (receipt) return receipt.command_hash === args?.p_command_hash && receipt.command_name === args?.p_command_name
+      ? { data: structuredClone(receipt.response), error: null }
+      : { data: null, error: { code: "40001", message: "workspace command idempotency conflict" } };
+    if (args?.p_expected_revision !== revision) return { data: null, error: { code: "40001", message: "workspace revision conflict" } };
+    const operations = args.p_operations as WorkspaceOperation[];
+    let changed = false;
+    for (const operation of operations) {
+      if (!isWorkspaceOperation(operation)) throw new Error("Service emitted an invalid workspace operation");
+      if (appliedIds.has(operation.operationId)) throw new Error("Partial command replay");
+      writes.push(structuredClone(operation));
+      const table = tableFor(operation.entity);
+      if (operation.action === "create") {
+        // The real sync RPC upserts, so an accidental second create would overwrite.
+        const row = { ...META, ...operation.payload, ...(table === "links" ? { device_label: null } : {}) };
+        snapshot = { ...snapshot, [table]: [...snapshot[table].filter((item) => item.id !== operation.entityId), row] };
+      } else if (operation.action === "update") {
+        snapshot = { ...snapshot, [table]: snapshot[table].map((row) => row.id === operation.entityId ? { ...row, ...operation.payload, updated_at: LATER } : row) };
+      } else if (operation.action === "reorder") {
+        const members = snapshot.links.filter((row) => row.collection_id === operation.payload.parentId);
+        if (members.length !== operation.payload.orderedIds.length || members.some((row) => !operation.payload.orderedIds.includes(row.id))) throw new Error("Invalid reorder membership");
+        snapshot = { ...snapshot, [table]: snapshot[table].map((row) => operation.payload.orderedIds.includes(row.id) ? { ...row, position: operation.payload.orderedIds.indexOf(row.id), updated_at: LATER } : row) };
+      } else throw new Error("Task 4 must not issue a destructive sync operation");
+      changed ||= operation.action !== "reorder" || operation.payload.orderedIds.length > 0;
+      appliedIds.add(operation.operationId);
+    }
+    if (changed) revision += 1;
+    const root = operations[0];
+    const links = root.entity === "link" ? snapshot.links.filter((row) => root.action === "reorder" ? row.collection_id === root.payload.parentId : row.id === root.entityId) : [];
+    const collections = snapshot.collections.filter((row) => root.entity === "collection" ? row.id === root.entityId : root.action === "reorder" ? row.id === root.payload.parentId : links.some((link) => link.collection_id === row.id));
+    const spaces = snapshot.spaces.filter((row) => root.entity === "space" ? row.id === root.entityId : collections.some((collection) => collection.space_id === row.id));
+    const response = structuredClone({ revision, snapshot: { spaces, collections, links } });
+    receipts.set(String(args.p_operation_id), { operation_id: String(args.p_operation_id), command_name: String(args.p_command_name), command_hash: String(args.p_command_hash), response });
+    return { data: structuredClone(response), error: null };
+  });
+  const from = vi.fn((table: string) => {
+    if (table !== "workspace_command_receipts") throw new Error(`Unexpected table ${table}`);
+    const filters: Record<string, unknown> = {};
+    const query = {
+      select: vi.fn(() => query),
+      eq: vi.fn((key: string, value: unknown) => { filters[key] = value; return query; }),
+      maybeSingle: async () => ({ data: filters.user_id === USER ? structuredClone(receipts.get(String(filters.operation_id)) ?? null) : null, error: null }),
+    };
+    return query;
+  });
+  const context: TabloomRequestContext = { userId: USER, clientId: "mcp-client", scope: "tabloom:workspace", supabase: { rpc, from } as unknown as SupabaseClient };
+  return {
+    service: new WorkspaceCommandService(context), context, writes, rpc,
+    state: () => structuredClone(snapshot),
+    deleteSpaceExternally: (id: string) => { snapshot.spaces = snapshot.spaces.filter((item) => item.id !== id); revision += 1; },
+    beforeNextLoad: (hook: () => Promise<void>) => { beforeLoad = hook; },
+    concurrentChange: (change: (current: WorkspaceSnapshot) => void) => { beforeApply = () => { change(snapshot); revision += 1; }; },
+    failWith: (error: { code: string; message: string }) => { rpcError = error; },
+  };
+}
+
+describe("request-scoped workspace commands", () => {
+  it("lists only authenticated saved records and uses stable IDs", async () => {
+    const foreign = { ...SPACE, id: DESTINATION_ID, user_id: KEY };
+    const bookmark = { ...SPACE, id: OTHER_ITEM_ID, origin: "browser-bookmark" as const, read_only: true };
+    const { service } = setup({ ...INITIAL, spaces: [SPACE, foreign, bookmark] });
+    expect(await service.listSpaces()).toEqual([SPACE]);
+    expect(await service.listCollections({ spaceId: SPACE_ID })).toEqual([COLLECTION]);
+    expect(await service.listCollectionItems({ collectionId: COLLECTION_ID })).toEqual([LINK]);
+    expect(await service.getWorkspace()).toMatchObject({ revision: 7, snapshot: INITIAL });
+  });
+
+  it("searches across synchronized collections and returns stable parent IDs", async () => {
+    const { service } = setup();
+    expect(await service.searchWorkspace({ query: "research" })).toMatchObject([{ link: { id: ITEM_ID }, collection: { id: COLLECTION_ID }, space: { id: SPACE_ID } }]);
+  });
+
+  it("returns the same not_found for missing and foreign records", async () => {
+    const { service } = setup({ ...INITIAL, spaces: [SPACE, { ...SPACE, id: DESTINATION_ID, user_id: KEY }] });
+    for (const spaceId of [DESTINATION_ID, KEY]) {
+      await expect(service.listCollections({ spaceId })).rejects.toMatchObject({ code: "not_found" });
+    }
+  });
+
+  it("rejects stale updates before writing with current timestamp metadata", async () => {
+    const { service, writes } = setup();
+    await expect(service.updateSpace({ spaceId: SPACE_ID, expectedUpdatedAt: OLD, name: "Renamed", idempotencyKey: KEY })).rejects.toMatchObject({ code: "conflict", details: { id: SPACE_ID, updatedAt: NOW } });
+    expect(writes).toEqual([]);
+  });
+
+  it("updates a space using the caller operation ID and current revision", async () => {
+    const { service, writes } = setup();
+    expect(await service.updateSpace({ spaceId: SPACE_ID, expectedUpdatedAt: NOW, name: " Renamed ", idempotencyKey: KEY })).toMatchObject({ id: SPACE_ID, name: "Renamed" });
+    expect(writes).toMatchObject([{ operationId: KEY, entity: "space", entityId: SPACE_ID, action: "update", baseRevision: 7, payload: { name: "Renamed" } }]);
+  });
+
+  it("creates once and replays the same result even across request-scoped services", async () => {
+    const { service, context, state, writes } = setup();
+    const input = { name: "New space", color: "#123456", idempotencyKey: KEY };
+    const created = await service.createSpace(input);
+    expect(created).toMatchObject({ name: "New space", position: 1, user_id: USER });
+    expect(await service.createSpace(input)).toEqual(created);
+    expect(await new WorkspaceCommandService(context).createSpace(input)).toEqual(created);
+    expect(writes).toHaveLength(1);
+    expect(state().spaces).toHaveLength(2);
+  });
+
+  it("rejects different input reusing a durable idempotency key", async () => {
+    const { service, context, writes } = setup();
+    await service.createSpace({ name: "New", color: "#123456", idempotencyKey: KEY });
+    await expect(new WorkspaceCommandService(context).createSpace({ name: "Different", color: "#123456", idempotencyKey: KEY })).rejects.toMatchObject({ code: "conflict" });
+    expect(writes).toHaveLength(1);
+  });
+
+  it("replays the original create response after a subsequent edit", async () => {
+    const { service, context, writes } = setup();
+    const input = { name: "Original", color: "#123456", idempotencyKey: KEY };
+    const original = await service.createSpace(input);
+    await service.updateSpace({ spaceId: original.id, expectedUpdatedAt: original.updated_at, name: "Later edit", idempotencyKey: OTHER_ITEM_ID });
+    expect(await new WorkspaceCommandService(context).createSpace(input)).toEqual(original);
+    expect(writes).toHaveLength(2);
+  });
+
+  it("replays the original create response after deletion without resurrecting it", async () => {
+    const { service, context, writes, state, deleteSpaceExternally } = setup();
+    const input = { name: "Original", color: "#123456", idempotencyKey: KEY };
+    const original = await service.createSpace(input);
+    deleteSpaceExternally(original.id);
+    expect(await new WorkspaceCommandService(context).createSpace(input)).toEqual(original);
+    expect(state().spaces).toEqual([SPACE]);
+    expect(writes).toHaveLength(1);
+  });
+
+  it("replays a successful update without treating its original timestamp as stale", async () => {
+    const { service, context, writes } = setup();
+    const input = { spaceId: SPACE_ID, expectedUpdatedAt: NOW, name: "Renamed", idempotencyKey: KEY };
+    const result = await service.updateSpace(input);
+    expect(await new WorkspaceCommandService(context).updateSpace(input)).toEqual(result);
+    expect(writes).toHaveLength(1);
+  });
+
+  it("creates a collection under the owned destination", async () => {
+    const { service } = setup();
+    expect(await service.createCollection({ spaceId: SPACE_ID, name: "New collection", idempotencyKey: KEY })).toMatchObject({ space_id: SPACE_ID, name: "New collection", position: 1 });
+  });
+
+  it("updates a collection by ID", async () => {
+    const { service } = setup();
+    expect(await service.updateCollection({ collectionId: COLLECTION_ID, name: "Renamed", expectedUpdatedAt: NOW, idempotencyKey: KEY })).toMatchObject({ id: COLLECTION_ID, name: "Renamed" });
+  });
+
+  it("creates and edits http links with strict editable fields", async () => {
+    const { service } = setup();
+    expect(await service.createCollectionItem({ collectionId: COLLECTION_ID, title: "New link", url: "http://example.org", idempotencyKey: KEY })).toMatchObject({ collection_id: COLLECTION_ID, title: "New link", description: "", favicon_url: null, position: 1 });
+    expect(await service.updateCollectionItem({ itemId: ITEM_ID, expectedUpdatedAt: NOW, title: "Updated", description: " Notes ", url: "https://example.org", idempotencyKey: OTHER_ITEM_ID })).toMatchObject({ id: ITEM_ID, title: "Updated", description: "Notes", url: "https://example.org" });
+  });
+
+  it.each(["javascript:alert(1)", "file:///private", "chrome://bookmarks", "ftp://example.com"])("rejects unsafe URL %s before querying", async (url) => {
+    const { service, rpc } = setup();
+    await expect(service.createCollectionItem({ collectionId: COLLECTION_ID, title: "New", url, idempotencyKey: KEY })).rejects.toMatchObject({ code: "validation_failed" });
+    await expect(service.updateCollectionItem({ itemId: ITEM_ID, expectedUpdatedAt: NOW, url, idempotencyKey: KEY })).rejects.toMatchObject({ code: "validation_failed" });
+    expect(rpc).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { itemId: "not-an-id", expectedUpdatedAt: NOW, title: "New" },
+    { itemId: ITEM_ID, expectedUpdatedAt: "yesterday", title: "New" },
+    { itemId: ITEM_ID, expectedUpdatedAt: NOW },
+    { itemId: ITEM_ID, expectedUpdatedAt: NOW, user_id: KEY, title: "New" },
+    { itemId: ITEM_ID, expectedUpdatedAt: NOW, title: " " },
+  ])("rejects malformed or non-editable update input %#", async (input) => {
+    const { service, rpc } = setup();
+    await expect(service.updateCollectionItem({ ...input, idempotencyKey: KEY })).rejects.toMatchObject({ code: "validation_failed" });
+    expect(rpc).not.toHaveBeenCalled();
+  });
+
+  it("preserves read-only metadata and rejects bookmark mutations", async () => {
+    const { service, writes } = setup({ ...INITIAL, links: [{ ...LINK, origin: "browser-bookmark", read_only: true }] });
+    expect(await service.listCollectionItems({ collectionId: COLLECTION_ID })).toEqual([]);
+    await expect(service.updateCollectionItem({ itemId: ITEM_ID, expectedUpdatedAt: NOW, title: "Changed", idempotencyKey: KEY })).rejects.toMatchObject({ code: "read_only" });
+    expect(writes).toEqual([]);
+  });
+
+  it("moves an item between owned writable collections", async () => {
+    const { service, state } = setup({ ...INITIAL, collections: [COLLECTION, { ...COLLECTION, id: DESTINATION_ID, name: "Destination" }] });
+    expect(await service.moveCollectionItem({ itemId: ITEM_ID, destinationCollectionId: DESTINATION_ID, expectedUpdatedAt: NOW, idempotencyKey: KEY })).toMatchObject({ id: ITEM_ID, collection_id: DESTINATION_ID });
+    expect(state().links).toHaveLength(1);
+  });
+
+  it("atomically closes source gaps and appends into a populated destination", async () => {
+    const { service, state, rpc } = setup({ ...INITIAL,
+      collections: [COLLECTION, { ...COLLECTION, id: DESTINATION_ID, name: "Destination" }],
+      links: [LINK, { ...LINK, id: OTHER_ITEM_ID, position: 1 }, { ...LINK, id: KEY, collection_id: DESTINATION_ID, position: 0 }],
+    });
+    await service.moveCollectionItem({ itemId: ITEM_ID, destinationCollectionId: DESTINATION_ID, expectedUpdatedAt: NOW, idempotencyKey: KEY });
+    const links = state().links;
+    expect(links.filter((item) => item.collection_id === COLLECTION_ID)).toMatchObject([{ id: OTHER_ITEM_ID, position: 0 }]);
+    expect(links.filter((item) => item.collection_id === DESTINATION_ID).sort((a, b) => a.position - b.position)).toMatchObject([{ id: KEY, position: 0 }, { id: ITEM_ID, position: 1 }]);
+    expect(rpc.mock.calls.filter(([name]) => name.startsWith("apply_workspace_"))).toHaveLength(1);
+  });
+
+  it.each([COLLECTION_ID, DESTINATION_ID])("rejects a move with read-only membership in %s", async (parentId) => {
+    const { service, writes } = setup({ ...INITIAL,
+      collections: [COLLECTION, { ...COLLECTION, id: DESTINATION_ID }],
+      links: [LINK, { ...LINK, id: OTHER_ITEM_ID, collection_id: parentId, read_only: true, position: 1 }],
+    });
+    await expect(service.moveCollectionItem({ itemId: ITEM_ID, destinationCollectionId: DESTINATION_ID, expectedUpdatedAt: NOW, idempotencyKey: KEY })).rejects.toMatchObject({ code: "read_only" });
+    expect(writes).toEqual([]);
+  });
+
+  it.each(["missing", "foreign", "read_only"])("rejects a %s move destination", async (kind) => {
+    const destination = { ...COLLECTION, id: DESTINATION_ID, user_id: kind === "foreign" ? KEY : USER, read_only: kind === "read_only" };
+    const { service, writes } = setup({ ...INITIAL, collections: kind === "missing" ? [COLLECTION] : [COLLECTION, destination] });
+    await expect(service.moveCollectionItem({ itemId: ITEM_ID, destinationCollectionId: DESTINATION_ID, expectedUpdatedAt: NOW, idempotencyKey: KEY })).rejects.toMatchObject({ code: kind === "read_only" ? "read_only" : "not_found" });
+    expect(writes).toEqual([]);
+  });
+
+  it("reorders exactly the current membership at the expected revision", async () => {
+    const { service } = setup({ ...INITIAL, links: [LINK, { ...LINK, id: OTHER_ITEM_ID, position: 1 }] });
+    expect(await service.reorderCollectionItems({ collectionId: COLLECTION_ID, orderedIds: [OTHER_ITEM_ID, ITEM_ID], expectedRevision: 7, idempotencyKey: KEY })).toMatchObject([{ id: OTHER_ITEM_ID, position: 0 }, { id: ITEM_ID, position: 1 }]);
+  });
+
+  it.each([{ orderedIds: [ITEM_ID] }, { orderedIds: [ITEM_ID, ITEM_ID] }, { orderedIds: [ITEM_ID, KEY] }])("rejects invalid reorder membership $orderedIds", async ({ orderedIds }) => {
+    const { service, writes } = setup({ ...INITIAL, links: [LINK, { ...LINK, id: OTHER_ITEM_ID, position: 1 }] });
+    await expect(service.reorderCollectionItems({ collectionId: COLLECTION_ID, orderedIds, expectedRevision: 7, idempotencyKey: KEY })).rejects.toMatchObject({ code: "validation_failed" });
+    expect(writes).toEqual([]);
+  });
+
+  it("revalidates and retries once after an unrelated revision change", async () => {
+    const { service, concurrentChange, rpc } = setup();
+    concurrentChange((state) => { state.links[0].title = "Concurrent link edit"; });
+    expect(await service.updateSpace({ spaceId: SPACE_ID, expectedUpdatedAt: NOW, name: "Renamed", idempotencyKey: KEY })).toMatchObject({ name: "Renamed" });
+    expect(rpc.mock.calls.filter(([name]) => name === "apply_workspace_command").map(([, args]) => args?.p_expected_revision)).toEqual([7, 8]);
+  });
+
+  it("rejects an edit when the target changes during a revision retry", async () => {
+    const { service, concurrentChange, writes } = setup();
+    concurrentChange((state) => { state.spaces[0].name = "Other edit"; state.spaces[0].updated_at = LATER; });
+    await expect(service.updateSpace({ spaceId: SPACE_ID, expectedUpdatedAt: NOW, name: "Renamed", idempotencyKey: KEY })).rejects.toMatchObject({ code: "conflict", details: { updatedAt: LATER } });
+    expect(writes).toEqual([]);
+  });
+
+  it("rejects stale reorder revisions even if record membership is unchanged", async () => {
+    const { service, concurrentChange, writes } = setup();
+    concurrentChange(() => {});
+    await expect(service.reorderCollectionItems({ collectionId: COLLECTION_ID, orderedIds: [ITEM_ID], expectedRevision: 7, idempotencyKey: KEY })).rejects.toMatchObject({ code: "conflict" });
+    expect(writes).toEqual([]);
+  });
+
+  it("serializes concurrent create replays across independent requests", async () => {
+    const { context, writes, state } = setup();
+    const input = { name: "Concurrent", color: "#123456", idempotencyKey: KEY };
+    const [first, second] = await Promise.all([
+      new WorkspaceCommandService(context).createSpace(input),
+      new WorkspaceCommandService(context).createSpace(input),
+    ]);
+    expect(first).toEqual(second);
+    expect(state().spaces).toHaveLength(2);
+    expect(writes).toHaveLength(1);
+  });
+
+  it("replays a creation completed between the receipt lookup and snapshot read", async () => {
+    const { service, context, writes, beforeNextLoad } = setup();
+    const input = { name: "Concurrent", color: "#123456", idempotencyKey: KEY };
+    let original: unknown;
+    beforeNextLoad(async () => { original = await new WorkspaceCommandService(context).createSpace(input); });
+    expect(await service.createSpace(input)).toEqual(original);
+    expect(writes).toHaveLength(1);
+  });
+
+  it("preserves microsecond timestamp precision when rejecting stale edits", async () => {
+    const { service, writes } = setup({ ...INITIAL, spaces: [{ ...SPACE, updated_at: "2026-09-10T00:00:00.000002Z" }] });
+    await expect(service.updateSpace({ spaceId: SPACE_ID, expectedUpdatedAt: "2026-09-10T00:00:00.000001Z", name: "Stale", idempotencyKey: KEY })).rejects.toMatchObject({ code: "conflict" });
+    expect(writes).toEqual([]);
+  });
+
+  it("rejects mutation below a read-only parent", async () => {
+    const { service, writes } = setup({ ...INITIAL, spaces: [{ ...SPACE, read_only: true }] });
+    expect(await service.searchWorkspace({ query: "Tabloom" })).toEqual([]);
+    await expect(service.updateCollectionItem({ itemId: ITEM_ID, expectedUpdatedAt: NOW, title: "Changed", idempotencyKey: KEY })).rejects.toMatchObject({ code: "read_only" });
+    await expect(service.createCollection({ spaceId: SPACE_ID, name: "New", idempotencyKey: KEY })).rejects.toMatchObject({ code: "read_only" });
+    expect(writes).toEqual([]);
+  });
+
+  it("rejects create destinations outside the current workspace", async () => {
+    const { service, writes } = setup();
+    await expect(service.createCollection({ spaceId: DESTINATION_ID, name: "New", idempotencyKey: KEY })).rejects.toMatchObject({ code: "not_found" });
+    await expect(service.createCollectionItem({ collectionId: DESTINATION_ID, title: "New", url: "https://example.org", idempotencyKey: KEY })).rejects.toMatchObject({ code: "not_found" });
+    expect(writes).toEqual([]);
+  });
+
+  it("rejects reordering when one current member is read-only", async () => {
+    const { service, writes } = setup({ ...INITIAL, links: [{ ...LINK, read_only: true }] });
+    await expect(service.reorderCollectionItems({ collectionId: COLLECTION_ID, orderedIds: [ITEM_ID], expectedRevision: 7, idempotencyKey: KEY })).rejects.toMatchObject({ code: "read_only" });
+    expect(writes).toEqual([]);
+  });
+
+  it("returns a stable error for malformed synchronized data", async () => {
+    const { service, rpc } = setup();
+    rpc.mockResolvedValueOnce({ data: { revision: -1, snapshot: INITIAL }, error: null });
+    await expect(service.getWorkspace()).rejects.toMatchObject({ code: "validation_failed" });
+  });
+
+  it("retries a write revision conflict at most once", async () => {
+    const { service, rpc, writes } = setup();
+    const implementation = rpc.getMockImplementation()!;
+    rpc.mockImplementation(async (name, args) => name === "apply_workspace_command"
+      ? { data: null, error: { code: "40001", message: "concurrent edit" } }
+      : implementation(name, args));
+    await expect(service.updateSpace({ spaceId: SPACE_ID, expectedUpdatedAt: NOW, name: "Renamed", idempotencyKey: KEY })).rejects.toMatchObject({ code: "conflict" });
+    expect(rpc.mock.calls.filter(([name]) => name === "apply_workspace_command")).toHaveLength(2);
+    expect(writes).toEqual([]);
+  });
+
+  it.each([
+    ["P0002", "not_found"], ["23503", "not_found"], ["42501", "not_found"],
+    ["40001", "conflict"], ["22023", "validation_failed"], ["22P02", "validation_failed"], ["23514", "validation_failed"], ["23505", "conflict"],
+  ])("maps database error %s without leaking SQL or secrets", async (code, expectedCode) => {
+    const { service, failWith } = setup();
+    failWith({ code, message: "private SQL with access_token=secret" });
+    const error = await service.listSpaces().catch((value: unknown) => value);
+    expect(error).toMatchObject({ code: expectedCode });
+    expect(String(error)).not.toContain("private SQL");
+    expect(String(error)).not.toContain("secret");
+  });
+
+  it("preserves an unexpected service failure for correlation at the MCP boundary", async () => {
+    const { service, failWith } = setup();
+    const unexpected = { code: "XX000", message: "provider failure" };
+    failWith(unexpected);
+    await expect(service.listSpaces()).rejects.toBe(unexpected);
+  });
+
+  it("sanitizes already-classified repository errors and excludes private details", () => {
+    const error = mapWorkspaceCommandError(new WorkspaceCommandError("conflict", "SQL with token=secret", { id: ITEM_ID, updatedAt: NOW, access_token: "secret" }));
+    expect(error).toMatchObject({ code: "conflict", details: { id: ITEM_ID, updatedAt: NOW } });
+    expect(error.message).not.toContain("secret");
+    expect(error.details).not.toHaveProperty("access_token");
+  });
+});

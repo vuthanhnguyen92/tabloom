@@ -4,10 +4,15 @@ import {
   type CreateCollectionInput,
   type CreateLinkInput,
   type CreateSpaceInput,
+  type MoveLinkInput,
+  type MoveCollectionInput,
   type WorkspaceRepository,
 } from "../shared/repository";
 import { coalesceWorkspaceOperations, type WorkspaceOperation } from "../shared/workspace-operations";
 import { LocalFirstStorage } from "./local-first-storage";
+import type { LocalTrashMutation, LocalTrashCommit } from "./local-trash-repository";
+import { LocallyCommittedTrashError, WorkspaceCommandError } from "../shared/trash";
+import { WorkspaceConflictActionRequiredError } from "./workspace-sync-errors";
 
 export type LocalMutationListener = (operations: WorkspaceOperation[]) => Promise<void>;
 
@@ -34,6 +39,8 @@ function createIntent(entity: WorkspaceOperation["entity"], record: Space | Coll
 }
 
 export class LocalFirstWorkspaceRepository implements WorkspaceRepository {
+  readonly syncsTrash = true;
+  get trashOwnerId() { return this.userId; }
   private constructor(
     private readonly userId: string,
     private readonly storage: LocalFirstStorage,
@@ -58,6 +65,41 @@ export class LocalFirstWorkspaceRepository implements WorkspaceRepository {
 
   async load(): Promise<WorkspaceSnapshot> {
     return (await this.storage.loadOrThrow()).snapshot;
+  }
+  async pendingTrashOperation(operationId: string): Promise<boolean> {
+    return (await this.storage.loadOrThrow()).queue.some((entry) => entry.operation.operationId === operationId);
+  }
+
+  async commitTrash(mutation: LocalTrashMutation | undefined, beforeCommit: (before: WorkspaceSnapshot) => Promise<LocalTrashCommit>): Promise<WorkspaceSnapshot> {
+    const committed = await this.storage.update<{ snapshot: WorkspaceSnapshot; operation: WorkspaceOperation | undefined }>(async (state) => {
+      const existing = mutation && state.queue.find((entry) => entry.operation.operationId === mutation.operationId);
+      if (existing) {
+        // Retries replay the original intent, not a new snapshot/destination
+        // under an old idempotency key. Later local operations remain intact.
+        const queue = state.queue.map((entry) => entry === existing ? { ...entry, state: "waiting" as const } : entry);
+        return [{ ...state, queue }, { snapshot: state.snapshot, operation: existing.operation }];
+      }
+      const { snapshot, values } = await beforeCommit(state.snapshot);
+      if (!mutation) return [{ ...state, snapshot }, { snapshot, operation: undefined }, values];
+      const operation = { operationId: mutation.operationId, deviceId: this.deviceId, sequence: state.nextSequence, entity: mutation.rootType,
+        entityId: mutation.rootId, action: mutation.action, createdAt: new Date().toISOString(), baseRevision: state.revision,
+        payload: mutation.action === "delete" ? {} : { ...(mutation.trashId ? { trashId: mutation.trashId } : { deleteOperationId: mutation.deleteOperationId! }), snapshot: mutation.snapshot!, ...(mutation.destinationId ? { destinationId: mutation.destinationId } : {}) },
+      } as WorkspaceOperation;
+      const queue = [...state.queue, { operation, state: "waiting" as const }];
+      const next = { ...state, snapshot, queue, nextSequence: state.nextSequence + 1 };
+      return [next, { snapshot, operation }, values] as const;
+    });
+    if (committed.operation) {
+      try { await this.onMutation([committed.operation]); }
+      catch (cause) {
+        if (mutation?.action === "restore" && cause instanceof WorkspaceConflictActionRequiredError) {
+          if (cause.message === "destination_required") throw new WorkspaceCommandError("destination_required", "Choose a writable destination.", { destinationType: mutation.rootType === "collection" ? "space" : "collection" });
+          throw new WorkspaceCommandError("conflict", cause.message);
+        }
+        throw new LocallyCommittedTrashError(committed.snapshot, undefined, { cause });
+      }
+    }
+    return committed.operation ? this.load() : committed.snapshot;
   }
 
   private async mutate<T>(
@@ -213,5 +255,20 @@ export class LocalFirstWorkspaceRepository implements WorkspaceRepository {
       },
       () => [{ entity: "link", entityId: collectionId, action: "reorder", payload: { parentId: collectionId, orderedIds } }],
     );
+  }
+
+  moveLink(input: MoveLinkInput): Promise<void> {
+    return this.mutate(
+      (memory) => memory.moveLink(input),
+      () => [
+        { entity: "link", entityId: input.destinationCollectionId, action: "reorder", payload: { parentId: input.destinationCollectionId, orderedIds: input.destinationOrderedIds } },
+        { entity: "link", entityId: input.sourceCollectionId, action: "reorder", payload: { parentId: input.sourceCollectionId, orderedIds: input.sourceOrderedIds } },
+      ],
+    );
+  }
+  moveCollection(input: MoveCollectionInput): Promise<void> {
+    return this.mutate((memory) => memory.moveCollection(input), () => [
+      { entity: "collection", entityId: input.id, action: "move", payload: { sourceSpaceId: input.sourceSpaceId, destinationSpaceId: input.destinationSpaceId } },
+    ]);
   }
 }

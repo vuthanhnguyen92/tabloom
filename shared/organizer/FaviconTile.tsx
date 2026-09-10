@@ -16,7 +16,7 @@ export function FaviconTile({ className = "favicon-tile", src, title }: { classN
     <i className={className} aria-hidden="true">
       <span className="favicon-tile-fallback">{fallback}</span>
       {showImage && (
-        // Favicons are browser-provided URLs and must remain native images in the extension bundle.
+        // Platform-resolved favicons remain native images on both surfaces.
         // eslint-disable-next-line @next/next/no-img-element
         <img alt="" draggable={false} src={src!} onError={() => {
           failedFaviconSources.add(sourceFailureKey!);

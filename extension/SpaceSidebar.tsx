@@ -1,6 +1,7 @@
-import { Check, ChevronLeft, PanelLeftOpen, Pencil, Plus, Trash2, X } from "lucide-react";
+import { Check, Pencil, Plus, Trash2, X } from "lucide-react";
 import { type FormEvent, type ReactNode, useState } from "react";
 import type { Space, WorkspaceSnapshot } from "../shared/domain";
+import { SpaceRail } from "../shared/organizer/SpaceRail";
 import type { WorkspaceRepository } from "../shared/repository";
 
 type EditorState = { mode: "create"; name: string; color: string } | { mode: "edit"; space: Space; name: string; color: string };
@@ -32,11 +33,6 @@ export function SpaceSidebar({ activeSpaceId, brand, onError, onMessage, onReloa
   function beginEdit(space: Space) {
     if (space.read_only || space.origin !== "saved") return;
     setEditor({ mode: "edit", space, name: space.name, color: space.color });
-  }
-
-  function toggleCollapsed() {
-    if (!collapsed) setEditor(null);
-    setCollapsed((current) => !current);
   }
 
   async function saveSpace(event: FormEvent) {
@@ -99,21 +95,31 @@ export function SpaceSidebar({ activeSpaceId, brand, onError, onMessage, onReloa
     </form>;
   }
 
-  return <aside aria-label="Spaces" className={`ext-sidebar ${collapsed ? "collapsed" : "expanded"}`}>
-    <div className="sidebar-top">{!collapsed && brand}<button aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"} className="sidebar-toggle" onClick={toggleCollapsed}>{collapsed ? <PanelLeftOpen size={18} /> : <ChevronLeft size={17} />}</button></div>
-    <div className="space-sidebar-heading">{!collapsed && <span>MY SPACES</span>}<button aria-label="Add space" disabled={!repository || busy} onClick={beginCreate}><Plus size={15} /></button></div>
-    {editor?.mode === "create" && editorForm("Create space")}
-    <div className="space-list">{snapshot.spaces.map((space) => editor?.mode === "edit" && editor.space.id === space.id
-      ? <div className="space-editor-row" key={space.id}>{editorForm(`Edit ${space.name}`)}</div>
-      : <div className={`space-row ${space.id === activeSpaceId ? "active" : ""}`} key={space.id}>
-        <button aria-label={`Select ${space.name}`} className="space-select" title={space.name} onClick={() => onSelect(space.id)}><i style={{ background: space.color }}>{space.name.trim().charAt(0).toUpperCase() || "•"}</i>{!collapsed && <span>{space.name}</span>}</button>
-        {!collapsed && !space.read_only && space.origin === "saved" && <button aria-label={`Edit ${space.name}`} className="space-edit" onClick={() => beginEdit(space)}><Pencil size={13} /></button>}
-      </div>)}</div>
+  return <>
+    {/* Deprecated adapter; Task 3 consumes SpaceRail directly. */}
+    <SpaceRail
+      actions={<button aria-label="Add space" disabled={!repository || busy} type="button" onClick={beginCreate}><Plus size={15} /></button>}
+      activeSpaceId={activeSpaceId}
+      beforeSpaces={editor?.mode === "create" ? editorForm("Create space") : undefined}
+      brand={brand}
+      className="ext-sidebar"
+      collapsed={collapsed}
+      onCollapsedChange={(next) => { if (next) setEditor(null); setCollapsed(next); }}
+      onSelect={onSelect}
+      renderSpace={(space, defaultRow) => editor?.mode === "edit" && editor.space.id === space.id
+        ? <div className="space-editor-row" key={space.id}>{editorForm(`Edit ${space.name}`)}</div>
+        : defaultRow}
+      selectionLabel={(space) => `Select ${space.name}`}
+      spaceActions={(space) => !space.read_only && space.origin === "saved"
+        ? <button aria-label={`Edit ${space.name}`} className="space-edit" type="button" onClick={() => beginEdit(space)}><Pencil size={13} /></button>
+        : undefined}
+      spaces={snapshot.spaces}
+    />
     {pendingDelete && <div className="drop-confirm-backdrop"><section aria-label={`Delete ${pendingDelete.name}`} aria-modal="true" className="drop-confirm" role="dialog">
       <button aria-label="Cancel deleting space" className="dialog-close" disabled={busy} onClick={() => setPendingDelete(null)}><X size={18} /></button>
       <small>DELETE SPACE</small><h2>Delete “{pendingDelete.name}”?</h2>
       <p>This permanently deletes {deleteCollectionCount} collection{deleteCollectionCount === 1 ? "" : "s"} and {deleteLinkCount} saved link{deleteLinkCount === 1 ? "" : "s"}. Open browser tabs will not be closed.</p>
       <div><button disabled={busy} onClick={() => setPendingDelete(null)}>Cancel</button><button className="close-after-save" disabled={busy} onClick={() => void deleteSpace()}>Delete space permanently</button></div>
     </section></div>}
-  </aside>;
+  </>;
 }

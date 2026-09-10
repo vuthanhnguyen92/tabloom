@@ -340,7 +340,7 @@ describe("in-process authorization facade", () => {
     }));
     expect(mcpResponse.status).toBe(200);
     expect(await mcpResponse.text()).toContain(
-      JSON.stringify({ service: "tabloom-mcp", status: "ok" }),
+      JSON.stringify({ service: "tabloom-mcp", status: "ok", mutationsEnabled: false }),
     );
 
     const codeReplay = await exchangeCode(clientId, code);

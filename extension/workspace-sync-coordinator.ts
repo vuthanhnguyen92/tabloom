@@ -19,6 +19,7 @@ import {
 } from "./workspace-sync-errors";
 import type { WorkspaceSyncExclusiveRunner } from "./workspace-sync-lock";
 import type { WorkspaceSyncTransport } from "./workspace-sync-transport";
+import type { DeleteReceipt } from "../shared/trash";
 
 export type WorkspaceSyncState =
   | { phase: "synced"; revision: number; failed: 0; waiting: 0; lastSyncedAt?: string }
@@ -42,6 +43,10 @@ type CoordinatorInput = {
   now?: () => number;
   onSnapshotCommitted?: (snapshot: WorkspaceSnapshot) => void;
   onActionRequired?: (message: string) => void;
+  onDeleteReceipt?: (receipt: DeleteReceipt) => Promise<void>;
+  onDeleteRejected?: (operationId: string, message: string) => Promise<void>;
+  onRestoreCommitted?: (operationId: string) => Promise<void>;
+  onRestoreRejected?: (operationId: string, message: string) => Promise<void>;
 };
 
 function errorMessage(error: unknown): string {
@@ -123,6 +128,7 @@ export class WorkspaceSyncCoordinator implements WorkspaceSyncCoordinatorContrac
   async start(): Promise<void> {
     this.stopped = false;
     const local = await this.input.storage.loadOrThrow();
+    if (this.stopped) return;
     this.observeLocal(local);
     this.unsubscribeStorage?.();
     this.unsubscribeStorage = this.input.storage.subscribe((next) => this.observeLocal(next));
@@ -139,7 +145,9 @@ export class WorkspaceSyncCoordinator implements WorkspaceSyncCoordinatorContrac
     if (this.stopped) return Promise.resolve();
     if (this.activeRead) return this.activeRead;
     const running = this.input.exclusiveRunner.runExclusive(this.input.userId, async () => {
+      if (this.stopped) return;
       const latest = await this.input.storage.normalizeInterruptedAttempts();
+      if (this.stopped) return;
       if (latest.sync.lastRevisionCheckAt
         && latest.sync.lastRevisionCheckAt !== baselineRevisionCheckAt) {
         this.observeLocal(latest);
@@ -238,10 +246,8 @@ export class WorkspaceSyncCoordinator implements WorkspaceSyncCoordinatorContrac
   async retryFailed(): Promise<void> {
     if (this.stopped) throw new WorkspaceOfflineError("Workspace sync is unavailable.");
     const retry = await this.input.storage.update(async (current) => {
-      const firstFailed = current.queue.find((entry) => entry.state === "failed");
-      if (!firstFailed) return [current, { state: current, ids: [] as string[] }] as const;
-      const queue = current.queue.map((entry) => entry.operation.operationId === firstFailed.operation.operationId
-        ? { operation: entry.operation, state: "waiting" as const }
+      const queue = current.queue.map((entry) => entry.state === "failed"
+        ? { ...entry, state: "waiting" as const }
         : entry);
       const next: AccountWorkspaceState = { ...current, queue };
       return [next, { state: next, ids: queue.map((entry) => entry.operation.operationId) }] as const;
@@ -251,7 +257,15 @@ export class WorkspaceSyncCoordinator implements WorkspaceSyncCoordinatorContrac
       return;
     }
     await this.withWriteStatus(async () => {
-      for (const operationId of retry.ids) await this.writeThrough(operationId);
+      let actionRequired: WorkspaceConflictActionRequiredError | undefined;
+      for (const operationId of retry.ids) {
+        try { await this.writeThrough(operationId); }
+        catch (error) {
+          if (!(error instanceof WorkspaceConflictActionRequiredError)) throw error;
+          actionRequired = error;
+        }
+      }
+      if (actionRequired) throw actionRequired;
     });
   }
 
@@ -290,7 +304,7 @@ export class WorkspaceSyncCoordinator implements WorkspaceSyncCoordinatorContrac
         const next: AccountWorkspaceState = {
           ...current,
           queue: current.queue.map((entry) => eligibleIds.has(entry.operation.operationId)
-            ? { ...entry, attemptedAt }
+            ? { ...entry, attemptedAt: entry.attemptedAt ?? attemptedAt }
             : entry),
         };
         return [next, next] as const;
@@ -335,12 +349,23 @@ export class WorkspaceSyncCoordinator implements WorkspaceSyncCoordinatorContrac
           result = await this.input.transport.applyOperations(sent, canonical.revision);
         }
         const sentIds = new Set(sent.map((operation) => operation.operationId));
+        for (const outcome of result.outcomes) {
+          const operation = sent.find((item) => item.operationId === outcome.operationId);
+          if (operation?.action === "delete") {
+            if (outcome.status === "rejected") await this.input.onDeleteRejected?.(outcome.operationId, outcome.message ?? "Delete requires attention.");
+            else if (outcome.trashId && outcome.restoreUntil) await this.input.onDeleteReceipt?.({ operationId: operation.operationId, rootType: operation.entity, rootId: operation.entityId, trashId: outcome.trashId, restoreUntil: outcome.restoreUntil });
+          }
+          if (operation?.action === "restore") {
+            if (outcome.status === "rejected") await this.input.onRestoreRejected?.(outcome.operationId, outcome.message ?? "Restore requires attention.");
+            else await this.input.onRestoreCommitted?.(outcome.operationId);
+          }
+        }
         const rejected = result.outcomes.find((outcome) => sentIds.has(outcome.operationId) && outcome.status === "rejected");
         const conflict = result.conflicts.find((item) => sentIds.has(item.operationId));
         if (rejected || conflict) {
           const message = rejected?.message ?? conflict?.message ?? "A workspace change requires attention.";
           const conflictIds = new Set([
-            ...result.outcomes.filter((outcome) => outcome.status === "rejected").map((outcome) => outcome.operationId),
+            ...result.outcomes.filter((outcome) => sentIds.has(outcome.operationId)).map((outcome) => outcome.operationId),
             ...result.conflicts.map((item) => item.operationId),
           ]);
           const actionRequired = await this.input.storage.update(async (current) => {
@@ -397,10 +422,10 @@ export class WorkspaceSyncCoordinator implements WorkspaceSyncCoordinatorContrac
         const failed = await this.input.storage.update(async (current) => {
           const queue = current.queue.map((entry) => {
             if (entry.operation.operationId === firstOperationId) {
-              return { ...entry, state: "failed" as const, attemptedAt, error: message };
+              return { ...entry, state: "failed" as const, attemptedAt: entry.attemptedAt ?? attemptedAt, error: message };
             }
             if (eligibleIds.has(entry.operation.operationId)) {
-              return { operation: entry.operation, state: "waiting" as const };
+              return { ...entry, state: "waiting" as const };
             }
             return entry;
           });

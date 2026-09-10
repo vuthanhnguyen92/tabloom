@@ -23,6 +23,8 @@ The Vercel service requires these public values:
 - `TABLOOM_MCP_RESOURCE_URL`: `https://tabloom.nickvu.dev/mcp`.
 - `TABLOOM_OAUTH_ISSUER_URL`: `https://tabloom.nickvu.dev`.
 - `TABLOOM_OAUTH_ENABLED`: exactly `false` for the first deployment.
+- `TABLOOM_MCP_MUTATIONS_ENABLED`: exactly `false` for the first workspace
+  data deployment. Only the literal value `true` registers mutation tools.
 
 The private `TABLOOM_OAUTH_SIGNING_KEYS` and
 `TABLOOM_OAUTH_ENCRYPTION_KEYS` values are JSON arrays. Disabled mode may use
@@ -191,6 +193,266 @@ grant families, rotate or remove facade keys, and leave Supabase web/extension
 authentication unchanged. Do not remove the fixed callback during an emergency
 rollback unless the facade is being abandoned; disabling and rotating are the
 credential-safety controls.
+
+## Workspace data release checklist
+
+This section stages the workspace MCP release; it is not authorization to run
+it. Do not apply production migrations, change hosted variables, deploy, or
+enable mutations until the shared organizer plan and final branch review are
+complete and an operator explicitly approves the production change.
+
+The user-facing tool contract and examples are in
+[Tabloom workspace MCP tools](mcp-workspace-tools.md). MCP can access only
+synchronized saved data; device-local unsynced data is unavailable.
+
+### 1. Verify locally
+
+From the repository root, start local Supabase if needed and run the complete
+release gate:
+
+```bash
+npm run lint && npx tsc --noEmit && npm run test:unit && \
+  npm run test:supabase && npm --prefix services/tabloom-mcp run type-check && \
+  npm --prefix services/tabloom-mcp run build && npm run build:vercel
+```
+
+The database test command resets local Supabase. It must never be pointed at a
+hosted database. It also executes the real operator cutover SQL against the
+fixed local database address, tests its preconditions, final privileges, RLS,
+Trash operations and extension sync, then rolls back that test's grants and
+fixtures. A fresh reset therefore leaves the compatibility state in place.
+
+### 2. Review and apply migrations 001 through 004
+
+After approval, link only the existing production project and inspect both the
+linked migration list and dry run:
+
+```bash
+npx supabase link --project-ref tctjlsvfufzxhauhywsm
+npx supabase migration list --linked
+npx supabase db push --linked --dry-run --skip-vault
+```
+
+Stop unless the only new migrations appear in this exact order:
+
+1. `202609100001_workspace_trash.sql`
+2. `202609100002_workspace_trash_sync.sql`
+3. `202609100003_workspace_command_receipts.sql`
+4. `202609100004_workspace_mcp_link_delete.sql`
+
+With separate approval for the reviewed dry run, apply them before deploying
+the service:
+
+```bash
+npx supabase db push --linked --skip-vault
+```
+
+Do not run migrations out of order and do not deploy the new service before
+all four are present.
+
+These migrations are additive for deployed client access: they retain the
+existing authenticated table DELETE privileges and owner policies. The final
+privilege change is deliberately outside `supabase/migrations`, in
+`supabase/operations/workspace_trash_privilege_cutover.sql`; `db push` cannot
+apply it. Legacy web deletion keeps its previous permanent-delete behavior
+until the explicit cutover. Do not announce universal Trash protection yet.
+
+These four migrations have not been released. If the linked migration list
+already includes any of them from an earlier version of this branch, stop and
+review that database's actual grants and function definitions before proceeding;
+an edited migration file is not automatically reapplied by `db push`.
+
+### 3. Deploy compatible web and MCP clients with mutations disabled
+
+Schedule a short deletion maintenance window. Ask active web users to finish
+pending work, avoid deletion during deployment, and reload `/app` afterward.
+Publish the compatible extension packages and verify their sync delete RPC.
+Already-open tabs can retain the old JavaScript bundle; a maintenance notice
+and a new deployment alone do not replace that bundle or revoke API access.
+
+From the repository root linked to the canonical web project, deploy the
+reviewed web client that uses `SupabaseTrashRepository`:
+
+```bash
+vercel deploy --prod --cwd . --yes
+```
+
+Use a freshly loaded `/app` with dedicated fixtures to verify saved-link
+deletion returns a Trash receipt and Undo restores the link, and that collection
+deletion follows prepare/confirm and returns a recoverable receipt. Record the
+web deployment ID as a compatible rollback target. Do not cut over privileges
+if these checks fail.
+
+Inspect whether the production variable already exists:
+
+```bash
+vercel env ls production --cwd services/tabloom-mcp
+```
+
+For its first creation, stage the disabled value without putting any secret in
+the command line:
+
+```bash
+printf '%s\n' false | \
+  vercel env add TABLOOM_MCP_MUTATIONS_ENABLED production \
+  --cwd services/tabloom-mcp
+```
+
+If the variable already exists, update it instead:
+
+```bash
+printf '%s\n' false | \
+  vercel env update TABLOOM_MCP_MUTATIONS_ENABLED production \
+  --cwd services/tabloom-mcp
+```
+
+Then deploy the reviewed service commit:
+
+```bash
+vercel deploy --prod --cwd services/tabloom-mcp --yes
+```
+
+Through `https://tabloom.nickvu.dev/mcp`, require all of the following before
+enablement:
+
+- `get_service_status` reports `mutationsEnabled: false`.
+- `get_workspace`, `list_spaces`, `list_collections`,
+  `list_collection_items`, `search_workspace`, and `list_trash` work for an
+  authenticated test user.
+- Mutation tools are absent from `tools/list`, and a direct mutation call by
+  name fails without changing data.
+- Two dedicated users see only their own spaces, collections, links, Trash,
+  and revisions. Cross-user target IDs return no data and cause no mutation.
+- Logs and recorded evidence contain no tokens, raw authorization headers,
+  saved URLs, descriptions, or private workspace snapshots.
+
+Record only categorical pass/fail results, deployment and migration IDs, and
+the reviewed commit.
+
+### 4. Explicitly cut over direct DELETE privileges
+
+After the compatible web, extension sync, and disabled MCP acceptance above
+pass, run this operator-only step. Configure a private libpq service named
+`tabloom-production` for project `tctjlsvfufzxhauhywsm`, using an administrative
+database connection and a password file or approved secret store. Do not put
+credentials into command arguments or logs. Verify the service target before
+running these commands from the reviewed repository root:
+
+```bash
+PGOPTIONS='-c tabloom.trash_clients_ready=on' \
+  psql 'service=tabloom-production' -X --set=ON_ERROR_STOP=1 \
+  --file=supabase/operations/workspace_trash_privilege_cutover.sql
+psql 'service=tabloom-production' -X --set=ON_ERROR_STOP=1 \
+  --file=supabase/operations/workspace_trash_privilege_postcheck.sql
+```
+
+The readiness setting is the operator's explicit attestation that client
+deployment, refresh handling, and acceptance are complete. The SQL also checks
+the required authenticated RPCs, helper privileges, and ownership RLS before
+changing access. The single statement revokes direct DELETE, replaces the old
+ALL policies with SELECT/INSERT/UPDATE policies, and checks the final grants.
+Any failed precondition or postcheck rolls back the entire statement; rerunning
+a successful cutover is safe. It is never part of automatic schema deployment.
+
+The read-only postcheck must return three rows with every boolean true. Then,
+with a dedicated authenticated user, require direct DELETE on `spaces`,
+`collections`, and `links` to fail with `42501`, while owned create/update/read,
+Trash deletion/Undo, and extension sync still work. Repeat the two-user RLS
+checks. Keep MCP mutations disabled if any result is uncertain.
+
+Old web tabs now fail closed on direct deletion. Show affected users the refresh
+instruction and have them reload `/app` before retrying. If the earlier deletion
+outcome is uncertain, first read the live workspace and Trash to determine
+whether it completed. Do not regrant DELETE to accommodate stale clients.
+End deletion maintenance only after these postchecks pass.
+
+### 5. Enable after client and privilege acceptance
+
+Only after disabled deployment, explicit cutover, and two-user acceptance pass, update the
+flag and redeploy:
+
+```bash
+printf '%s\n' true | \
+  vercel env update TABLOOM_MCP_MUTATIONS_ENABLED production \
+  --cwd services/tabloom-mcp
+vercel deploy --prod --cwd services/tabloom-mcp --yes
+```
+
+Require `get_service_status` to report `mutationsEnabled: true`, then verify
+with dedicated synchronized fixtures: create with an idempotent retry, stale
+`expectedUpdatedAt` conflict without overwrite, prepare and explicitly confirm
+a collection deletion, immediate saved-link deletion, `list_trash`, restore to
+the original parent, restore with an alternate destination, and OAuth
+revocation. Repeat the two-user isolation gate. Never record credentials or
+raw authorization headers.
+
+### 6. Roll back safely
+
+Before the privilege cutover, a failed compatible-client deployment can roll
+back to its prior web deployment while the additive database remains in the
+compatibility state. Keep deletion maintenance in place and finish or postpone
+the cutover explicitly. A failed cutover statement changes no grants.
+
+After cutover, the web rollback target must itself use the Trash repository;
+use the verified web deployment ID recorded above. A pre-Trash web build would
+fail on deletion. If no healthy compatible web deployment is available, keep
+workspace deletion unavailable and publish a refresh/maintenance notice until
+a forward fix is deployed. Preserve the final DELETE revocation. Neither MCP
+rollback nor a web rollback changes database privileges.
+
+Before enabling mutations, preselect and record a reviewed deployment ID or
+URL that passed the disabled-flag acceptance above or predates mutation-tool
+registration. Do not use an arbitrary earlier deployment. Keep its non-secret
+identifier available to the rollback shell without placing credentials in the
+command:
+
+```bash
+export TABLOOM_MCP_ROLLBACK_DEPLOYMENT='dpl_REPLACE_WITH_REVIEWED_DISABLED_DEPLOYMENT_ID'
+```
+
+If acceptance fails, disable mutation tools first and redeploy immediately:
+
+```bash
+printf '%s\n' false | \
+  vercel env update TABLOOM_MCP_MUTATIONS_ENABLED production \
+  --cwd services/tabloom-mcp
+vercel deploy --prod --cwd services/tabloom-mcp --yes
+```
+
+Confirm `mutationsEnabled: false`, read tools remain available, mutation tools
+are absent, and the dedicated fixture's workspace revision and data are
+unchanged. Capture that redacted comparison as the post-disable baseline. If
+the new service itself is unhealthy, keep the flag false and roll back only to
+the preselected deployment:
+
+```bash
+vercel rollback "$TABLOOM_MCP_ROLLBACK_DEPLOYMENT" \
+  --cwd services/tabloom-mcp --yes
+```
+
+After rollback completes, repeat the checks rather than relying on the target
+deployment's history:
+
+- `get_service_status` succeeds. A flag-aware deployment must report
+  `mutationsEnabled: false`; a pre-mutation deployment may omit that field only
+  when the next check proves that mutation tools do not exist.
+- `tools/list` contains no mutation tools, and a direct mutation call by name
+  fails without changing data.
+- The authenticated read tools remain available.
+- The dedicated fixture's workspace revision and data exactly match the
+  post-disable baseline. If the unhealthy service prevented that capture, use
+  the most recent approved baseline and reconcile only already recorded
+  acceptance mutations; any unexplained difference is a failure.
+
+Treat any failed or ambiguous post-rollback check as an incident and keep
+mutations disabled.
+
+Leave migrations 001 through 004 in place: they are the forward-compatible
+Trash and receipt foundation. Do not restore unsafe direct hard deletes or
+attempt an ad hoc down migration. Diagnose and ship a reviewed forward fix;
+Trash entries remain recoverable for their original 30-day windows.
+After any post-cutover rollback, rerun the privilege postcheck command above
+and the compatible web delete/Undo probe before ending maintenance.
 
 ## Run the redacted readiness probe
 

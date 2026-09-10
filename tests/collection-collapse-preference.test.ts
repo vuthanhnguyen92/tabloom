@@ -13,6 +13,8 @@ function createStorage() {
   };
 }
 
+const COLLAPSED_COLLECTIONS_STORAGE_KEY = "tabloom:collapsed-collections:v1";
+
 describe("CollectionCollapsePreference", () => {
   it("remembers collapsed collections separately for local and signed-in workspaces", async () => {
     const storage = createStorage();
@@ -36,5 +38,32 @@ describe("CollectionCollapsePreference", () => {
 
     const restored = new CollectionCollapsePreference(storage);
     expect(await restored.reconcile("local", ["collection-deleted", "collection-kept"])).toEqual(new Set(["collection-kept"]));
+  });
+
+  it("keeps the existing extension storage key and value shape", async () => {
+    const storage = createStorage();
+
+    await new CollectionCollapsePreference(storage).setCollapsed("local", "collection-one", true);
+
+    await expect(storage.get(COLLAPSED_COLLECTIONS_STORAGE_KEY)).resolves.toEqual({
+      [COLLAPSED_COLLECTIONS_STORAGE_KEY]: { local: ["collection-one"] },
+    });
+  });
+
+  it("persists concurrent updates through the legacy aggregate extension record", async () => {
+    const storage = createStorage();
+    const preference = new CollectionCollapsePreference(storage);
+
+    await Promise.all([
+      preference.setCollapsed("local", "collection-one", true),
+      preference.setCollapsed("local", "collection-two", true),
+    ]);
+
+    const restored = new CollectionCollapsePreference(storage);
+    expect(await restored.reconcile("local", ["collection-one", "collection-two"]))
+      .toEqual(new Set(["collection-one", "collection-two"]));
+    await expect(storage.get(COLLAPSED_COLLECTIONS_STORAGE_KEY)).resolves.toEqual({
+      [COLLAPSED_COLLECTIONS_STORAGE_KEY]: { local: ["collection-one", "collection-two"] },
+    });
   });
 });

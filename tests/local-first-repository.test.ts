@@ -37,6 +37,21 @@ async function setup() {
 }
 
 describe("LocalFirstWorkspaceRepository", () => {
+  it("commits both sides of a move to local storage together with durable retry operations", async () => {
+    const { repository, storage, onMutation } = await setup();
+    const target = await repository.createCollection({ space_id: SPACE_ID, name: "Target" });
+    const first = await repository.createLink({ collection_id: COLLECTION_ID, title: "First", url: "https://example.com/first", description: "", favicon_url: null });
+    const second = await repository.createLink({ collection_id: COLLECTION_ID, title: "Second", url: "https://example.com/second", description: "", favicon_url: null });
+    onMutation.mockImplementationOnce(async () => { throw new Error("offline"); });
+    await expect(repository.moveLink({ id: first.id, sourceCollectionId: COLLECTION_ID, destinationCollectionId: target.id, sourceOrderedIds: [second.id], destinationOrderedIds: [first.id], expectedSource: [{ id: first.id, position: first.position }, { id: second.id, position: second.position }], expectedDestination: [] })).rejects.toThrow("offline");
+    const local = await storage.loadOrThrow();
+    expect(local.snapshot.links.find((item) => item.id === first.id)).toMatchObject({ collection_id: target.id, position: 0 });
+    expect(local.snapshot.links.find((item) => item.id === second.id)).toMatchObject({ collection_id: COLLECTION_ID, position: 0 });
+    expect(local.queue.map((item) => item.operation)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ entityId: target.id, action: "reorder", payload: { parentId: target.id, orderedIds: [first.id] } }),
+      expect.objectContaining({ entityId: COLLECTION_ID, action: "reorder", payload: { parentId: COLLECTION_ID, orderedIds: [second.id] } }),
+    ]));
+  });
   it("keeps the optimistic snapshot and queue when submission rejects", async () => {
     const { area } = memoryArea();
     const storage = new LocalFirstStorage(area, USER_ID);

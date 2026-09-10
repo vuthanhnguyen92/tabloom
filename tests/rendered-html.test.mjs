@@ -42,9 +42,16 @@ test("app route renders an accessible workspace shell", async () => {
   const response = await render("/app");
   assert.equal(response.status, 200);
   const html = await response.text();
-  assert.match(html, /Your workspace/);
-  assert.match(html, /Search your links|Checking your session/);
-  assert.match(html, /Sign in with Google|Demo workspace|Checking your session/);
+  const main = html.match(/<main\b[^>]*>[\s\S]*?<\/main>/)?.[0] ?? "";
+  // No repository data exists during SSR: publish the accessible boot boundary,
+  // not a fake editable workspace or a premature signed-out screen.
+  if (main.includes("Checking your session")) assert.match(main, /workspace-loading/);
+  else {
+    assert.match(main, /aria-busy="true"/);
+    assert.match(main, /aria-label="Loading workspace"/);
+    assert.match(main, /organizer-boot-indicator/);
+  }
+  assert.doesNotMatch(main, /New collection|Sign in with Google/);
 });
 
 test("privacy route explains Tabloom data handling", async () => {
