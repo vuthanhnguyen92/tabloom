@@ -6,6 +6,8 @@ export type OrganizerToast = {
   id: string;
   message: string;
   persistent?: boolean;
+  /** Action toasts normally persist; Undo explicitly opts into a short lifetime. */
+  expiresAfter?: number;
   tone?: "success" | "error";
 };
 
@@ -55,7 +57,7 @@ export function ToastRegion({ onDismiss, toasts }: ToastRegionProps) {
   }, [onDismiss]);
 
   useLayoutEffect(() => {
-    const transientToasts = toasts.filter((toast) => !toast.persistent && !toast.action);
+    const transientToasts = toasts.filter((toast) => !toast.persistent && (!toast.action || toast.expiresAfter !== undefined));
     const transientIds = new Set(transientToasts.map((toast) => toast.id));
 
     for (const [id, timer] of timersRef.current) {
@@ -87,7 +89,7 @@ export function ToastRegion({ onDismiss, toasts }: ToastRegionProps) {
         onDismissRef.current(toast.id);
         continue;
       }
-      const deadline = Date.now() + 3_000;
+      const deadline = Date.now() + (toast.expiresAfter ?? 3_000);
       const generation = ++nextTimerGenerationRef.current;
       const handle = globalThis.setTimeout(() => {
         if (timersRef.current.get(toast.id)?.generation !== generation) return;

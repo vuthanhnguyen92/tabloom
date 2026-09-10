@@ -1,45 +1,21 @@
 "use client";
 
-import {
-  ChevronLeft,
-  ChevronRight,
-  ExternalLink,
-  GripVertical,
-  LogOut,
-  MoreHorizontal,
-  Pencil,
-  Plus,
-  Search,
-  Share2,
-  Trash2,
-  X,
-} from "lucide-react";
+import "@fontsource/poppins/400.css";
+import "@fontsource/poppins/500.css";
+import "@fontsource/poppins/600.css";
+import "@fontsource/poppins/700.css";
+
+import { LogOut, UserRound } from "lucide-react";
 import Link from "next/link";
-import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Brand } from "../components/Brand";
-import { filterWorkspace, findDuplicateLink, hostnameFor, isSaveableUrl, type SavedLink, type WorkspaceSnapshot } from "../../shared/domain";
-import { copyBookmarkToCollection } from "../../shared/bookmark-repository";
-import type { WebWorkspaceRepository, WorkspaceRepository } from "../../shared/repository";
+import { useEffect, useMemo, useRef } from "react";
+import type { WorkspaceSnapshot } from "../../shared/domain";
+import type { WebWorkspaceRepository } from "../../shared/repository";
 import type { WorkspaceTrashRepository } from "../../shared/trash-repository";
-import type { DeleteIntent, DeleteReceipt, TrashRootType } from "../../shared/trash";
-import { CollectionShareDialog } from "../../shared/CollectionShareDialog";
 import type { CollectionShareRepository, ShareAvailability } from "../../shared/collection-sharing";
-
-type DialogState =
-  | { type: "space" }
-  | { type: "edit-space"; spaceId: string }
-  | { type: "delete-space"; spaceId: string; intent?: DeleteIntent }
-  | { type: "collection" }
-  | { type: "edit-collection"; collectionId: string }
-  | { type: "link"; collectionId: string; link?: SavedLink }
-  | { type: "delete-collection"; collectionId: string; intent?: DeleteIntent }
-  | { type: "open-many"; links: SavedLink[] }
-  | { type: "copy-bookmark"; link: SavedLink; collectionId: string; duplicate: SavedLink }
-  | null;
-
-type DraggedLink =
-  | { kind: "saved-link"; id: string }
-  | { kind: "browser-bookmark"; link: SavedLink };
+import { WorkspaceOrganizerView } from "../../shared/organizer/WorkspaceOrganizer";
+import { useWorkspaceController } from "../../shared/organizer/useWorkspaceController";
+import { createWebPreferenceStore } from "../../shared/organizer/preferences";
+import { webOrganizerCapabilities } from "./web-organizer-capabilities";
 
 type WorkspaceSharing = {
   availability: ShareAvailability;
@@ -48,211 +24,53 @@ type WorkspaceSharing = {
   onRequestSignIn: () => void;
 };
 
-export function WorkspaceClient({ repository, trashRepository, mode, onSignOut, initialSnapshot, sharing }: { repository: WebWorkspaceRepository; trashRepository?: WorkspaceTrashRepository; mode: "demo" | "synced"; onSignOut?: () => void; initialSnapshot?: WorkspaceSnapshot; sharing?: WorkspaceSharing }) {
-  const [snapshot, setSnapshot] = useState<WorkspaceSnapshot>(initialSnapshot ?? { spaces: [], collections: [], links: [] });
-  const [selectedSpaceId, setSelectedSpaceId] = useState(initialSnapshot?.spaces[0]?.id ?? "");
-  const [query, setQuery] = useState("");
-  const [dialog, setDialog] = useState<DialogState>(null);
-  const [error, setError] = useState("");
-  const [loading, setLoading] = useState(!initialSnapshot);
-  const [draggedLink, setDraggedLink] = useState<DraggedLink | null>(null);
-  const [sharingCollectionId, setSharingCollectionId] = useState<string | null>(null);
-  const [shareToast, setShareToast] = useState("");
-  const [deleteReceipt, setDeleteReceipt] = useState<DeleteReceipt | null>(null);
-  const [deleting, setDeleting] = useState(false);
-  const pendingDeleteOperations = useRef(new Map<string, string>());
-
-  const reload = useCallback(async () => {
-    try {
-      const next = await repository.load();
-      setSnapshot(next);
-      setSelectedSpaceId((current) => current || next.spaces[0]?.id || "");
-      setError("");
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Could not load your workspace.");
-    } finally { setLoading(false); }
-  }, [repository]);
-
-  // The repository is external state; load its current snapshot on adapter changes.
-  // eslint-disable-next-line react-hooks/set-state-in-effect
-  useEffect(() => { void reload(); }, [reload]);
-  const visible = useMemo(() => filterWorkspace(snapshot, query), [snapshot, query]);
-  const selectedSpace = snapshot.spaces.find((space) => space.id === selectedSpaceId) ?? snapshot.spaces[0];
-  const collections = visible.collections.filter((collection) => query || collection.space_id === selectedSpace?.id);
-
-  async function mutate(operation: () => Promise<unknown>) {
-    try { await operation(); setDialog(null); await reload(); }
-    catch (reason) { setError(reason instanceof Error ? reason.message : "That change could not be saved."); }
-  }
-
-  async function prepareDelete(rootType: "space" | "collection", rootId: string) {
-    try {
-      if (mode === "synced" && !trashRepository) throw new Error("Trash is unavailable. Reload before deleting.");
-      const intent = await trashRepository?.prepareDelete(rootType, rootId);
-      setDialog(rootType === "space" ? { type: "delete-space", spaceId: rootId, intent } : { type: "delete-collection", collectionId: rootId, intent });
-    } catch (reason) { setError(reason instanceof Error ? reason.message : "Could not prepare deletion."); }
-  }
-
-  async function deleteEntity(rootType: TrashRootType, rootId: string, intent?: DeleteIntent) {
-    if (deleting) return;
-    setDeleting(true);
-    await mutate(async () => {
-      if (trashRepository) {
-        const target = `${rootType}:${rootId}`;
-        const operationId = pendingDeleteOperations.current.get(target) ?? crypto.randomUUID();
-        // A failed response may follow a committed delete; retry the same
-        // operation until its receipt arrives, including with a consumed intent.
-        pendingDeleteOperations.current.set(target, operationId);
-        const receipt = await trashRepository.deleteEntity(rootType, rootId, "web", operationId, intent?.intentId);
-        pendingDeleteOperations.current.delete(target);
-        setDeleteReceipt(receipt);
-      } else if (mode === "demo") {
-        const local = repository as WorkspaceRepository;
-        if (rootType === "space") await local.deleteSpace(rootId);
-        else if (rootType === "collection") await local.deleteCollection(rootId);
-        else await local.deleteLink(rootId);
-      } else throw new Error("Trash is unavailable. Reload before deleting.");
-    });
-    setDeleting(false);
-  }
-
-  async function undoDelete() {
-    if (!deleteReceipt || !trashRepository || deleting) return;
-    setDeleting(true);
-    await mutate(async () => {
-      await trashRepository.restore(deleteReceipt.trashId);
-      setDeleteReceipt(null);
-    });
-    setDeleting(false);
-  }
-
-  async function submitDialog(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const data = new FormData(event.currentTarget);
-    if (dialog?.type === "space" || dialog?.type === "edit-space") {
-      const name = String(data.get("name") || "").trim();
-      if (!name) return setError("Space name is required.");
-      const input = { name, color: String(data.get("color") || "#f56f72") };
-      return mutate(() => dialog.type === "edit-space" ? repository.updateSpace(dialog.spaceId, input) : repository.createSpace(input));
+export function WorkspaceClient({ repository, trashRepository, mode, userId = "demo-user", email, onSignOut, sharing }: {
+  repository: WebWorkspaceRepository;
+  trashRepository?: WorkspaceTrashRepository;
+  mode: "demo" | "synced";
+  userId?: string;
+  email?: string;
+  onSignOut?: () => void | Promise<void>;
+  /** Compatibility only: canonical data and preferences load together in the controller. */
+  initialSnapshot?: WorkspaceSnapshot;
+  sharing?: WorkspaceSharing;
+}) {
+  // Storage is accessed only when the controller boots on the client, never during SSR.
+  const preferenceStore = useMemo(() => createWebPreferenceStore({
+    getItem: (key) => window.localStorage.getItem(key),
+    setItem: (key, value) => window.localStorage.setItem(key, value),
+    removeItem: (key) => window.localStorage.removeItem(key),
+  }), []);
+  const options = { repository, trashRepository, userId, preferenceStore, preferenceScope: mode === "synced" ? `account:${userId}` : "demo", capabilities: webOrganizerCapabilities, mutationPolicy: "rollbackOnFailure" as const, deleteSource: "web" as const };
+  const controller = useWorkspaceController(options);
+  const account = useRef<HTMLDetailsElement>(null);
+  useEffect(() => {
+    function closeAccount(event: KeyboardEvent | PointerEvent) {
+      const menu = account.current;
+      if (!menu?.open) return;
+      if (event instanceof KeyboardEvent) {
+        if (event.key !== "Escape") return;
+        menu.open = false;
+        menu.querySelector("summary")?.focus();
+      } else if (event.target instanceof Node && !menu.contains(event.target)) menu.open = false;
     }
-    if (dialog?.type === "collection" || dialog?.type === "edit-collection") {
-      const name = String(data.get("name") || "").trim();
-      if (!name || !selectedSpace) return setError("Collection name is required.");
-      return mutate(() => dialog.type === "edit-collection" ? repository.updateCollection(dialog.collectionId, { name }) : repository.createCollection({ name, space_id: selectedSpace.id }));
-    }
-    if (dialog?.type === "link") {
-      const title = String(data.get("title") || "").trim();
-      const url = String(data.get("url") || "").trim();
-      const description = String(data.get("description") || "").trim();
-      if (!title) return setError("Link title is required.");
-      if (!isSaveableUrl(url)) return setError("Enter an http or https URL.");
-      const input = { collection_id: dialog.collectionId, title, url, description, favicon_url: dialog.link?.favicon_url ?? null };
-      return mutate(() => dialog.link ? repository.updateLink(dialog.link!.id, input) : repository.createLink(input));
-    }
-  }
-
-  async function moveCollection(collectionId: string, delta: number) {
-    if (!selectedSpace) return;
-    const items = snapshot.collections.filter((item) => item.space_id === selectedSpace.id).sort((a, b) => a.position - b.position);
-    const index = items.findIndex((item) => item.id === collectionId);
-    const target = index + delta;
-    if (index < 0 || target < 0 || target >= items.length) return;
-    [items[index], items[target]] = [items[target], items[index]];
-    await mutate(() => repository.reorderCollections(selectedSpace.id, items.map((item) => item.id)));
-  }
-
-  async function copyBookmark(link: SavedLink, collectionId: string, allowDuplicate = false) {
-    const duplicate = findDuplicateLink(snapshot.links, collectionId, link.url);
-    if (duplicate && !allowDuplicate) {
-      setDraggedLink(null);
-      setDialog({ type: "copy-bookmark", link, collectionId, duplicate });
-      return;
-    }
-    setDraggedLink(null);
-    await mutate(() => copyBookmarkToCollection(repository, link, collectionId));
-  }
-
-  async function dropLink(collectionId: string) {
-    if (!draggedLink) return;
-    if (draggedLink.kind === "browser-bookmark") {
-      await copyBookmark(draggedLink.link, collectionId);
-      return;
-    }
-    const orderedIds = snapshot.links.filter((item) => item.collection_id === collectionId && item.id !== draggedLink.id).sort((a, b) => a.position - b.position).map((item) => item.id);
-    orderedIds.push(draggedLink.id);
-    setDraggedLink(null);
-    await mutate(() => repository.reorderLinks(collectionId, orderedIds));
-  }
-
-  async function moveLink(link: SavedLink, delta: number) {
-    if (!selectedSpace) return;
-    const orderedCollections = snapshot.collections.filter((item) => item.space_id === selectedSpace.id).sort((a, b) => a.position - b.position);
-    const currentIndex = orderedCollections.findIndex((item) => item.id === link.collection_id);
-    const target = orderedCollections[currentIndex + delta];
-    if (!target) return;
-    const orderedIds = snapshot.links.filter((item) => item.collection_id === target.id).sort((a, b) => a.position - b.position).map((item) => item.id);
-    orderedIds.push(link.id);
-    await mutate(() => repository.reorderLinks(target.id, orderedIds));
-  }
-
-  function openLinks(links: SavedLink[]) {
-    links.forEach((link) => window.open(link.url, "_blank", "noopener,noreferrer"));
-    setDialog(null);
-  }
-
-  const normalCollections = snapshot.collections
-    .filter((collection) => collection.origin === "saved" && !collection.read_only)
-    .sort((a, b) => a.position - b.position);
-  const selectedSpaceReadOnly = selectedSpace?.origin === "browser-bookmark" || selectedSpace?.read_only;
-
-  if (loading) return <main className="workspace-loading" aria-live="polite"><Brand /><span>Growing your workspace…</span></main>;
-
-  return (
-    <main className="workspace-shell">
-      <aside className="workspace-sidebar">
-        <Link href="/"><Brand /></Link>
-        <span className="sidebar-label">MY SPACES</span>
-        {snapshot.spaces.map((space) => <button key={space.id} className={`space-button ${space.id === selectedSpace?.id ? "active" : ""}`} onClick={() => { setSelectedSpaceId(space.id); setQuery(""); }}><i style={{ background: space.color }} />{space.name}</button>)}
-        <button className="add-space" onClick={() => setDialog({ type: "space" })}><Plus size={15} /> New space</button>
-        <div className="sidebar-foot"><span className={`sync-dot ${mode}`} />{mode === "synced" ? "Synced" : "Demo workspace"}{onSignOut && <button aria-label="Sign out" onClick={onSignOut}><LogOut size={15} /></button>}</div>
-      </aside>
-      <section className="workspace-main">
-        <header className="workspace-header">
-          <div><span className="eyebrow">{mode === "synced" ? "PERSONAL WORKSPACE" : "DEMO WORKSPACE"}</span><h1>Your workspace</h1></div>
-          <label className="workspace-search"><Search size={18} /><span className="sr-only">Search your links</span><input aria-label="Search your links" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search your links" /><kbd>⌘ K</kbd></label>
-          <Link className="button button-quiet" href="/">Home</Link>
-        </header>
-        {error && <div className="notice error" role="alert"><span>{error}</span><button aria-label="Dismiss error" onClick={() => setError("")}><X size={16} /></button></div>}
-        {deleteReceipt && <div className="notice" role="status"><span>Moved to Trash. Restore until {new Date(deleteReceipt.restoreUntil).toLocaleDateString()}.</span><button disabled={deleting} onClick={() => void undoDelete()}>Undo</button></div>}
-        {selectedSpace ? <>
-          <div className="workspace-intro"><div><span>✦</span><h2>{query ? `Results for “${query}”` : selectedSpace.name}</h2><p>{query ? `${visible.links.length} matching links across your workspace.` : selectedSpaceReadOnly ? "A read-only view of bookmarks manually synced from your browsers." : "A clear place for the work that moves this project forward."}</p></div>{!query && !selectedSpaceReadOnly && <div className="collection-actions"><button aria-label={`Rename ${selectedSpace.name} space`} onClick={() => setDialog({ type: "edit-space", spaceId: selectedSpace.id })}><Pencil size={15} /></button><button aria-label={`Delete ${selectedSpace.name} space`} onClick={() => void prepareDelete("space", selectedSpace.id)}><Trash2 size={15} /></button><button onClick={() => setDialog({ type: "collection" })}><Plus size={15} /> New collection</button></div>}</div>
-          {collections.length ? <div className="workspace-columns">
-            {collections.map((collection, collectionIndex) => {
-              const links = visible.links.filter((link) => link.collection_id === collection.id).sort((a, b) => a.position - b.position);
-              const collectionReadOnly = collection.origin === "browser-bookmark" || collection.read_only;
-              return <article className={`collection ${collectionReadOnly ? "collection-read-only" : ""}`} key={collection.id} onDragOver={collectionReadOnly ? undefined : (event) => event.preventDefault()} onDrop={collectionReadOnly ? undefined : () => void dropLink(collection.id)}>
-                <header><div><h3>{collection.name}</h3><span>{links.length} links</span></div>{!collectionReadOnly && <div className="collection-actions">{sharing && <button aria-label={`Share ${collection.name}`} onClick={() => setSharingCollectionId(collection.id)}><Share2 size={14} /></button>}<button aria-label={`Rename ${collection.name} collection`} onClick={() => setDialog({ type: "edit-collection", collectionId: collection.id })}><Pencil size={14} /></button><button aria-label={`Move ${collection.name} left`} disabled={collectionIndex === 0} onClick={() => void moveCollection(collection.id, -1)}><ChevronLeft size={15} /></button><button aria-label={`Move ${collection.name} right`} disabled={collectionIndex === collections.length - 1} onClick={() => void moveCollection(collection.id, 1)}><ChevronRight size={15} /></button><button aria-label={`Delete ${collection.name}`} onClick={() => void prepareDelete("collection", collection.id)}><Trash2 size={14} /></button></div>}</header>
-                {links.map((link) => {
-                  const bookmark = link.origin === "browser-bookmark" || link.read_only;
-                  return <div className={`link-card ${bookmark ? "bookmark-link-card" : ""}`} draggable onDragStart={() => setDraggedLink(bookmark ? { kind: "browser-bookmark", link } : { kind: "saved-link", id: link.id })} onDragEnd={() => setDraggedLink(null)} key={link.id}><GripVertical className="drag-handle" size={14} /><a href={link.url} target="_blank" rel="noreferrer"><i>{link.title[0]?.toUpperCase()}</i><span><b>{link.title}</b><small>{hostnameFor(link.url)}</small>{link.device_label && <small className="device-only-label">{link.device_label}</small>}</span></a>{!bookmark && <><button aria-label={`Move ${link.title} to previous collection`} disabled={collectionIndex === 0} onClick={() => void moveLink(link, -1)}><ChevronLeft size={14} /></button><button aria-label={`Move ${link.title} to next collection`} disabled={collectionIndex === collections.length - 1} onClick={() => void moveLink(link, 1)}><ChevronRight size={14} /></button><button aria-label={`Edit ${link.title}`} onClick={() => setDialog({ type: "link", collectionId: collection.id, link })}><MoreHorizontal size={15} /></button><button aria-label={`Delete ${link.title}`} disabled={deleting} onClick={() => void deleteEntity("link", link.id)}><Trash2 size={14} /></button></>}</div>;
-                })}
-                {!query && !collectionReadOnly && <button className="add-link" onClick={() => setDialog({ type: "link", collectionId: collection.id })}><Plus size={14} /> Add link</button>}
-                {!!links.length && <button className="open-all" onClick={() => links.length > 10 ? setDialog({ type: "open-many", links }) : openLinks(links)}><ExternalLink size={13} /> Open all</button>}
-              </article>;
-            })}
-          </div> : <div className="workspace-empty"><Search size={28} /><h3>{query ? "No links found" : selectedSpaceReadOnly ? "No synced bookmarks" : "Start your first collection"}</h3><p>{query ? "Try a title, URL, collection, or space name." : selectedSpaceReadOnly ? "Use the Chrome extension to sync this device's bookmarks." : "Collections keep related links together."}</p>{!query && !selectedSpaceReadOnly && <button className="button button-primary" onClick={() => setDialog({ type: "collection" })}>Create collection</button>}</div>}
-          {draggedLink?.kind === "browser-bookmark" && <div className="bookmark-copy-tray" aria-label="Copy bookmark to a saved collection"><strong>Copy to a saved collection</strong><div>{normalCollections.map((collection) => <div role="group" aria-label={`${collection.name} copy target`} className="bookmark-copy-target" key={collection.id} onDragOver={(event) => event.preventDefault()} onDrop={() => void dropLink(collection.id)}>{collection.name}</div>)}</div></div>}
-        </> : <div className="workspace-empty"><h2>Plant your first space</h2><p>Spaces are the top-level home for each part of your work.</p><button className="button button-primary" onClick={() => setDialog({ type: "space" })}>Create a space</button></div>}
-      </section>
-
-      {dialog && <div className="dialog-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setDialog(null); }}><section className="dialog" role="dialog" aria-modal="true" aria-label="Workspace action"><button className="dialog-close" aria-label="Close dialog" onClick={() => setDialog(null)}><X size={18} /></button>
-        {dialog.type === "delete-collection" ? <><h2>Delete this collection?</h2><p>{dialog.intent ? `${dialog.intent.targetName}: ${dialog.intent.linkCount} saved links will move to Trash for 30 days.` : "Its saved links will also be removed."}</p><div className="dialog-actions"><button onClick={() => setDialog(null)}>Cancel</button><button className="danger" disabled={deleting} onClick={() => void deleteEntity("collection", dialog.collectionId, dialog.intent)}>Delete collection</button></div></> : dialog.type === "delete-space" ? <><h2>Delete this space?</h2><p>{dialog.intent ? `${dialog.intent.targetName}: ${dialog.intent.collectionCount} collections and ${dialog.intent.linkCount} saved links will move to Trash for 30 days.` : "All of its collections and saved links will also be removed."}</p><div className="dialog-actions"><button onClick={() => setDialog(null)}>Cancel</button><button className="danger" disabled={deleting} onClick={() => void deleteEntity("space", dialog.spaceId, dialog.intent)}>Delete space</button></div></> : dialog.type === "open-many" ? <><h2>Open {dialog.links.length} tabs?</h2><p>Opening a large collection can make your browser feel busy.</p><div className="dialog-actions"><button onClick={() => setDialog(null)}>Cancel</button><button className="button-primary" onClick={() => openLinks(dialog.links)}>Open tabs</button></div></> : dialog.type === "copy-bookmark" ? <><h2>This link is already saved</h2><p>{dialog.duplicate.title} already exists in this collection. You can still save another copy.</p><div className="dialog-actions"><button onClick={() => setDialog(null)}>Cancel</button><button className="button-primary" onClick={() => void copyBookmark(dialog.link, dialog.collectionId, true)}>Save another copy</button></div></> : <form onSubmit={submitDialog}><h2>{dialog.type === "space" ? "New space" : dialog.type === "edit-space" ? "Rename space" : dialog.type === "collection" ? "New collection" : dialog.type === "edit-collection" ? "Rename collection" : dialog.link ? "Edit link" : "Add link"}</h2>{dialog.type !== "link" ? <label>Name<input aria-label="Name" name="name" maxLength={80} defaultValue={dialog.type === "edit-space" ? snapshot.spaces.find((item) => item.id === dialog.spaceId)?.name : dialog.type === "edit-collection" ? snapshot.collections.find((item) => item.id === dialog.collectionId)?.name : ""} /></label> : <><label>Link title<input aria-label="Link title" name="title" defaultValue={dialog.link?.title} maxLength={300} /></label><label>Link URL<input aria-label="Link URL" name="url" type="text" defaultValue={dialog.link?.url ?? "https://"} /></label><label>Note<textarea name="description" defaultValue={dialog.link?.description} maxLength={1000} /></label></>}{(dialog.type === "space" || dialog.type === "edit-space") && <label>Color<input name="color" type="color" defaultValue={dialog.type === "edit-space" ? snapshot.spaces.find((item) => item.id === dialog.spaceId)?.color : "#f56f72"} /></label>}<button className="button button-primary" type="submit">{dialog.type === "link" ? "Save link" : "Save"}</button></form>}
-      </section></div>}
-      {sharing && sharingCollectionId && (() => {
-        const collection = snapshot.collections.find((item) => item.id === sharingCollectionId);
-        return collection ? <CollectionShareDialog availability={sharing.availability} collection={collection} repository={sharing.repository} siteUrl={sharing.siteUrl} onRequestSignIn={sharing.onRequestSignIn} onRequestSyncRetry={() => void reload()} onToast={(message) => { setShareToast(message); window.setTimeout(() => setShareToast(""), 3000); }} onClose={() => setSharingCollectionId(null)} /> : null;
-      })()}
-      {shareToast && <div className="workspace-share-toast" role="status">{shareToast}</div>}
-    </main>
-  );
+    document.addEventListener("keydown", closeAccount);
+    document.addEventListener("pointerdown", closeAccount);
+    return () => { document.removeEventListener("keydown", closeAccount); document.removeEventListener("pointerdown", closeAccount); };
+  }, []);
+  const status = controller.refreshRequired ? { state: "failed" as const, subtitle: "Refresh required" } : controller.busy ? { state: "syncing" as const, subtitle: "Saving…" } : { state: "synced" as const, subtitle: mode === "synced" ? "Synced" : "Demo workspace" };
+  return <WorkspaceOrganizerView {...options} controller={controller} status={status} savedLinkNewTab={false}
+    share={sharing ? { ...sharing, onRequestSyncRetry: () => { void controller.reload(); }, onToast: (message) => controller.notify(message) } : undefined}
+    accountControls={<details className="web-organizer-account" ref={account}>
+      <summary aria-label="Account"><UserRound size={18} /></summary>
+      <div className="web-organizer-account-menu">
+        <span>{email || (mode === "synced" ? "Your account" : "Demo workspace")}</span>
+        <Link href="/">Home</Link>
+        {onSignOut && <button onClick={() => {
+          if (account.current) account.current.open = false;
+          void Promise.resolve().then(onSignOut).catch(() => controller.notify("Could not sign out. Please try again.", "error"));
+        }}><LogOut size={15} />Sign out</button>}
+      </div>
+    </details>}
+  />;
 }

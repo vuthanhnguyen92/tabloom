@@ -28,7 +28,7 @@ const order = <T extends { position: number }>(items: T[]) => [...items].sort((a
 export function useWorkspaceController(options: WorkspaceControllerOptions) {
   const { repository, preferenceScope: scope, preferenceStore, userId, capabilities, trashRepository, deleteSource = "web", mutationPolicy, onRetry } = options;
   // A new session invalidates all old loads/mutations, including ones settling after account switches.
-  const session = useMemo(() => ({ repository, scope, preferenceStore, userId, active: true, queue: Promise.resolve(), snapshot: emptySnapshot, selected: "", generation: 0, selectionVersion: 0, pendingIds: new Set<string>() }), [repository, scope, preferenceStore, userId]);
+  const session = useMemo(() => ({ repository, scope, preferenceStore, userId, active: true, queue: Promise.resolve(), snapshot: emptySnapshot, selected: "", generation: 0, selectionVersion: 0, pendingIds: new Set<string>(), deleteOperations: new Map<string, string>() }), [repository, scope, preferenceStore, userId]);
   const preferences = useMemo(() => ({ selected: new SelectedSpacePreference(preferenceStore), collapsed: new CollectionCollapsePreference(preferenceStore) }), [preferenceStore]);
   const [state, setState] = useState({ session, snapshot: emptySnapshot, ready: false, selected: "", collapsed: new Set<string>(), railCollapsed: true });
   const [dialog, setDialog] = useState<WorkspaceDialogState>(null);
@@ -167,7 +167,7 @@ export function useWorkspaceController(options: WorkspaceControllerOptions) {
           publish(canonical, session.selectionVersion === selectionVersion ? nextSelected : session.selected);
         }
         catch { notify("Saved, but the workspace could not be refreshed.", "error"); return result; }
-        notify(message); return result;
+        if (message) notify(message); return result;
       } finally { if (session.active) setBusy(false); }
     });
   }
@@ -211,10 +211,34 @@ export function useWorkspaceController(options: WorkspaceControllerOptions) {
       setDialog({ type: type === "space" ? "delete-space" : "delete-collection", id, name: prepared.targetName, linkCount: prepared.linkCount, collectionCount: prepared.collectionCount });
     } catch { notify("Deletion could not be prepared. Please try again.", "error"); }
   }
+  async function deleteEntity(rootType: "space" | "collection" | "link", id: string, intentId?: string): Promise<DeleteReceipt | undefined> {
+    if (!trashRepository || isPending(id)) return;
+    const key = `${rootType}:${id}`;
+    const operationId = session.deleteOperations.get(key) ?? globalThis.crypto.randomUUID();
+    session.deleteOperations.set(key, operationId);
+    let removed = emptySnapshot;
+    const receipt = await mutate({ type: "delete", rootType, id }, async (optimistic, before) => {
+      removed = {
+        spaces: before.spaces.filter((item) => !optimistic.spaces.some((kept) => kept.id === item.id)),
+        collections: before.collections.filter((item) => !optimistic.collections.some((kept) => kept.id === item.id)),
+        links: before.links.filter((item) => !optimistic.links.some((kept) => kept.id === item.id)),
+      };
+      return trashRepository.deleteEntity(rootType, id, deleteSource, operationId, intentId);
+    }, "");
+    if (!receipt || !session.active) return receipt;
+    session.deleteOperations.delete(key);
+    const toastId = `undo:${receipt.operationId}`;
+    let undoing = false;
+    setToasts((items) => [...items, { id: toastId, message: "Moved to Trash", expiresAfter: 3_000, action: { label: "Undo", onAction: () => {
+      if (undoing || !session.active) return;
+      undoing = true;
+      setToasts((items) => items.filter((toast) => toast.id !== toastId));
+      void restore(receipt.trashId, removed);
+    } } }]);
+    return receipt;
+  }
   function deleteLink(id: string): Promise<DeleteReceipt | undefined> {
-    if (!trashRepository || isPending(id)) return Promise.resolve(undefined);
-    const operationId = globalThis.crypto.randomUUID();
-    return mutate({ type: "delete", rootType: "link", id }, () => trashRepository.deleteEntity("link", id, deleteSource, operationId), "Moved to Trash");
+    return deleteEntity("link", id);
   }
   function restore(trashId: string, restored: WorkspaceSnapshot, destinationId?: string) {
     if (!trashRepository) return Promise.resolve(undefined);
@@ -228,8 +252,10 @@ export function useWorkspaceController(options: WorkspaceControllerOptions) {
       const prepared = intent.current;
       const rootType = command.type === "delete-space" ? "space" : "collection";
       if (!trashRepository || !prepared || prepared.targetId !== command.id || prepared.targetType !== rootType || Date.parse(prepared.expiresAt) <= Date.now()) { notify("Deletion needs a fresh confirmation.", "error"); return; }
-      const operationId = globalThis.crypto.randomUUID(); closeDialog();
-      return mutate({ type: "delete", rootType, id: command.id }, () => trashRepository.deleteEntity(rootType, command.id, deleteSource, operationId, prepared.intentId), "Moved to Trash");
+      const generation = dialogGeneration.current;
+      const receipt = await deleteEntity(rootType, command.id, prepared.intentId);
+      if (receipt && session.active && generation === dialogGeneration.current) closeDialog();
+      return receipt;
     }
     if (command.type === "open-many") { closeDialog(); return openUrls(command.name, [...command.urls]); }
     const run = async () => {

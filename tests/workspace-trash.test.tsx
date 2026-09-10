@@ -1,6 +1,6 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { WorkspaceClient } from "../app/app/WorkspaceClient";
 import { createDemoSnapshot } from "../shared/domain";
@@ -52,6 +52,8 @@ function fixture({ loseFirstDeleteResponse = false } = {}) {
   return { repository, trashRepository, legacyDelete, deleteCollection, deleteSpace, initial };
 }
 
+beforeEach(() => localStorage.clear());
+
 describe("web Trash deletion composition", () => {
   it("exposes saved writes and a Trash adapter without a direct delete method", async () => {
     const bootstrap = await import("../app/app/WorkspaceBootstrap");
@@ -69,12 +71,12 @@ describe("web Trash deletion composition", () => {
   it("uses the explicit link receipt for Undo without a legacy deletion", async () => {
     const fixtureValue = fixture();
     render(<WorkspaceClient {...fixtureValue} mode="synced" initialSnapshot={fixtureValue.initial} />);
-    await userEvent.click(screen.getByRole("button", { name: "Delete Product roadmap" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Delete Product roadmap" }));
     await waitFor(() => expect(fixtureValue.trashRepository.deleteEntity).toHaveBeenCalledWith("link", "link-0", "web", expect.any(String), undefined));
     expect(fixtureValue.legacyDelete).not.toHaveBeenCalled();
     await waitFor(() => expect(screen.queryByText("Product roadmap")).not.toBeInTheDocument());
     await userEvent.click(await screen.findByRole("button", { name: "Undo" }));
-    expect(fixtureValue.trashRepository.restore).toHaveBeenCalledWith("receipt-trash-1");
+    expect(fixtureValue.trashRepository.restore).toHaveBeenCalledWith("receipt-trash-1", undefined);
     expect(await screen.findByText("Product roadmap")).toBeVisible();
   });
 
@@ -84,9 +86,9 @@ describe("web Trash deletion composition", () => {
   ] as const)("recovers the original %s receipt after a committed response is lost", async (_rootType, openLabel, confirmLabel) => {
     const value = fixture({ loseFirstDeleteResponse: true });
     render(<WorkspaceClient {...value} mode="synced" initialSnapshot={value.initial} />);
-    await userEvent.click(screen.getByRole("button", { name: openLabel }));
+    await userEvent.click(await screen.findByRole("button", { name: openLabel }));
     if (confirmLabel) await userEvent.click(await screen.findByRole("button", { name: confirmLabel }));
-    expect(await screen.findByRole("alert")).toHaveTextContent("Response lost after commit.");
+    expect(await screen.findByRole("alert")).toHaveTextContent("Changes could not be saved");
     expect((await value.repository.load()).links.some((link) => link.id === "link-0")).toBe(false);
     expect(screen.getByText("Product roadmap")).toBeVisible();
 
@@ -95,21 +97,29 @@ describe("web Trash deletion composition", () => {
     expect(attempts).toHaveLength(2);
     expect(attempts[1][3]).toBe(attempts[0][3]);
     await waitFor(() => expect(screen.queryByText("Product roadmap")).not.toBeInTheDocument());
-    if (confirmLabel) expect(screen.queryByRole("heading", { name: "Plan" })).not.toBeInTheDocument();
+    if (confirmLabel) expect(screen.queryByRole("button", { name: "Rename Plan" })).not.toBeInTheDocument();
     await userEvent.click(await screen.findByRole("button", { name: "Undo" }));
-    expect(value.trashRepository.restore).toHaveBeenCalledWith("receipt-trash-1");
+    expect(value.trashRepository.restore).toHaveBeenCalledWith("receipt-trash-1", undefined);
     expect(await screen.findByText("Product roadmap")).toBeVisible();
-    if (confirmLabel) expect(screen.getByRole("heading", { name: "Plan" })).toBeVisible();
+    if (confirmLabel) expect(screen.getByRole("button", { name: "Rename Plan" })).toBeVisible();
+  });
+
+  it("expires the immediate Undo action after three seconds", async () => {
+    const value = fixture();
+    render(<WorkspaceClient {...value} mode="synced" />);
+    await userEvent.click(await screen.findByRole("button", { name: "Delete Product roadmap" }));
+    expect(await screen.findByRole("button", { name: "Undo" })).toBeVisible();
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Undo" })).toBeNull(), { timeout: 4000 });
   });
 
   it("uses a new operation ID when an undone link is deleted again", async () => {
     const value = fixture();
     render(<WorkspaceClient {...value} mode="synced" initialSnapshot={value.initial} />);
-    await userEvent.click(screen.getByRole("button", { name: "Delete Product roadmap" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Delete Product roadmap" }));
     await waitFor(() => expect(screen.queryByText("Product roadmap")).not.toBeInTheDocument());
     await userEvent.click(await screen.findByRole("button", { name: "Undo" }));
     expect(await screen.findByText("Product roadmap")).toBeVisible();
-    await userEvent.click(screen.getByRole("button", { name: "Delete Product roadmap" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Delete Product roadmap" }));
     await waitFor(() => expect(screen.queryByText("Product roadmap")).not.toBeInTheDocument());
     const attempts = vi.mocked(value.trashRepository.deleteEntity).mock.calls;
     expect(attempts).toHaveLength(2);
@@ -118,11 +128,12 @@ describe("web Trash deletion composition", () => {
 
   it.each([
     ["Delete Plan", "Delete collection", "collection", "collection-plan"],
-    ["Delete Product launch space", "Delete space", "space", "space-launch"],
+    ["Delete Product launch", "Delete space", "space", "space-launch"],
   ])("prepares and explicitly confirms %s before deletion", async (openLabel, confirmLabel, rootType, rootId) => {
     const value = fixture();
     render(<WorkspaceClient {...value} mode="synced" initialSnapshot={value.initial} />);
-    await userEvent.click(screen.getByRole("button", { name: openLabel }));
+    if (rootType === "space") await userEvent.click(await screen.findByRole("button", { name: "Expand sidebar" }));
+    await userEvent.click(await screen.findByRole("button", { name: openLabel }));
     await waitFor(() => expect(value.trashRepository.prepareDelete).toHaveBeenCalledWith(rootType, rootId));
     expect(value.trashRepository.deleteEntity).not.toHaveBeenCalled();
     await userEvent.click(await screen.findByRole("button", { name: confirmLabel }));
@@ -136,7 +147,7 @@ describe("web Trash deletion composition", () => {
     value.initial.links = value.initial.links.filter((link) => link.collection_id !== "collection-plan");
     value.repository = new MemoryWorkspaceRepository("demo-user", value.initial);
     render(<WorkspaceClient {...value} mode="synced" initialSnapshot={value.initial} />);
-    await userEvent.click(screen.getByRole("button", { name: "Delete Plan" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Delete Plan" }));
     expect(await screen.findByRole("button", { name: "Delete collection" })).toBeVisible();
     expect(value.trashRepository.deleteEntity).not.toHaveBeenCalled();
   });
@@ -144,8 +155,8 @@ describe("web Trash deletion composition", () => {
   it("fails closed when the synced Trash adapter is missing", async () => {
     const value = fixture();
     render(<WorkspaceClient repository={value.repository} mode="synced" initialSnapshot={value.initial} />);
-    await userEvent.click(screen.getByRole("button", { name: "Delete Product roadmap" }));
-    expect(await screen.findByRole("alert")).toHaveTextContent("Trash is unavailable");
+    await screen.findByText("Product roadmap");
+    expect(screen.queryByRole("button", { name: "Delete Product roadmap" })).toBeNull();
     expect(value.legacyDelete).not.toHaveBeenCalled();
   });
 });

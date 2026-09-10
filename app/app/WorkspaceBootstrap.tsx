@@ -37,15 +37,20 @@ export function WorkspaceBootstrap() {
 
   useEffect(() => {
     if (!client) return;
+    let active = true;
+    let authEventReceived = false;
     void client.auth.getSession().then(({ data }) => {
+      if (!active || authEventReceived) return;
       setSession(data.session);
       setRepositories(data.session ? createSyncedRepositories(client, data.session.user.id) : null);
     });
     const { data } = client.auth.onAuthStateChange((_event, next) => {
+      if (!active) return;
+      authEventReceived = true;
       setSession(next);
       setRepositories(next ? createSyncedRepositories(client, next.user.id) : null);
     });
-    return () => data.subscription.unsubscribe();
+    return () => { active = false; data.subscription.unsubscribe(); };
   }, [client]);
 
   if (session === undefined) return <main className="workspace-loading"><Brand /><span>Checking your session…</span></main>;
@@ -55,8 +60,9 @@ export function WorkspaceBootstrap() {
     repository={repositories.repository}
     trashRepository={repositories.trashRepository}
     mode={client ? "synced" : "demo"}
-    initialSnapshot={client ? undefined : createDemoSnapshot()}
-    onSignOut={client ? () => void client.auth.signOut() : undefined}
+    userId={session?.user.id ?? "demo-user"}
+    email={session?.user.email}
+    onSignOut={client ? async () => { const { error } = await client.auth.signOut(); if (error) throw error; } : undefined}
     sharing={client && session ? {
       availability: "ready",
       repository: new SupabaseCollectionShareRepository(client as unknown as CollectionShareClient),
