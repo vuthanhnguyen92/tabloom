@@ -333,6 +333,29 @@ describe("public dynamic client registration", () => {
     expect(body).not.toContain(privateDetail);
   });
 
+  it("registers public clients with informational metadata without reflecting it", async () => {
+    await useFacadeEnvironment(true);
+    vi.mocked(createOAuthPersistence).mockReturnValue(persistence());
+    const handler = await route();
+    const response = await handler.POST(new Request(`${ORIGIN}/oauth/register`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        ...registration,
+        application_type: "native",
+        scope: "tabloom:workspace",
+        client_uri: "https://client.example",
+      }),
+    }));
+
+    expect(response.status).toBe(201);
+    expectNoStore(response);
+    expect(await response.json()).toEqual({
+      client_id: "5c177e69-8954-4c57-a777-07c732513bea",
+      ...registration,
+    });
+  });
+
   it("registers only validated public metadata and never returns a client secret", async () => {
     await useFacadeEnvironment(true);
     vi.mocked(createOAuthPersistence).mockReturnValue(persistence());

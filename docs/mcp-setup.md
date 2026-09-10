@@ -377,3 +377,67 @@ Cutover is blocked unless the migration, disabled deployment, fixed callback,
 two distinct users, exact claims, refresh race, revocation, subject mismatch,
 cross-user RLS denial, and secret-free log inspection all pass. This repository
 does not claim those live checks have occurred.
+
+## Client registration compatibility
+
+The DCR endpoint accepts informational metadata such as `application_type`
+(Codex sends `native`), `scope`, `client_uri`, and unknown extension metadata.
+Only the validated client name and exact redirect URIs are persisted. Client
+IDs remain server-generated; client secrets, JWKS, and software statements are
+unsupported. Authorization still enforces the workspace scope, PKCE, exact
+registered redirect, and supported grant types.
+
+The hosted Supabase redirect allowlist must include
+`https://tabloom.nickvu.dev/oauth/callback/supabase`; having it in the local
+`supabase/config.toml` does not update hosted Auth settings.
+
+On 2026-09-09 the existing MCP Vercel project is named `tabloom` (project ID
+`prj_7bXbJP6xBTKYo2fgg1PPGESxB4XD`). The separate `tabloom-web` project forwards
+OAuth/MCP traffic to `https://tabloom-mcp.vercel.app`. Verify this mapping before
+deploying. Local monorepo packaging with the current Vercel CLI can misresolve
+Next.js and traced file paths. For a standalone prebuilt deployment, stage the
+service's tracked files with `shared/` inside the staging root, point its staged
+`@tabloom/workspace` dependency to `file:./shared`, and build using the existing
+MCP project's production settings. Exclude the staged `shared/` directory from
+the service TypeScript root-file scan (imported modules are still checked), so
+unrelated shared UI files do not require web-only dependencies. Do not copy `.env.local` into deployment
+sources. Verify live registration and the Google authorization redirect after
+deploying; complete user login is a separate end-to-end check.
+
+Deployment `dpl_8SrdMoWU2MRgEkf1YjmhMKq3PRpN` applied this registration fix on
+2026-09-09. The hosted Supabase callback was added and read back successfully.
+The 563 MCP unit tests, lint, and standalone Vercel production build passed.
+Live Codex-shaped and ChatGPT-compatible DCR probes returned 201, authorization
+returned 302 with the expected state cookie and exact upstream callback, and
+Supabase redirected to Google. Unsafe HTTP redirect registration remained 400.
+These probes did not complete Google sign-in or ChatGPT consent/token exchange.
+
+A subsequent real connection attempt still returned a redirect-safe authorization
+error before Google. Deployment `dpl_6K5aWVQwYjFw9oXbEiV7m3xwFqh1` adds fixed,
+credential-free `authorizationFailure` audit categories to distinguish missing
+scope/resource, unknown parameters, and invalid protocol values. This is a
+diagnostic deployment, not confirmation that the remaining ChatGPT failure is
+fixed. All 567 MCP tests and lint passed; the standalone source package also
+built successfully on Vercel. The deliberate missing-scope verification request
+was sent at 2026-09-09T10:09:54Z and must not be mistaken for a real client failure.
+
+The real retry at 2026-09-09T10:10:42Z was classified as `unknown_parameter`.
+Deployment `dpl_G7kMbvZ1exuJD4ZKooiWg7PPPvDx` fixes this: the authorization
+endpoint now ignores unrecognized parameters per RFC 6749 section 3.1 while
+requiring every protocol field and rejecting duplicates. Extra values are not
+included in the validated transaction. All 568 MCP tests and lint passed, and
+Vercel built the standalone source package successfully. Live requests with
+extra parameters reached Google with the canonical callback; invalid scope,
+PKCE method, resource, and unregistered redirect remained rejected. Complete
+ChatGPT login/consent and token exchange still require a real user retry.
+
+The next real attempt completed Google login and rendered consent (GET 200).
+Its first consent POST returned 302 success, but Chrome blocked the cross-origin
+client callback under the page's `form-action 'self'` CSP. A second POST returned
+400 because the first response had already cleared the consent cookie.
+Deployment `dpl_BTPq9u1npoKKkd4dfmtGp15K9pfT` permits the validated registered
+callback origin in `form-action`, retaining the other CSP restrictions and
+rejecting unsafe CSP source origins. A Chromium regression using the actual
+consent handlers and a real callback server fails with the old policy and passes
+with the fix. All 569 MCP unit tests, lint, and the Vercel build passed. Users
+must restart Connect from ChatGPT because the previous consent session was used.

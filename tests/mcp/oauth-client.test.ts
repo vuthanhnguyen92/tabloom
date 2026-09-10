@@ -26,7 +26,7 @@ function persistenceWith(client: StoredPublicClient | null): OAuthPersistence {
 }
 
 describe("public OAuth client metadata", () => {
-  it("accepts only the exact public authorization-code registration shape", () => {
+  it("accepts public authorization-code registrations", () => {
     expect(validateDcrClientMetadata(validRegistration)).toEqual({
       clientName: "Example MCP Client",
       redirectUris: ["https://client.example/callback"],
@@ -48,13 +48,34 @@ describe("public OAuth client metadata", () => {
   });
 
   it.each([
+    ["Codex", { application_type: "native" }, "http://127.0.0.1:49152/callback/codex"],
+    ["ChatGPT", {
+      scope: "tabloom:workspace",
+      application_type: "web",
+      logo_uri: "https://client.example/logo.png",
+      client_uri: "https://client.example",
+      contacts: ["support@client.example"],
+    }, "https://chatgpt.com/connector/oauth/example-callback-id"],
+    ["extension metadata", { future_metadata: { enabled: true } }, "https://client.example/callback"],
+  ])("accepts %s informational metadata without persisting it", (_label, extra, redirectUri) => {
+    expect(validateDcrClientMetadata({
+      ...validRegistration,
+      ...extra,
+      redirect_uris: [redirectUri],
+    })).toEqual({
+      clientName: "Example MCP Client",
+      redirectUris: [redirectUri],
+    });
+  });
+
+  it.each([
     ["missing required key", {
       redirect_uris: validRegistration.redirect_uris,
       grant_types: validRegistration.grant_types,
       response_types: validRegistration.response_types,
       token_endpoint_auth_method: validRegistration.token_endpoint_auth_method,
     }],
-    ["unknown key", { ...validRegistration, logo_uri: "https://client.example/logo.png" }],
+    ["supplied client id", { ...validRegistration, client_id: "attacker-selected-id" }],
     ["client secret", { ...validRegistration, client_secret: "secret" }],
     ["JWKS", { ...validRegistration, jwks: { keys: [] } }],
     ["JWKS URI", { ...validRegistration, jwks_uri: "https://client.example/jwks" }],

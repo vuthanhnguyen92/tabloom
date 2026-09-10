@@ -17,8 +17,12 @@ import {
   type OAuthResultClass,
 } from "../../../src/observability/oauth-audit";
 
-const CONTENT_SECURITY_POLICY =
-  "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'";
+function contentSecurityPolicy(session: ConsentSession): string {
+  // Chrome applies form-action to the redirect after consent POST as well.
+  // The origin comes only from the validated, registered callback.
+  const clientOrigin = new URL(session.request.redirectUri).origin;
+  return `default-src 'none'; style-src 'unsafe-inline'; form-action 'self' ${clientOrigin}; base-uri 'none'; frame-ancestors 'none'`;
+}
 
 type ConsentRedirectError = "access_denied" | "invalid_request" | "server_error";
 
@@ -39,6 +43,7 @@ function isAllowedRedirectUri(value: string): boolean {
   try {
     const url = new URL(value);
     if (url.username || url.password || url.hash) return false;
+    if (!/^https?:\/\/(?:[a-z0-9.-]+|\[[a-f0-9:]+\])(?::[0-9]+)?$/i.test(url.origin)) return false;
     if (url.protocol === "https:") return true;
     return url.protocol === "http:" && (url.hostname === "127.0.0.1" || url.hostname === "[::1]");
   } catch {
@@ -119,7 +124,7 @@ export async function GET(request: Request): Promise<Response> {
     status: 200,
     headers: noStoreHeaders({
       "Content-Type": "text/html; charset=utf-8",
-      "Content-Security-Policy": CONTENT_SECURITY_POLICY,
+      "Content-Security-Policy": contentSecurityPolicy(session),
       "X-Content-Type-Options": "nosniff",
       "Referrer-Policy": "no-referrer",
     }),

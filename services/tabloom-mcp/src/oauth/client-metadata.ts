@@ -136,7 +136,16 @@ function validateCommon(metadata: ClientMetadata): ValidatedClientRegistration {
 }
 
 export function validateDcrClientMetadata(value: unknown): ValidatedClientRegistration {
-  if (!isExactRecord(value, DCR_KEYS)) throw invalidClientMetadata();
+  if (!value || typeof value !== "object" || Array.isArray(value) ||
+      !DCR_KEYS.every((key) => Object.hasOwn(value, key))) {
+    throw invalidClientMetadata();
+  }
+  // Ignore informational/extension metadata (RFC 7591), but do not accept
+  // caller-selected identities or credentials for this public-client endpoint.
+  if (["client_id", "client_secret", "jwks", "jwks_uri", "software_statement"]
+    .some((key) => Object.hasOwn(value, key))) {
+    throw invalidClientMetadata();
+  }
   return validateCommon(value as unknown as ClientMetadata);
 }
 

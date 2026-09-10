@@ -1,5 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 
+import type { OAuthAuthorizationFailureReason } from "../oauth/authorization-request";
+
 export type OAuthRouteCategory =
   | "register"
   | "authorize"
@@ -22,6 +24,7 @@ export type OAuthAuditEvent = {
   correlationId: string;
   clientHash?: string;
   grantHash?: string;
+  authorizationFailure?: OAuthAuthorizationFailureReason;
 };
 
 export type OAuthAuditSink = (event: OAuthAuditEvent) => void;
@@ -60,6 +63,7 @@ export function emitOAuthAudit(
     clientId?: string;
     grantId?: string;
     nowMs?: number;
+    authorizationFailure?: OAuthAuthorizationFailureReason;
   },
   sink: OAuthAuditSink = defaultSink,
 ): void {
@@ -69,6 +73,7 @@ export function emitOAuthAudit(
     resultClass: result.resultClass,
     correlationId: context.correlationId,
   };
+  if (result.authorizationFailure) event.authorizationFailure = result.authorizationFailure;
   if (result.clientId) event.clientHash = digest(result.clientId);
   if (result.grantId) event.grantHash = digest(result.grantId);
   try {

@@ -15,11 +15,17 @@ export type ValidatedAuthorizationRequest = {
 
 export type OAuthAuthorizationError = "invalid_request" | "invalid_client" | "invalid_scope";
 
+export type OAuthAuthorizationFailureReason = OAuthAuthorizationError |
+  "missing_scope" | "missing_resource" | "missing_parameter" |
+  "invalid_response_type" | "invalid_state" | "invalid_challenge" |
+  "invalid_challenge_method" | "invalid_resource";
+
 export class AuthorizationRequestError extends Error {
   constructor(
     readonly error: OAuthAuthorizationError,
     readonly redirectUri?: string,
     readonly state?: string,
+    readonly reason?: OAuthAuthorizationFailureReason,
   ) {
     super(error);
     this.name = "AuthorizationRequestError";
@@ -52,8 +58,9 @@ function safeError(
   error: OAuthAuthorizationError,
   redirectUri: string,
   state: string | undefined,
+  reason?: OAuthAuthorizationFailureReason,
 ): AuthorizationRequestError {
-  return new AuthorizationRequestError(error, redirectUri, state);
+  return new AuthorizationRequestError(error, redirectUri, state, reason);
 }
 
 export async function validateAuthorizationRequest(
@@ -85,18 +92,21 @@ export async function validateAuthorizationRequest(
   if (!client.redirectUris.includes(redirectUri)) throw unsafeError("invalid_request");
 
   const state = record.state;
-  const fail = (error: OAuthAuthorizationError): never => {
-    throw safeError(error, redirectUri, state);
+  const fail = (error: OAuthAuthorizationError, reason: OAuthAuthorizationFailureReason = error): never => {
+    throw safeError(error, redirectUri, state, reason);
   };
-  const keys = Object.keys(record);
-  if (keys.length !== AUTHORIZATION_KEYS.size || keys.some((key) => !AUTHORIZATION_KEYS.has(key))) {
-    fail("invalid_request");
+  if (!Object.hasOwn(record, "scope")) fail("invalid_request", "missing_scope");
+  if (!Object.hasOwn(record, "resource")) fail("invalid_request", "missing_resource");
+  // RFC 6749 section 3.1: ignore unrecognized parameters. Only the validated
+  // protocol fields below enter the authorization transaction.
+  if ([...AUTHORIZATION_KEYS].some((key) => !Object.hasOwn(record, key))) {
+    fail("invalid_request", "missing_parameter");
   }
-  if (record.response_type !== "code") fail("invalid_request");
-  if (!state || Buffer.byteLength(state, "utf8") > 512) fail("invalid_request");
-  if (!record.code_challenge || !PKCE_CHALLENGE_PATTERN.test(record.code_challenge)) fail("invalid_request");
-  if (record.code_challenge_method !== "S256") fail("invalid_request");
-  if (record.resource !== options.resource) fail("invalid_request");
+  if (record.response_type !== "code") fail("invalid_request", "invalid_response_type");
+  if (!state || Buffer.byteLength(state, "utf8") > 512) fail("invalid_request", "invalid_state");
+  if (!record.code_challenge || !PKCE_CHALLENGE_PATTERN.test(record.code_challenge)) fail("invalid_request", "invalid_challenge");
+  if (record.code_challenge_method !== "S256") fail("invalid_request", "invalid_challenge_method");
+  if (record.resource !== options.resource) fail("invalid_request", "invalid_resource");
   if (record.scope !== "tabloom:workspace") fail("invalid_scope");
 
   return Object.freeze({

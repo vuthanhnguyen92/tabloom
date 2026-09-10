@@ -17,7 +17,7 @@ const RESOURCE = `${ORIGIN}/mcp`;
 const REDIRECT_URI = "https://client.example/callback?existing=kept&display=%22quoted%22";
 const USER_ID = "4f6f8607-9439-4ce3-a19e-f5a302ef3e68";
 const CHALLENGE = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM";
-const CSP = "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'";
+const CSP = "default-src 'none'; style-src 'unsafe-inline'; form-action 'self' https://client.example; base-uri 'none'; frame-ancestors 'none'";
 let privateJwk: JWK;
 
 const authorizationRequest: ValidatedAuthorizationRequest = {
@@ -175,6 +175,22 @@ describe("GET /oauth/consent", () => {
     expect(response.headers.get("Location")).toBeNull();
     expectConsentCleared(response);
     await expect(response.json()).resolves.toEqual({ error: "invalid_request" });
+  });
+
+  it("rejects a callback origin that could inject a CSP directive", async () => {
+    const redirectUri = "https://client.example;script-src.example/callback";
+    const cookie = await consentCookie({
+      ...session,
+      request: {
+        ...session.request,
+        client: { ...session.request.client, redirectUris: [redirectUri] },
+        redirectUri,
+      },
+    });
+    const route = await import("../../services/tabloom-mcp/app/oauth/consent/route");
+    const response = await route.GET(consentRequest(cookie));
+    expect(response.status).toBe(400);
+    expect(response.headers.get("Content-Security-Policy")).toBeNull();
   });
 
   it("fails closed without redirecting when the cookie resource no longer matches configuration", async () => {

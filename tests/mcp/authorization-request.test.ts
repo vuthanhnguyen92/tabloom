@@ -63,6 +63,7 @@ describe("authorization request validation", () => {
   it("rejects duplicate parameter names before resolving a client", async () => {
     const params = validParams();
     params.append("state", "second-state");
+    params.append("prompt", "consent");
     let calls = 0;
     await expect(validateAuthorizationRequest(params, {
       resolveClient: async () => { calls += 1; return CLIENT; },
@@ -71,21 +72,39 @@ describe("authorization request validation", () => {
     expect(calls).toBe(0);
   });
 
-  it("treats prototype property names as unknown parameters", async () => {
-    const params = validParams();
-    params.append("__proto__", "ignored-by-plain-objects");
+  it.each(["prompt", "audience", "unexpected", "__proto__"])(
+    "ignores unrecognized authorization parameter %s",
+    async (key) => {
+      const params = validParams();
+      params.append(key, "unused-value");
+      const result = await validateAuthorizationRequest(params, { resolveClient, resource: RESOURCE });
+      expect(result).toEqual({
+        client: CLIENT,
+        redirectUri: REDIRECT_URI,
+        state: "opaque-client-state",
+        codeChallenge: CHALLENGE,
+        resource: RESOURCE,
+        scope: "tabloom:workspace",
+      });
+    },
+  );
+
+  it("does not let extra parameters replace a missing required parameter", async () => {
+    const params = validParams({ prompt: "consent" });
+    params.delete("scope");
     await expect(validateAuthorizationRequest(params, { resolveClient, resource: RESOURCE }))
-      .rejects.toMatchObject({ error: "invalid_request", redirectUri: REDIRECT_URI });
+      .rejects.toBeInstanceOf(AuthorizationRequestError);
   });
 
   it.each([
-    ["unknown key", (params: URLSearchParams) => params.set("unexpected", "value")],
-    ["missing key", (params: URLSearchParams) => params.delete("scope")],
-  ])("rejects an exact-key violation: %s", async (_label, mutate) => {
+    ["missing_scope", (p: URLSearchParams) => p.delete("scope")],
+    ["missing_resource", (p: URLSearchParams) => p.delete("resource")],
+    ["invalid_scope", (p: URLSearchParams) => p.set("scope", "private-value")],
+  ])("classifies %s without including request values", async (reason, mutate) => {
     const params = validParams();
     mutate(params);
     await expect(validateAuthorizationRequest(params, { resolveClient, resource: RESOURCE }))
-      .rejects.toBeInstanceOf(AuthorizationRequestError);
+      .rejects.toMatchObject({ reason });
   });
 
   it("does not expose a redirect for an unknown client", async () => {
@@ -157,7 +176,7 @@ describe("authorization request validation", () => {
     ["wrong scope", { scope: "openid" }, "invalid_scope"],
     ["multiple scopes", { scope: "tabloom:workspace openid" }, "invalid_scope"],
   ])("returns a redirect-safe error for invalid %s", async (_label, overrides, error) => {
-    await expect(validateAuthorizationRequest(validParams(overrides), { resolveClient, resource: RESOURCE }))
+    await expect(validateAuthorizationRequest(validParams({ ...overrides, prompt: "consent" }), { resolveClient, resource: RESOURCE }))
       .rejects.toMatchObject({
         error,
         redirectUri: REDIRECT_URI,

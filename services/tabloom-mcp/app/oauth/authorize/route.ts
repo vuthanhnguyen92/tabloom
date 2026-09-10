@@ -1,6 +1,7 @@
 import { loadFacadeAuthConfig } from "../../../src/auth/config";
 import {
   AuthorizationRequestError,
+  type OAuthAuthorizationFailureReason,
   validateAuthorizationRequest,
 } from "../../../src/oauth/authorization-request";
 import { resolveClient } from "../../../src/oauth/client-metadata";
@@ -45,8 +46,9 @@ export async function GET(request: Request): Promise<Response> {
     response: Response,
     resultClass: OAuthResultClass,
     clientId?: string,
+    authorizationFailure?: OAuthAuthorizationFailureReason,
   ): Response => {
-    emitOAuthAudit(audit, { resultClass, clientId });
+    emitOAuthAudit(audit, { resultClass, clientId, authorizationFailure });
     return response;
   };
   let config;
@@ -80,7 +82,7 @@ export async function GET(request: Request): Promise<Response> {
     if (error instanceof AuthorizationRequestError) {
       return respond(error.redirectUri
         ? redirectError(error.redirectUri, error.error, error.state)
-        : oauthJson({ error: error.error }, 400), "client_error");
+        : oauthJson({ error: error.error }, 400), "client_error", undefined, error.reason);
     }
     if (error instanceof OAuthPersistenceUnavailableError ||
         error instanceof CimdUnavailableError) {
