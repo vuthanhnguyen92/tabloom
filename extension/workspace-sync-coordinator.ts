@@ -45,6 +45,7 @@ type CoordinatorInput = {
   onActionRequired?: (message: string) => void;
   onDeleteReceipt?: (receipt: DeleteReceipt) => Promise<void>;
   onRestoreCommitted?: (operationId: string) => Promise<void>;
+  onRestoreRejected?: (operationId: string, message: string) => Promise<void>;
 };
 
 function errorMessage(error: unknown): string {
@@ -242,10 +243,8 @@ export class WorkspaceSyncCoordinator implements WorkspaceSyncCoordinatorContrac
   async retryFailed(): Promise<void> {
     if (this.stopped) throw new WorkspaceOfflineError("Workspace sync is unavailable.");
     const retry = await this.input.storage.update(async (current) => {
-      const firstFailed = current.queue.find((entry) => entry.state === "failed");
-      if (!firstFailed) return [current, { state: current, ids: [] as string[] }] as const;
-      const queue = current.queue.map((entry) => entry.operation.operationId === firstFailed.operation.operationId
-        ? { operation: entry.operation, state: "waiting" as const }
+      const queue = current.queue.map((entry) => entry.state === "failed"
+        ? { ...entry, state: "waiting" as const }
         : entry);
       const next: AccountWorkspaceState = { ...current, queue };
       return [next, { state: next, ids: queue.map((entry) => entry.operation.operationId) }] as const;
@@ -255,7 +254,15 @@ export class WorkspaceSyncCoordinator implements WorkspaceSyncCoordinatorContrac
       return;
     }
     await this.withWriteStatus(async () => {
-      for (const operationId of retry.ids) await this.writeThrough(operationId);
+      let actionRequired: WorkspaceConflictActionRequiredError | undefined;
+      for (const operationId of retry.ids) {
+        try { await this.writeThrough(operationId); }
+        catch (error) {
+          if (!(error instanceof WorkspaceConflictActionRequiredError)) throw error;
+          actionRequired = error;
+        }
+      }
+      if (actionRequired) throw actionRequired;
     });
   }
 
@@ -294,7 +301,7 @@ export class WorkspaceSyncCoordinator implements WorkspaceSyncCoordinatorContrac
         const next: AccountWorkspaceState = {
           ...current,
           queue: current.queue.map((entry) => eligibleIds.has(entry.operation.operationId)
-            ? { ...entry, attemptedAt }
+            ? { ...entry, attemptedAt: entry.attemptedAt ?? attemptedAt }
             : entry),
         };
         return [next, next] as const;
@@ -339,12 +346,20 @@ export class WorkspaceSyncCoordinator implements WorkspaceSyncCoordinatorContrac
           result = await this.input.transport.applyOperations(sent, canonical.revision);
         }
         const sentIds = new Set(sent.map((operation) => operation.operationId));
+        for (const outcome of result.outcomes) {
+          const operation = sent.find((item) => item.operationId === outcome.operationId);
+          if (operation?.action === "delete" && outcome.trashId && outcome.restoreUntil) await this.input.onDeleteReceipt?.({ operationId: operation.operationId, rootType: operation.entity, rootId: operation.entityId, trashId: outcome.trashId, restoreUntil: outcome.restoreUntil });
+          if (operation?.action === "restore") {
+            if (outcome.status === "rejected") await this.input.onRestoreRejected?.(outcome.operationId, outcome.message ?? "Restore requires attention.");
+            else await this.input.onRestoreCommitted?.(outcome.operationId);
+          }
+        }
         const rejected = result.outcomes.find((outcome) => sentIds.has(outcome.operationId) && outcome.status === "rejected");
         const conflict = result.conflicts.find((item) => sentIds.has(item.operationId));
         if (rejected || conflict) {
           const message = rejected?.message ?? conflict?.message ?? "A workspace change requires attention.";
           const conflictIds = new Set([
-            ...result.outcomes.filter((outcome) => outcome.status === "rejected").map((outcome) => outcome.operationId),
+            ...result.outcomes.filter((outcome) => sentIds.has(outcome.operationId)).map((outcome) => outcome.operationId),
             ...result.conflicts.map((item) => item.operationId),
           ]);
           const actionRequired = await this.input.storage.update(async (current) => {
@@ -369,11 +384,6 @@ export class WorkspaceSyncCoordinator implements WorkspaceSyncCoordinatorContrac
           .map((outcome) => outcome.operationId));
         if (acknowledged.size !== sentIds.size) {
           throw new WorkspaceWriteFailedError("The server did not acknowledge every workspace change.", sent[0]?.operationId);
-        }
-        for (const outcome of result.outcomes) {
-          const operation = sent.find((item) => item.operationId === outcome.operationId && item.action === "delete");
-          if (operation && outcome.trashId && outcome.restoreUntil) await this.input.onDeleteReceipt?.({ operationId: operation.operationId, rootType: operation.entity, rootId: operation.entityId, trashId: outcome.trashId, restoreUntil: outcome.restoreUntil });
-          if (sent.some((item) => item.operationId === outcome.operationId && item.action === "restore") && outcome.status !== "rejected") await this.input.onRestoreCommitted?.(outcome.operationId);
         }
         const completed = await this.input.storage.update(async (current) => {
           const patched = applyWorkspacePatch(current.snapshot, { ...result.patches, tombstones: result.tombstones });
@@ -406,10 +416,10 @@ export class WorkspaceSyncCoordinator implements WorkspaceSyncCoordinatorContrac
         const failed = await this.input.storage.update(async (current) => {
           const queue = current.queue.map((entry) => {
             if (entry.operation.operationId === firstOperationId) {
-              return { ...entry, state: "failed" as const, attemptedAt, error: message };
+              return { ...entry, state: "failed" as const, attemptedAt: entry.attemptedAt ?? attemptedAt, error: message };
             }
             if (eligibleIds.has(entry.operation.operationId)) {
-              return { operation: entry.operation, state: "waiting" as const };
+              return { ...entry, state: "waiting" as const };
             }
             return entry;
           });

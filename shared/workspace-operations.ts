@@ -353,6 +353,9 @@ export function rebaseWorkspaceOperations(
   const rejected: WorkspaceRebaseResult["rejected"] = [];
   for (const operation of [...pending].sort((left, right) => left.sequence - right.sequence)) {
     if (operation.action === "delete" && !entityExists(snapshot, operation.entity, operation.entityId)) {
+      // An offline Undo needs this operation's server receipt, even if another
+      // device already deleted the root. Let the server resolve that identity.
+      if (pending.some((item) => item.action === "restore" && item.payload.deleteOperationId === operation.operationId)) surviving.push(operation);
       continue;
     }
     if (operation.action !== "restore" && isTombstoned(activeTombstones, operation.entity, operation.entityId)) {

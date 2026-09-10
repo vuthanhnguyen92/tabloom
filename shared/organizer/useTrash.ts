@@ -40,7 +40,7 @@ export function useTrash(repository: WorkspaceTrashRepository, open: boolean, on
         setEntries((items) => items.filter((item) => item.id !== entry.id)); setDestination(null);
         onRestored?.(undefined, entry, destinationId);
         setError("Restored. Refresh the workspace to see the latest changes.");
-      } else setError("Restore could not be completed. Please retry.");
+      } else setError(reason instanceof WorkspaceCommandError ? reason.message : "Restore could not be completed. Please retry.");
     } finally { inFlight.current = false; if (current.active) setBusy(false); }
   }
   return { entries, loading, error, busy, destination, restore, cancelDestination: () => setDestination(null), chooseDestination: (entry: WorkspaceTrashEntry) => setDestination({ entry, type: entry.rootType === "collection" ? "space" : "collection" }) };

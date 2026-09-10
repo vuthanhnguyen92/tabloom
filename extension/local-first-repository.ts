@@ -10,7 +10,8 @@ import {
 import { coalesceWorkspaceOperations, type WorkspaceOperation } from "../shared/workspace-operations";
 import { LocalFirstStorage } from "./local-first-storage";
 import type { LocalTrashMutation, LocalTrashCommit } from "./local-trash-repository";
-import { LocallyCommittedTrashError } from "../shared/trash";
+import { LocallyCommittedTrashError, WorkspaceCommandError } from "../shared/trash";
+import { WorkspaceConflictActionRequiredError } from "./workspace-sync-errors";
 
 export type LocalMutationListener = (operations: WorkspaceOperation[]) => Promise<void>;
 
@@ -64,23 +65,38 @@ export class LocalFirstWorkspaceRepository implements WorkspaceRepository {
   async load(): Promise<WorkspaceSnapshot> {
     return (await this.storage.loadOrThrow()).snapshot;
   }
+  async pendingTrashOperation(operationId: string): Promise<boolean> {
+    return (await this.storage.loadOrThrow()).queue.some((entry) => entry.operation.operationId === operationId);
+  }
 
   async commitTrash(mutation: LocalTrashMutation | undefined, beforeCommit: (before: WorkspaceSnapshot) => Promise<LocalTrashCommit>): Promise<WorkspaceSnapshot> {
     const committed = await this.storage.update<{ snapshot: WorkspaceSnapshot; operation: WorkspaceOperation | undefined }>(async (state) => {
+      const existing = mutation && state.queue.find((entry) => entry.operation.operationId === mutation.operationId);
+      if (existing) {
+        // Retries replay the original intent, not a new snapshot/destination
+        // under an old idempotency key. Later local operations remain intact.
+        const queue = state.queue.map((entry) => entry === existing ? { ...entry, state: "waiting" as const } : entry);
+        return [{ ...state, queue }, { snapshot: state.snapshot, operation: existing.operation }];
+      }
       const { snapshot, values } = await beforeCommit(state.snapshot);
       if (!mutation) return [{ ...state, snapshot }, { snapshot, operation: undefined }, values];
-      const existing = state.queue.find((entry) => entry.operation.operationId === mutation.operationId);
-      const operation = { operationId: mutation.operationId, deviceId: this.deviceId, sequence: existing?.operation.sequence ?? state.nextSequence, entity: mutation.rootType,
+      const operation = { operationId: mutation.operationId, deviceId: this.deviceId, sequence: state.nextSequence, entity: mutation.rootType,
         entityId: mutation.rootId, action: mutation.action, createdAt: new Date().toISOString(), baseRevision: state.revision,
         payload: mutation.action === "delete" ? {} : { ...(mutation.trashId ? { trashId: mutation.trashId } : { deleteOperationId: mutation.deleteOperationId! }), snapshot: mutation.snapshot!, ...(mutation.destinationId ? { destinationId: mutation.destinationId } : {}) },
       } as WorkspaceOperation;
-      const queue = existing ? state.queue.map((entry) => entry === existing ? { operation, state: "waiting" as const } : entry) : [...state.queue, { operation, state: "waiting" as const }];
-      const next = { ...state, snapshot, queue, nextSequence: state.nextSequence + (existing ? 0 : 1) };
+      const queue = [...state.queue, { operation, state: "waiting" as const }];
+      const next = { ...state, snapshot, queue, nextSequence: state.nextSequence + 1 };
       return [next, { snapshot, operation }, values] as const;
     });
     if (committed.operation) {
       try { await this.onMutation([committed.operation]); }
-      catch (cause) { throw new LocallyCommittedTrashError(committed.snapshot, undefined, { cause }); }
+      catch (cause) {
+        if (mutation?.action === "restore" && cause instanceof WorkspaceConflictActionRequiredError) {
+          if (cause.message === "destination_required") throw new WorkspaceCommandError("destination_required", "Choose a writable destination.", { destinationType: mutation.rootType === "collection" ? "space" : "collection" });
+          throw new WorkspaceCommandError("conflict", cause.message);
+        }
+        throw new LocallyCommittedTrashError(committed.snapshot, undefined, { cause });
+      }
     }
     return committed.operation ? this.load() : committed.snapshot;
   }

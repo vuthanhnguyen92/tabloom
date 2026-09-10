@@ -132,6 +132,7 @@ function useExtensionRuntime() {
       transport: new SupabaseWorkspaceSyncTransport(extensionSupabase),
       onDeleteReceipt: (receipt) => new LocalTrashRepository(browserAdapter.storage, localFirst, accountSpaceScope(userId)).reconcileRemote(receipt.operationId, receipt),
       onRestoreCommitted: (operationId) => new LocalTrashRepository(browserAdapter.storage, localFirst, accountSpaceScope(userId)).completeRestore(operationId),
+      onRestoreRejected: (operationId) => new LocalTrashRepository(browserAdapter.storage, localFirst, accountSpaceScope(userId)).rejectRestore(operationId),
       exclusiveRunner: new WorkspaceSyncLock({
         area: browserAdapter.storage,
         waitForLeaseChange: waitForStorageKey,

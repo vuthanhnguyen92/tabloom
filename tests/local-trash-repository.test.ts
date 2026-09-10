@@ -6,6 +6,8 @@ import { LocalFirstWorkspaceRepository } from "../extension/local-first-reposito
 import type { StorageArea } from "../extension/workspace-cache";
 import type { WorkspaceTrashRepository } from "../shared/trash-repository";
 import { LOCAL_WORKSPACE_KEY } from "../extension/workspace-cache";
+import { WorkspaceSyncCoordinator } from "../extension/workspace-sync-coordinator";
+import { rebaseWorkspaceOperations, type WorkspaceOperation } from "../shared/workspace-operations";
 
 function area(): StorageArea {
   const values: Record<string, unknown> = {};
@@ -21,6 +23,146 @@ async function fixture() {
 }
 
 describe("local Trash", () => {
+  it("uses a new restore identity after a definitive destination rejection", async () => {
+    const { storage, workspace, link } = await fixture();
+    const userId = crypto.randomUUID();
+    const initial = await workspace.load();
+    for (const item of [...initial.spaces, ...initial.collections, ...initial.links]) item.user_id = userId;
+    const target = { ...initial.collections[0], id: crypto.randomUUID(), name: "Target", position: 1 };
+    initial.collections.push(target);
+    const state = new LocalFirstStorage(storage, userId);
+    await state.saveCanonical(initial, 1);
+    const sent: WorkspaceOperation[] = [];
+    let server = structuredClone(initial), revision = 1;
+    const coordinator = new WorkspaceSyncCoordinator({ userId, storage: state, exclusiveRunner: { runExclusive: async (_user, task) => task() },
+      transport: { getRevision: async () => ({ revision, serverTime: new Date().toISOString() }), loadCanonical: async () => ({ revision, snapshot: server, tombstones: [] }),
+        applyOperations: async (operations) => {
+          sent.push(...structuredClone(operations)); revision++;
+          const rejected = operations.some((operation) => operation.action === "restore" && !operation.payload.destinationId);
+          if (rejected) server = { ...server, collections: [target], links: [] };
+          else server = rebaseWorkspaceOperations(server, [], operations, userId).snapshot;
+          return { revision, outcomes: operations.map((operation) => ({ operationId: operation.operationId, status: rejected ? "rejected" as const : "applied" as const, ...(rejected ? { message: "destination_required" } : {}) })), patches: server,
+            tombstones: rejected ? [{ entity: "collection" as const, entityId: link.collection_id, deletedRevision: revision, deletedAt: new Date().toISOString() }] : [], conflicts: [] };
+        } }, onRestoreCommitted: async (operationId) => trash.completeRestore(operationId), onRestoreRejected: async (operationId) => trash.rejectRestore(operationId),
+    });
+    const repository = await LocalFirstWorkspaceRepository.create({ userId, storage: state, onMutation: async (operations) => { for (const operation of operations) await coordinator.submit(operation); } });
+    const trash = new LocalTrashRepository(storage, repository, userId);
+    const receipt = await trash.deleteEntity("link", link.id, "extension", crypto.randomUUID());
+    await expect(trash.restore(receipt.trashId)).rejects.toMatchObject({ code: "destination_required" });
+    const original = sent.at(-1)!;
+    expect((await state.loadOrThrow()).queue).toEqual([]);
+    await trash.restore(receipt.trashId, target.id);
+    expect(sent.at(-1)).toMatchObject({ action: "restore", payload: { destinationId: target.id } });
+    expect(sent.at(-1)!.operationId).not.toBe(original.operationId);
+    expect((await repository.load()).links[0].collection_id).toBe(target.id);
+    expect(await trash.list()).toEqual([]);
+  });
+  it("resolves a lost restore response before a destination change gets a new operation identity", async () => {
+    const { storage, workspace, link } = await fixture();
+    const userId = crypto.randomUUID();
+    const initial = await workspace.load();
+    for (const item of [...initial.spaces, ...initial.collections, ...initial.links]) item.user_id = userId;
+    const target = { ...initial.collections[0], id: crypto.randomUUID(), name: "Target", position: 1 };
+    initial.collections.push(target);
+    const state = new LocalFirstStorage(storage, userId);
+    await state.saveCanonical(initial, 1);
+    let server = structuredClone(initial), revision = 1, lost = true;
+    const applied = new Set<string>();
+    const sent: WorkspaceOperation[] = [];
+    const coordinator = new WorkspaceSyncCoordinator({ userId, storage: state, exclusiveRunner: { runExclusive: async (_user, task) => task() },
+      transport: { getRevision: async () => ({ revision, serverTime: new Date().toISOString() }), loadCanonical: async () => ({ revision, snapshot: server, tombstones: [] }),
+        applyOperations: async (operations) => {
+          sent.push(...structuredClone(operations));
+          const outcomes = operations.map((operation) => {
+            const status = applied.has(operation.operationId) ? "already_applied" as const : "applied" as const;
+            if (status === "applied") { server = rebaseWorkspaceOperations(server, [], [operation], userId).snapshot; revision++; applied.add(operation.operationId); }
+            return { operationId: operation.operationId, status };
+          });
+          if (lost && operations.some((operation) => operation.action === "restore")) { lost = false; throw new Error("response lost"); }
+          return { revision, outcomes, patches: server, tombstones: [], conflicts: [] };
+        } }, onRestoreCommitted: async (operationId) => trash.completeRestore(operationId),
+    });
+    const repository = await LocalFirstWorkspaceRepository.create({ userId, storage: state, onMutation: async (operations) => { for (const operation of operations) await coordinator.submit(operation); } });
+    const trash = new LocalTrashRepository(storage, repository, userId);
+    const receipt = await trash.deleteEntity("link", link.id, "extension", crypto.randomUUID());
+    await expect(trash.restore(receipt.trashId)).rejects.toThrow("response lost");
+    const original = (await state.loadOrThrow()).queue[0].operation;
+    await trash.restore(receipt.trashId, target.id);
+    expect(sent.filter((operation) => operation.action === "restore")).toEqual([original, original]);
+    expect(sent.at(-1)).toMatchObject({ action: "update", payload: { collection_id: target.id } });
+    expect(sent.at(-1)!.operationId).not.toBe(original.operationId);
+    expect((await repository.load()).links[0].collection_id).toBe(target.id);
+    expect((await state.loadOrThrow()).queue).toEqual([]);
+    // A stale dialog can choose again after canonical completion. This must
+    // also be a fresh move, never a no-op hidden behind restore idempotency.
+    await trash.restore(receipt.trashId, link.collection_id);
+    expect((await repository.load()).links[0].collection_id).toBe(link.collection_id);
+  });
+  it("invalidates every old confirmation after delete and identical restore, including another repository", async () => {
+    const { storage, workspace, trash, link } = await fixture();
+    const other = new LocalTrashRepository(storage, workspace, "local");
+    const first = await trash.prepareDelete("collection", link.collection_id);
+    const stale = await other.prepareDelete("collection", link.collection_id);
+    const parent = await other.prepareDelete("space", (await workspace.load()).spaces[0].id);
+    const receipt = await trash.deleteEntity("collection", link.collection_id, "extension", crypto.randomUUID(), first.intentId);
+    await trash.restore(receipt.trashId);
+    for (const [repository, intent] of [[trash, first], [other, stale], [other, parent]] as const) {
+      await expect(repository.deleteEntity(intent.targetType, intent.targetId, "extension", crypto.randomUUID(), intent.intentId)).rejects.toMatchObject({ code: "confirmation_required" });
+    }
+    const fresh = await other.prepareDelete("collection", link.collection_id);
+    await expect(other.deleteEntity("collection", link.collection_id, "extension", crypto.randomUUID(), fresh.intentId)).resolves.toBeDefined();
+  });
+
+  it("does not resurrect children removed after a pending container restore", async () => {
+    const { storage, workspace, link } = await fixture();
+    const userId = crypto.randomUUID();
+    const initial = await workspace.load();
+    for (const item of [...initial.spaces, ...initial.collections, ...initial.links]) item.user_id = userId;
+    const moved = { ...initial.links[0], id: crypto.randomUUID(), title: "Move me" };
+    const target = { ...initial.collections[0], id: crypto.randomUUID(), name: "Elsewhere", position: 1 };
+    initial.links.push(moved);
+    initial.collections.push(target);
+    const state = new LocalFirstStorage(storage, userId);
+    await state.saveCanonical(initial, 1);
+    const repository = await LocalFirstWorkspaceRepository.create({ userId, storage: state, onMutation: async () => { throw new Error("offline"); } });
+    const trash = new LocalTrashRepository(storage, repository, userId);
+    const intent = await trash.prepareDelete("collection", link.collection_id);
+    await expect(trash.deleteEntity("collection", link.collection_id, "extension", crypto.randomUUID(), intent.intentId)).rejects.toThrow();
+    const entry = (await trash.list())[0];
+    await expect(trash.restore(entry.id)).rejects.toThrow();
+    await expect(trash.deleteEntity("link", link.id, "extension", crypto.randomUUID())).rejects.toThrow();
+    await expect(repository.updateLink(moved.id, { collection_id: target.id, title: "Edited after moving" })).rejects.toThrow();
+    await expect(trash.restore(entry.id)).rejects.toThrow();
+    expect((await repository.load()).links).toEqual([expect.objectContaining({ id: moved.id, collection_id: target.id, title: "Edited after moving" })]);
+  });
+
+  it("keeps an attempted restore byte-identical until its original outcome is resolved", async () => {
+    const { storage, workspace, link } = await fixture();
+    const userId = crypto.randomUUID();
+    const initial = await workspace.load();
+    for (const item of [...initial.spaces, ...initial.collections, ...initial.links]) item.user_id = userId;
+    const target = { ...initial.collections[0], id: crypto.randomUUID(), name: "Target", position: 1 };
+    initial.collections.push(target);
+    const state = new LocalFirstStorage(storage, userId);
+    await state.saveCanonical(initial, 1);
+    const onMutation = vi.fn(async () => { throw new Error("response lost"); });
+    const repository = await LocalFirstWorkspaceRepository.create({ userId, storage: state, onMutation });
+    const trash = new LocalTrashRepository(storage, repository, userId);
+    await expect(trash.deleteEntity("link", link.id, "extension", crypto.randomUUID())).rejects.toThrow();
+    const entry = (await trash.list())[0];
+    await expect(trash.restore(entry.id)).rejects.toThrow();
+    await state.update(async (current) => [{ ...current, queue: current.queue.map((item) => item.operation.action === "restore" ? { ...item, attemptedAt: "2026-09-10T01:00:00.000Z", state: "failed" as const, error: "response lost" } : item) }, undefined]);
+    const original = (await state.loadOrThrow()).queue[1];
+    // Receipt callbacks can persist before queue acknowledgement storage fails.
+    await trash.rejectRestore(original.operation.operationId);
+    await expect(trash.restore(entry.id, target.id)).rejects.toThrow();
+    expect(onMutation).toHaveBeenLastCalledWith([original.operation]);
+    expect(onMutation).toHaveBeenCalledTimes(3);
+    const retried = (await state.loadOrThrow()).queue[1];
+    expect(retried.operation).toEqual(original.operation);
+    expect(retried.attemptedAt).toBe(original.attemptedAt);
+    expect((await repository.load()).links[0].collection_id).toBe(link.collection_id);
+  });
   it("recovers a signed-out deletion across repository reconstruction with stable IDs", async () => {
     const { storage, workspace, trash, link } = await fixture();
     const operationId = crypto.randomUUID();

@@ -5,21 +5,23 @@ import type { WorkspaceTrashRepository } from "../shared/trash-repository";
 import { assertWritable, reduceWorkspaceSnapshot } from "../shared/organizer/mutation-policy";
 import type { StorageArea } from "./workspace-cache";
 
-export type LocalTrashEntry = WorkspaceTrashEntry & { operationId: string; localId: string; remoteOnly?: boolean; restoreOperationId?: string; restorePending?: boolean; restoreDestinationId?: string };
+export type LocalTrashEntry = WorkspaceTrashEntry & { operationId: string; localId: string; remoteOnly?: boolean; restoreOperationId?: string; restorePending?: boolean; restoreDestinationId?: string; restoreRejected?: boolean };
 export type LocalTrashMutation = { operationId: string; rootType: TrashRootType; rootId: string; action: "delete" | "restore"; deleteOperationId?: string; trashId?: string; destinationId?: string; snapshot?: WorkspaceSnapshot };
 export type LocalTrashCommit = { snapshot: WorkspaceSnapshot; values: Record<string, unknown> };
 export interface LocalTrashWorkspace {
   readonly syncsTrash?: boolean;
   readonly trashOwnerId: string;
   load(): Promise<WorkspaceSnapshot>;
+  pendingTrashOperation?(operationId: string): Promise<boolean>;
   commitTrash(mutation: LocalTrashMutation | undefined, beforeCommit: (before: WorkspaceSnapshot) => Promise<LocalTrashCommit>): Promise<WorkspaceSnapshot>;
 }
 export const localTrashKey = (scope: string) => `tabloom-trash-v1:${scope}`;
+const generationKey = (scope: string) => `tabloom-trash-generation-v1:${scope}`;
 const retention = 30 * 24 * 60 * 60 * 1000;
 
 /** Local confirmation metadata is ephemeral human intent, never server authorization. */
 export class LocalTrashRepository implements WorkspaceTrashRepository {
-  private intents = new Map<string, { intent: DeleteIntent; fingerprint: string }>();
+  private intents = new Map<string, { intent: DeleteIntent; fingerprint: string; generation: number }>();
   private now: () => number;
   private remote?: WorkspaceTrashRepository;
   constructor(private area: StorageArea, private workspace: WorkspaceRepository | LocalTrashWorkspace, private scope: string, options: { now?: () => number; remote?: WorkspaceTrashRepository } = {}) { this.now = options.now ?? Date.now; this.remote = options.remote; }
@@ -32,8 +34,8 @@ export class LocalTrashRepository implements WorkspaceTrashRepository {
   private validateEntry(value: unknown): LocalTrashEntry {
     if (!value || typeof value !== "object") throw new Error("Invalid local Trash.");
     const entry = structuredClone(value) as LocalTrashEntry;
-    const { operationId, localId, remoteOnly, restoreOperationId, restorePending, restoreDestinationId, ...common } = entry;
-    if (typeof localId !== "string" || (remoteOnly !== undefined && typeof remoteOnly !== "boolean") || (restorePending !== undefined && typeof restorePending !== "boolean") || (restoreDestinationId !== undefined && typeof restoreDestinationId !== "string")) throw new Error("Invalid local Trash.");
+    const { operationId, localId, remoteOnly, restoreOperationId, restorePending, restoreDestinationId, restoreRejected, ...common } = entry;
+    if (typeof localId !== "string" || (remoteOnly !== undefined && typeof remoteOnly !== "boolean") || (restorePending !== undefined && typeof restorePending !== "boolean") || (restoreRejected !== undefined && typeof restoreRejected !== "boolean") || (restoreDestinationId !== undefined && typeof restoreDestinationId !== "string")) throw new Error("Invalid local Trash.");
     const snapshot = common.snapshot;
     if (!snapshot || !Array.isArray(snapshot.spaces) || !Array.isArray(snapshot.collections) || !Array.isArray(snapshot.links)) throw new Error("Invalid local Trash snapshot.");
     const owner = this.backend().trashOwnerId;
@@ -49,6 +51,12 @@ export class LocalTrashRepository implements WorkspaceTrashRepository {
     return entry;
   }
   private values(entries: LocalTrashEntry[]) { return { [localTrashKey(this.scope)]: entries }; }
+  private async generation(): Promise<number> {
+    const value = (await this.area.get(generationKey(this.scope)))[generationKey(this.scope)];
+    if (value === undefined) return 0;
+    if (!Number.isSafeInteger(value) || (value as number) < 0) throw new Error("Local confirmation generation is unavailable.");
+    return value as number;
+  }
   private async updateEntries(update: (entries: LocalTrashEntry[]) => LocalTrashEntry[]) {
     await this.backend().commitTrash(undefined, async (snapshot) => ({ snapshot, values: this.values(update(await this.entries())) }));
   }
@@ -90,6 +98,10 @@ export class LocalTrashRepository implements WorkspaceTrashRepository {
   async completeRestore(operationId: string): Promise<void> {
     await this.updateEntries((entries) => entries.map((entry) => entry.restoreOperationId === operationId ? { ...entry, restorePending: false } : entry));
   }
+  async rejectRestore(operationId: string): Promise<void> {
+    await this.updateEntries((entries) => entries.map((entry) => entry.restoreOperationId === operationId
+      ? { ...entry, restoreRejected: true, restorePending: false, restoredAt: null } : entry));
+  }
   private tree(snapshot: WorkspaceSnapshot, rootType: TrashRootType, rootId: string) {
     assertWritable(snapshot, rootType, rootId);
     const after = reduceWorkspaceSnapshot(snapshot, { type: "delete", rootType, id: rootId });
@@ -102,11 +114,15 @@ export class LocalTrashRepository implements WorkspaceTrashRepository {
     return { tree, after };
   }
   async prepareDelete(rootType: "space" | "collection", rootId: string): Promise<DeleteIntent> {
-    const { tree } = this.tree(await this.workspace.load(), rootType, rootId);
-    const intent: DeleteIntent = { intentId: crypto.randomUUID(), targetType: rootType, targetId: rootId, targetName: (rootType === "space" ? tree.spaces : tree.collections)[0].name,
-      collectionCount: rootType === "space" ? tree.collections.length : 0, linkCount: tree.links.length, expiresAt: new Date(this.now() + 5 * 60 * 1000).toISOString() };
-    this.intents.set(intent.intentId, { intent, fingerprint: JSON.stringify(tree) });
-    return intent;
+    let prepared!: DeleteIntent;
+    await this.backend().commitTrash(undefined, async (snapshot) => {
+      const { tree } = this.tree(snapshot, rootType, rootId);
+      prepared = { intentId: crypto.randomUUID(), targetType: rootType, targetId: rootId, targetName: (rootType === "space" ? tree.spaces : tree.collections)[0].name,
+        collectionCount: rootType === "space" ? tree.collections.length : 0, linkCount: tree.links.length, expiresAt: new Date(this.now() + 5 * 60 * 1000).toISOString() };
+      this.intents.set(prepared.intentId, { intent: prepared, fingerprint: JSON.stringify(tree), generation: await this.generation() });
+      return { snapshot, values: {} };
+    });
+    return prepared;
   }
   private backend(): LocalTrashWorkspace {
     if (!("commitTrash" in this.workspace)) throw new Error("Workspace does not support local Trash.");
@@ -123,13 +139,16 @@ export class LocalTrashRepository implements WorkspaceTrashRepository {
       }
       try { await this.backend().commitTrash({ action: "delete", rootType, rootId, operationId }, async (before) => {
         const { tree, after } = this.tree(before, rootType, rootId);
-        if (rootType !== "link" && this.intents.get(confirmationIntentId ?? "")?.fingerprint !== JSON.stringify(tree)) throw new WorkspaceCommandError("confirmation_required", "The tree changed. Confirm deletion again.");
+        const generation = await this.generation();
+        const intent = this.intents.get(confirmationIntentId ?? "");
+        if (rootType !== "link" && (!intent || intent.fingerprint !== JSON.stringify(tree) || intent.generation !== generation)) throw new WorkspaceCommandError("confirmation_required", "The tree changed. Confirm deletion again.");
         const id = crypto.randomUUID();
         entry = { id, localId: id, operationId, rootType, rootId, rootName: rootType === "link" ? tree.links[0].title : (rootType === "space" ? tree.spaces : tree.collections)[0].name,
           source, deletedAt: new Date(this.now()).toISOString(), expiresAt: new Date(this.now() + retention).toISOString(), restoredAt: null, snapshot: tree };
-        return { snapshot: after, values: this.values([...(await this.entries()), entry]) };
-      }); } catch (cause) {
+        return { snapshot: after, values: { ...this.values([...(await this.entries()), entry]), [generationKey(this.scope)]: generation + 1 } };
+      }); this.intents.clear(); } catch (cause) {
         if (cause instanceof LocallyCommittedTrashError) {
+          this.intents.clear();
           const saved = (await this.entries()).find((item) => item.operationId === operationId)!;
           throw new LocallyCommittedTrashError(cause.snapshot, { operationId, trashId: saved.id, rootType, rootId, restoreUntil: saved.expiresAt }, { cause });
         }
@@ -142,38 +161,54 @@ export class LocalTrashRepository implements WorkspaceTrashRepository {
     const entries = await this.entries();
     const entry = entries.find((item) => item.id === trashId || item.localId === trashId);
     if (!entry || Date.parse(entry.expiresAt) <= this.now()) throw new WorkspaceCommandError("not_found", "Recovery has expired.");
-    if (entry.restoredAt && !entry.restorePending) return this.workspace.load();
+    // A receipt callback can finish before the queue acknowledgement is saved.
+    // The queue is the authority for whether an attempted outcome is resolved.
+    if (entry.restoreOperationId && this.backend().pendingTrashOperation) entry.restorePending = await this.backend().pendingTrashOperation!(entry.restoreOperationId);
+    if (entry.restoredAt && !entry.restorePending) {
+      const current = await this.workspace.load();
+      return destinationId ? this.relocate(entry, current, destinationId) : current;
+    }
     destinationId ??= entry.restoreDestinationId;
     const restored = structuredClone(entry.snapshot);
     if (entry.rootType === "space" && destinationId) throw new WorkspaceCommandError("validation_failed", "Spaces do not accept destinations.");
     if (entry.rootType === "collection" && destinationId) restored.collections[0].space_id = destinationId;
     if (entry.rootType === "link" && destinationId) restored.links[0].collection_id = destinationId;
-    const operationId = entry.restoreOperationId ?? crypto.randomUUID();
+    const operationId = entry.restoreRejected && !entry.restorePending ? crypto.randomUUID() : entry.restoreOperationId ?? crypto.randomUUID();
     const mutation: LocalTrashMutation = { action: "restore", operationId, rootType: entry.rootType, rootId: entry.rootId, ...(entry.remoteOnly ? { trashId: entry.id } : { deleteOperationId: entry.operationId }), destinationId,
       snapshot: { spaces: restored.spaces, collections: restored.collections, links: restored.links } };
-    return this.backend().commitTrash(mutation, async (before) => {
-      if (entry.restorePending) {
-        restored.spaces = restored.spaces.map((item) => before.spaces.find((live) => live.id === item.id) ?? item);
-        restored.collections = restored.collections.map((item) => before.collections.find((live) => live.id === item.id) ?? item);
-        restored.links = restored.links.map((item) => before.links.find((live) => live.id === item.id) ?? item);
-        if (destinationId && entry.rootType === "collection") restored.collections = restored.collections.map((item) => item.id === entry.rootId ? { ...item, space_id: destinationId } : item);
-        if (destinationId && entry.rootType === "link") restored.links = restored.links.map((item) => item.id === entry.rootId ? { ...item, collection_id: destinationId } : item);
-        mutation.snapshot = { spaces: restored.spaces, collections: restored.collections, links: restored.links };
-      }
+    const result = await this.backend().commitTrash(mutation, async (before) => {
+      if (entry.restorePending) throw new WorkspaceCommandError("conflict", "The original restore must be reconciled before retrying.");
       if (entry.rootType !== "space") {
         const type = entry.rootType === "link" ? "collection" : "space";
         const id = entry.rootType === "link" ? restored.links[0].collection_id : restored.collections[0].space_id;
         try { assertWritable(before, type, id); }
         catch { throw new WorkspaceCommandError("destination_required", "Choose a writable destination.", { destinationType: type }); }
       }
-      const live = entry.restorePending ? {
-        spaces: before.spaces.filter((item) => !restored.spaces.some((row) => row.id === item.id)),
-        collections: before.collections.filter((item) => !restored.collections.some((row) => row.id === item.id)),
-        links: before.links.filter((item) => !restored.links.some((row) => row.id === item.id)),
-      } : before;
-      const after = reduceWorkspaceSnapshot(live, { type: "restore", snapshot: restored });
+      const after = reduceWorkspaceSnapshot(before, { type: "restore", snapshot: restored });
       const current = await this.entries();
-      return { snapshot: after, values: this.values(current.map((item) => item.operationId === entry.operationId ? { ...item, restoredAt: new Date(this.now()).toISOString(), restoreOperationId: operationId, restorePending: this.backend().syncsTrash === true, ...(destinationId ? { restoreDestinationId: destinationId } : {}) } : item)) };
+      return { snapshot: after, values: { ...this.values(current.map((item) => item.operationId === entry.operationId ? { ...item, restoredAt: new Date(this.now()).toISOString(), restoreOperationId: operationId, restorePending: this.backend().syncsTrash === true, restoreRejected: false, ...(destinationId ? { restoreDestinationId: destinationId } : {}) } : item)), [generationKey(this.scope)]: (await this.generation()) + 1 } };
     });
+    // A successful replay established the original canonical outcome first.
+    // Any subsequent destination change is an ordinary new move identity.
+    if (entry.restorePending && destinationId && destinationId !== entry.restoreDestinationId) {
+      const current = (await this.entries()).find((item) => item.operationId === entry.operationId);
+      if (current?.restorePending) throw new WorkspaceCommandError("conflict", "Retry the original restore before changing destination.");
+      if (current && !current.restoredAt) return this.restore(trashId, destinationId);
+      return this.relocate(entry, result, destinationId);
+    }
+    return result;
+  }
+  private async relocate(entry: LocalTrashEntry, snapshot: WorkspaceSnapshot, destinationId: string): Promise<WorkspaceSnapshot> {
+    if (entry.rootType === "space") throw new WorkspaceCommandError("validation_failed", "Spaces do not accept destinations.");
+    if (!("reorderCollections" in this.workspace)) throw new WorkspaceCommandError("conflict", "Restore completed. Move the item to change its destination.");
+    assertWritable(snapshot, entry.rootType, entry.rootId);
+    assertWritable(snapshot, entry.rootType === "collection" ? "space" : "collection", destinationId);
+    const currentParent = entry.rootType === "collection" ? snapshot.collections.find((item) => item.id === entry.rootId)!.space_id : snapshot.links.find((item) => item.id === entry.rootId)!.collection_id;
+    if (currentParent === destinationId) return snapshot;
+    try {
+      if (entry.rootType === "collection") await this.workspace.reorderCollections(destinationId, [...snapshot.collections.filter((item) => item.space_id === destinationId && item.id !== entry.rootId).map((item) => item.id), entry.rootId]);
+      else await this.workspace.updateLink(entry.rootId, { collection_id: destinationId });
+    } catch (cause) { throw new LocallyCommittedTrashError(await this.workspace.load(), undefined, { cause }); }
+    return this.workspace.load();
   }
 }
