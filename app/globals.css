@@ -1,5 +1,6 @@
 @import "tailwindcss";
 @import "../shared/organizer/organizer.css";
+@import "../shared/classic-organizer/classic-organizer.css";
 
 :root {
   --ink: #25233a;

@@ -79,7 +79,7 @@ function WorkspaceDialog({ dialog, onClose, onSubmit, busy = false, error }: Omi
     else if (dialog.type === "edit-collection") onSubmit({ type: dialog.type, id: dialog.collection.id, name: name.trim() });
   }
   const message = validation || error;
-  return <ModalBoundary label={heading} className="drop-confirm-backdrop organizer-dialog-backdrop" onClose={onClose} busy={busy} initialFocus={isForm ? '[data-initial-focus]' : '[data-cancel]'}>
+  return <ModalBoundary label={heading} className="drop-confirm-backdrop organizer-dialog-backdrop classic-organizer-dialog" onClose={onClose} busy={busy} initialFocus={isForm ? '[data-initial-focus]' : '[data-cancel]'}>
     <div className="drop-confirm organizer-dialog">
       <button className="dialog-close" aria-label="Close dialog" type="button" disabled={busy} onClick={onClose}><X size={18} /></button>
       <h2>{heading}</h2>

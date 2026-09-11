@@ -103,7 +103,7 @@ test("activates a current-tab search result and closes the calling Tabloom tab",
     await expect(tabloom.getByRole("button", { name: "Search all links" })).toBeVisible();
     const pageCountBeforeSelection = context.pages().length;
 
-    await tabloom.keyboard.press("Meta+KeyF");
+    await tabloom.getByRole("button", { name: "Search all links" }).click();
     await tabloom.getByRole("searchbox", { name: "Search all spaces and collections" }).fill("Current Tab Search Target");
     await tabloom.getByRole("button", { name: /Current Tab Search Target, Current window/ }).click();
 

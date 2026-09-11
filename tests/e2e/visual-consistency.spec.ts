@@ -44,9 +44,9 @@ for (const theme of ["light", "dark"] as const) {
     await screenshot(page, `search-${theme}.png`);
     await page.keyboard.press("Escape");
     await page.getByRole("button", { name: "Expand sidebar" }).click();
-    await expect(page.locator(".organizer-space-rail")).toHaveCSS("width", "230px");
-    await expect(page.locator(".organizer-rail-top .ext-brand-mark")).toHaveCSS("width", "30px");
-    expect((await page.locator(".organizer-rail-top").boundingBox())!.height).toBeLessThanOrEqual(40);
+    await expect(page.locator(".ext-sidebar")).toHaveCSS("width", "230px");
+    await expect(page.locator(".sidebar-top .ext-brand-mark")).toHaveCSS("width", "30px");
+    expect((await page.locator(".sidebar-top").boundingBox())!.height).toBeLessThanOrEqual(40);
     await expect(page.getByRole("button", { name: "Collapse sidebar" })).toBeInViewport();
     const longSpace = page.getByRole("button", { name: /^Open Research and references/ });
     const span = longSpace.locator("span");
@@ -57,7 +57,7 @@ for (const theme of ["light", "dark"] as const) {
     expect((await longSpace.boundingBox())!.width).toBe(width);
     await longSpace.click();
     await page.setViewportSize({ width: 760, height: 740 });
-    await expect(page.locator(".organizer-main h1")).toHaveCSS("text-overflow", "ellipsis");
+    await expect(page.locator(".ext-main h1")).toHaveCSS("text-overflow", "ellipsis");
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
     await screenshot(page, `responsive-${theme}.png`);
     expect(errors).toEqual([]);

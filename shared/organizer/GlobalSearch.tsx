@@ -180,9 +180,9 @@ export function GlobalSearch({ snapshot, capabilities, open: controlledOpen, onO
       <span>Search</span>
       <kbd>⌘ F</kbd>
     </button>
-    {open && <ModalBoundary label="Search Tabloom" className="global-search-overlay" owner={resultId} onClose={closeSearch} initialFocus='input[type="search"]'>
-      <button aria-label="Close search backdrop" className="global-search-backdrop" tabIndex={-1} onClick={closeSearch} />
-      <div className="global-search-shell">
+    {open && <ModalBoundary label="Search Tabloom" className="global-search-overlay classic-search-overlay" owner={resultId} onClose={closeSearch} initialFocus='input[type="search"]'>
+      <button aria-label="Close search backdrop" className="global-search-backdrop classic-search-backdrop" tabIndex={-1} onClick={closeSearch} />
+      <div className="global-search-shell classic-search-shell">
         <header>
           <Search aria-hidden="true" size={26} />
           <input

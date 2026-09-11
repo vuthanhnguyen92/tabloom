@@ -18,7 +18,7 @@ function OpenTrashDialog({ repository, snapshot = { spaces: [], collections: [],
   const [destinationId, setDestinationId] = useState("");
   const spaces = snapshot.spaces.filter(isWritable);
   const choices = trash.destination?.type === "space" ? spaces : snapshot.collections.filter((item) => isWritable(item) && spaces.some((space) => space.id === item.space_id));
-  return createPortal(<div className="organizer-trash-overlay" ref={root} tabIndex={-1}>
+  return createPortal(<div className="organizer-trash-overlay classic-trash-overlay" ref={root} tabIndex={-1}>
     <section role="dialog" aria-modal="true" aria-labelledby="trash-title" className="organizer-trash-dialog">
       <header><h2 id="trash-title">Trash</h2><button aria-label="Close Trash" disabled={trash.busy} onClick={onClose}>Close</button></header>
       <p>Deleted items can be recovered for 30 days.</p>

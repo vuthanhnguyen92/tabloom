@@ -13,10 +13,10 @@ export type CollectionSectionProps = Omit<HTMLAttributes<HTMLElement>, "children
 };
 
 /** The section owns row layout; controller-supplied header and cards own commands. */
-export function CollectionSection({ collection, links, writable, collapsed = false, header, children, onOpenCollection, ...articleProps }: CollectionSectionProps) {
-  return <article {...articleProps} id={`collection-${collection.id}`} tabIndex={-1} data-organizer-layout-id={`collection:${collection.id}`} role="group" aria-label={`${collection.name} collection`}>
+export function CollectionSection({ collection, links, writable, collapsed = false, header, children, onOpenCollection, className, ...articleProps }: CollectionSectionProps) {
+  return <article {...articleProps} className={["classic-collection-row", className].filter(Boolean).join(" ")} id={`collection-${collection.id}`} tabIndex={-1} data-organizer-layout-id={`collection:${collection.id}`} role="group" aria-label={`${collection.name} collection`}>
     <div className="collection-content">
-      {header ?? <div className="ext-col-head"><b>{collection.name}</b><span>{links.length} links</span></div>}
+      {header ?? <div className="ext-col-head classic-collection-header"><b>{collection.name}</b><span>{links.length} links</span></div>}
       <div aria-hidden={collapsed} className="collection-body" id={`collection-body-${collection.id}`} inert={collapsed}>
         <div className="collection-body-inner">
           <div className="ext-link-grid">{children ?? links.map((link) => <SavedLinkCard key={link.id} link={link} writable={writable && collection.origin === "saved" && !collection.read_only} favicon={link.favicon_url} />)}</div>

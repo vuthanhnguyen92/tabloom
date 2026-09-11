@@ -13,7 +13,7 @@ import type { WorkspaceMergePlan } from "../shared/workspace-merge";
 import { SupabaseWorkspaceSyncRepository } from "../shared/workspace-sync-repository";
 import { SupabaseTrashRepository, type WorkspaceTrashRepository } from "../shared/trash-repository";
 import { LocalTrashRepository } from "./local-trash-repository";
-import { WorkspaceOrganizerView } from "../shared/organizer/WorkspaceOrganizer";
+import { ClassicWorkspaceOrganizerView } from "../shared/classic-organizer";
 import { useWorkspaceController } from "../shared/organizer/useWorkspaceController";
 import type { OrganizerCapabilities } from "../shared/organizer/capabilities";
 import { createExtensionPreferenceStore } from "./organizer-preference-store";
@@ -643,13 +643,13 @@ function ExtensionOrganizer({ runtime, repository, trashRepository }: { runtime:
     : null;
 
   return <div className="extension-workspace">
-    <WorkspaceOrganizerView {...organizerOptions} controller={controller} savedLinkNewTab={false}
+    <ClassicWorkspaceOrganizerView {...organizerOptions} controller={controller} savedLinkNewTab={false}
       highlightedLinkId={pendingTab?.duplicate?.id ?? pendingBookmark?.duplicate.id}
       resolveFavicon={browserAdapter.favicons.resolve}
       mainContentBefore={activeSpace?.id === BROWSER_BOOKMARKS_SPACE_ID && bookmarkRepository && bookmarkWorkspace && browserAdapter.capabilities.bookmarks
         ? <BrowserBookmarksPanel repository={bookmarkRepository} workspace={bookmarkWorkspace} cache={bookmarkCache} onWorkspaceReload={load} /> : null}
       headerActions={user && !coordinatorState && (syncStatus === "pending" || syncStatus === "error") ? <button className="sync-login-trigger sync-retry-trigger" onClick={() => void retryWorkspaceSync()}>Retry sync</button> : null}
-      accountControls={<SyncLoginPrompt callbackUrl={oauthCallbackUrl} configured={Boolean(extensionSupabase)} onSignIn={signIn} onLogout={logout} onRetrySync={controller.retry} openRequest={signInOpenRequest} recoverySuggested={recoverySuggested} syncState={coordinatorState ?? undefined} target={browserTarget} user={user} />}
+      accountControls={<SyncLoginPrompt callbackUrl={oauthCallbackUrl} configured={Boolean(extensionSupabase)} onSignIn={signIn} onLogout={logout} onOpenTrash={() => controller.setTrashOpen(true)} onRetrySync={controller.retry} openRequest={signInOpenRequest} recoverySuggested={recoverySuggested} syncState={coordinatorState ?? undefined} target={browserTarget} user={user} />}
       currentTabs={<CurrentTabsSheet activeSpaceId={activeSpace?.origin === "saved" ? activeSpace.id : undefined} collections={snapshot?.collections.filter((item) => item.origin === "saved" && item.space_id === activeSpace?.id) ?? []} expanded={tabsExpanded} repository={repository} refreshVersion={tabsRefreshVersion} resolveFavicon={browserAdapter.favicons.resolve} subscribeToTabChanges={browserAdapter.tabChanges.subscribe} onError={setError} onExpandedChange={setTabsExpanded} onMessage={setMessage} onTabDragChange={(dragging) => setBrowserTabDrag((current) => dragging ? { active: true, session: current.session + 1 } : { ...current, active: false })} onWorkspaceReload={() => load()} />}
       externalDrop={browserTabDropAdapter(browserTabDrag.active ? browserTabDrag.session : 0, (tab, collectionId) => {
         setBrowserTabDrag((current) => ({ ...current, active: false }));

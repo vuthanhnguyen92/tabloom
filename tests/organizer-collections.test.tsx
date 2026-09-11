@@ -5,9 +5,13 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { CollectionList } from "../shared/organizer/CollectionList";
 import { CollectionSection } from "../shared/organizer/CollectionSection";
 import { SavedLinkCard } from "../shared/organizer/SavedLinkCard";
+import { WorkspaceOrganizer } from "../shared/organizer/WorkspaceOrganizer";
+import { createWebPreferenceStore } from "../shared/organizer/preferences";
 import { previewCollectionDrop, previewLinkDrop, previewLinkTransfer } from "../shared/organizer/drag-model";
 import { createDemoSnapshot } from "../shared/domain";
 import { MemoryWorkspaceRepository } from "../shared/repository";
+import type { WorkspaceTrashRepository } from "../shared/trash-repository";
+import { webOrganizerCapabilities } from "../app/app/web-organizer-capabilities";
 
 const snapshot = createDemoSnapshot();
 const link = snapshot.links[0];
@@ -250,5 +254,47 @@ describe("shared collection interactions", () => {
       if (originalAnimate) Object.defineProperty(HTMLElement.prototype, "animate", originalAnimate);
       else Reflect.deleteProperty(HTMLElement.prototype, "animate");
     }
+  });
+});
+
+describe("controller-backed collection renderer", () => {
+  it("preserves every writable collection and saved-link action", async () => {
+    const repository = new MemoryWorkspaceRepository("demo-user", snapshot);
+    const trashRepository: WorkspaceTrashRepository = {
+      list: vi.fn(async () => []),
+      prepareDelete: vi.fn(),
+      deleteEntity: vi.fn(),
+      restore: vi.fn(),
+    };
+
+    render(<WorkspaceOrganizer
+      capabilities={webOrganizerCapabilities}
+      deleteSource="web"
+      mutationPolicy="rollbackOnFailure"
+      preferenceScope="characterization"
+      preferenceStore={createWebPreferenceStore({
+        getItem: (key) => localStorage.getItem(key),
+        setItem: (key, value) => localStorage.setItem(key, value),
+        removeItem: (key) => localStorage.removeItem(key),
+      })}
+      repository={repository}
+      share={{
+        availability: "sign-in-required",
+        repository: null,
+        siteUrl: "https://tabloom.nickvu.dev",
+        onRequestSignIn: vi.fn(),
+        onRequestSyncRetry: vi.fn(),
+        onToast: vi.fn(),
+      }}
+      trashRepository={trashRepository}
+      userId="demo-user"
+    />);
+
+    expect(await screen.findByRole("button", { name: "Rename Plan" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Share Plan" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Add link to Plan" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Delete Plan" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Collapse Plan" })).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByRole("button", { name: "Drag Product roadmap" })).toBeVisible();
   });
 });
