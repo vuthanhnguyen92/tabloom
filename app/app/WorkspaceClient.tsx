@@ -12,7 +12,7 @@ import type { WorkspaceSnapshot } from "../../shared/domain";
 import type { WebWorkspaceRepository } from "../../shared/repository";
 import type { WorkspaceTrashRepository } from "../../shared/trash-repository";
 import type { CollectionShareRepository, ShareAvailability } from "../../shared/collection-sharing";
-import { WorkspaceOrganizerView } from "../../shared/organizer/WorkspaceOrganizer";
+import { ClassicWorkspaceOrganizerView } from "../../shared/classic-organizer";
 import { useWorkspaceController } from "../../shared/organizer/useWorkspaceController";
 import { createWebPreferenceStore } from "../../shared/organizer/preferences";
 import { webOrganizerCapabilities } from "./web-organizer-capabilities";
@@ -79,7 +79,7 @@ export function WorkspaceClient({ repository, trashRepository, mode, userId = "d
     return () => { document.removeEventListener("keydown", closeAccount); document.removeEventListener("pointerdown", closeAccount); };
   }, []);
   const status = controller.refreshRequired ? { state: "failed" as const, subtitle: "Refresh required" } : controller.busy ? { state: "syncing" as const, subtitle: "Saving…" } : { state: "synced" as const, subtitle: mode === "synced" ? "Synced" : "Demo workspace" };
-  return <WorkspaceOrganizerView {...options} controller={controller} savedLinkNewTab={false} trashInAccount
+  return <ClassicWorkspaceOrganizerView {...options} controller={controller} savedLinkNewTab={false} trashInAccount
     share={sharing ? { ...sharing, onRequestSyncRetry: () => { void controller.reload(); }, onToast: (message) => controller.notify(message) } : undefined}
     accountControls={<details className="web-organizer-account" ref={account}>
       <summary aria-label="Account"><UserRound size={18} /></summary>

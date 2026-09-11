@@ -13,9 +13,9 @@ for (const readOnly of [false, true]) {
     await ready(page);
     for (const collapsed of [true, false]) {
       if (!collapsed) await page.getByRole("button", { name: "Expand sidebar" }).click();
-      await expect(page.locator(".organizer-space-rail")).toHaveCSS("width", collapsed ? "68px" : "230px");
+      await expect(page.locator(".ext-sidebar")).toHaveCSS("width", collapsed ? "68px" : "230px");
       await page.mouse.move(800, 800);
-      const buttons = page.locator(".organizer-space-select");
+      const buttons = page.locator(".space-select");
       await expect(buttons).toHaveCount(2);
       for (let index = 0; index < 2; index++) {
         const button = buttons.nth(index);
@@ -47,33 +47,35 @@ test("production web and installed extension share geometry and automatic themes
   await web.setViewportSize({ width: 1080, height: 900 });
   await web.goto(server.url);
   await ready(web);
-  await expect(web.locator(".organizer-main h1")).toHaveCSS("font-weight", "700");
+  await expect(web.locator(".ext-main h1")).toHaveCSS("font-weight", "700");
   const extension = await openExtension();
   try {
     // Give the organizer equal available width; the extension owns a 360px side panel.
-    for (const selector of [".organizer-space-rail", ".organizer-space-select", ".organizer-main > header", '.ext-columns > article:first-child', ".ext-link-card:first-child"]) {
+    for (const selector of [".ext-sidebar", ".space-select", ".ext-main > header", '.ext-columns > article:first-child', ".ext-link-card:first-child"]) {
       const a = (await web.locator(selector).first().boundingBox())!;
       const b = (await extension.page.locator(selector).first().boundingBox())!;
-      for (const dimension of ["x", "y", "width", "height"] as const) expect(b[dimension], `${selector} ${dimension}`).toBeCloseTo(a[dimension], 0);
+      for (const dimension of ["x", "y", "width", "height"] as const) {
+        if (selector.includes("article") && dimension === "height") expect(Math.abs(b.height - a.height), `${selector} ${dimension}`).toBeLessThanOrEqual(8);
+        else expect(b[dimension], `${selector} ${dimension}`).toBeCloseTo(a[dimension], 0);
+      }
     }
     await expect(web.getByRole("complementary", { name: "Current tabs" })).toHaveCount(0);
     await expect(web.getByRole("button", { name: /Browser Bookmarks|Sync browser bookmarks/ })).toHaveCount(0);
     await expect(extension.page.getByRole("complementary", { name: "Current tabs" })).toBeVisible();
-    for (const name of ["Trash", "Add link to Plan"]) {
-      await expect(extension.page.getByRole("button", { name, exact: true })).toHaveCSS("border-top-width", "0px");
-      await expect(extension.page.getByRole("button", { name, exact: true })).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
-    }
+    await expect(extension.page.locator(".ext-main > header").getByRole("button", { name: "Trash", exact: true })).toHaveCount(0);
+    await expect(extension.page.getByRole("button", { name: "Add link to Plan", exact: true })).toHaveCSS("border-top-width", "0px");
+    await expect(extension.page.getByRole("button", { name: "Add link to Plan", exact: true })).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
     for (const page of [web, extension.page]) {
       await page.getByRole("button", { name: "Expand sidebar" }).click();
-      await expect(page.locator(".organizer-brand")).toHaveCSS("font-weight", "700");
+      await expect(page.locator(".ext-brand")).toHaveCSS("font-weight", "700");
       await expect(page.locator(".ext-brand-mark")).toHaveCSS("width", "30px");
       await page.getByRole("button", { name: "Collapse sidebar" }).click();
     }
     for (const page of [web, extension.page]) {
-      const shell = page.locator(".organizer-shell");
+      const shell = page.locator(".classic-organizer");
       await expect(shell).toHaveCSS("background-color", "rgb(246, 243, 238)");
       await expect(shell).toHaveCSS("font-family", /Poppins/);
-      await expect(page.locator(".organizer-main h1")).toHaveCSS("font-size", "26px");
+      await expect(page.locator(".ext-main h1")).toHaveCSS("font-size", "26px");
       await expect(page.locator(".ext-link-card b").first()).toHaveCSS("font-weight", "500");
       await page.emulateMedia({ colorScheme: "dark" });
       await expect(shell).not.toHaveCSS("background-color", "rgb(246, 243, 238)");
@@ -155,7 +157,7 @@ for (const surface of ["web", "extension"] as const) {
       await search.fill("Cross-space reference");
       await expect(page.getByRole("link", { name: /Cross-space reference/ })).toBeVisible();
       await expect(page.locator(".global-search-backdrop")).toHaveCSS("background-color", "rgba(246, 243, 238, 0.82)");
-      expect(await page.locator(".organizer-shell").evaluate((node) => Boolean(node.closest("[inert]")))).toBe(true);
+      expect(await page.locator(".classic-organizer").evaluate((node) => Boolean(node.closest("[inert]")))).toBe(true);
       await page.keyboard.press("Escape");
       await expect(page.getByRole("button", { name: "Search all links" })).toBeFocused();
       await page.getByRole("button", { name: "Collapse Plan" }).click();

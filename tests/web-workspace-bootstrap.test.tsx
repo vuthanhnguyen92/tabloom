@@ -129,10 +129,10 @@ describe("web session bootstrap", () => {
     expect(screen.queryByRole("dialog")).toBeNull();
     const delayed = clientFixture(null, true);
     view.rerender(<WorkspaceBootstrap />);
-    expect(screen.queryByTestId("shared-workspace-organizer")).toBeNull();
+    expect(screen.queryByTestId("classic-workspace-organizer")).toBeNull();
     const final = clientFixture(session("carol"));
     view.rerender(<WorkspaceBootstrap />);
-    expect(await screen.findByTestId("shared-workspace-organizer")).toBeVisible();
+    expect(await screen.findByTestId("classic-workspace-organizer")).toBeVisible();
     await act(async () => { delayed.resolveInitial(session("alice")); first.emit(session("alice")); });
     await userEvent.click(screen.getByLabelText("Account"));
     expect(screen.getByText("carol@example.com")).toBeVisible();
@@ -147,7 +147,7 @@ describe("web session bootstrap", () => {
     render(<WorkspaceBootstrap />);
     await userEvent.click(await screen.findByRole("button", { name: "Sign in with Google" }));
     expect(fixture.signInWithOAuth).toHaveBeenCalledWith({ provider: "google", options: { redirectTo: `${window.location.origin}/app` } });
-    expect(screen.queryByTestId("shared-workspace-organizer")).toBeNull();
+    expect(screen.queryByTestId("classic-workspace-organizer")).toBeNull();
   });
 
   it("loads the authenticated repository with scoped preferences and signs out through account actions", async () => {
@@ -171,7 +171,7 @@ describe("web session bootstrap", () => {
     const fixture = clientFixture(null, true);
     render(<WorkspaceBootstrap />);
     await act(async () => fixture.emit(session("bob")));
-    expect(await screen.findByTestId("shared-workspace-organizer")).toBeVisible();
+    expect(await screen.findByTestId("classic-workspace-organizer")).toBeVisible();
     await act(async () => fixture.resolveInitial(null));
     await waitFor(() => expect(screen.queryByRole("button", { name: "Sign in with Google" })).toBeNull());
     await userEvent.click(screen.getByLabelText("Account"));

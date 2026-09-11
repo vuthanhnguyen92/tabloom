@@ -25,7 +25,7 @@ function renderWorkspace() {
 describe("web shared organizer parity", () => {
   it("keeps sync status inside Account so the shared header keeps extension geometry", async () => {
     render(<WorkspaceClient repository={new MemoryWorkspaceRepository("demo-user", createDemoSnapshot())} mode="synced" />);
-    const organizer = await screen.findByTestId("shared-workspace-organizer");
+    const organizer = await screen.findByTestId("classic-workspace-organizer");
     expect(organizer.querySelector(".organizer-status-subtitle")).toBeNull();
     await userEvent.click(screen.getByLabelText("Account"));
     const menu = screen.getByRole("link", { name: "Home" }).parentElement!;
@@ -35,7 +35,9 @@ describe("web shared organizer parity", () => {
 
   it("renders the shared organizer with search and no browser-only controls", async () => {
     renderWorkspace();
-    expect(await screen.findByTestId("shared-workspace-organizer")).toBeVisible();
+    const organizer = await screen.findByTestId("classic-workspace-organizer");
+    expect(organizer).toHaveClass("classic-organizer", "without-side-panel");
+    expect(screen.queryByTestId("shared-workspace-organizer")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Search all links" })).toBeVisible();
     expect(screen.queryByRole("complementary", { name: "Current tabs" })).toBeNull();
     expect(screen.queryByRole("button", { name: /sync bookmarks|close tabs|group tabs/i })).toBeNull();
@@ -67,7 +69,7 @@ describe("web shared organizer parity", () => {
     vi.spyOn(repository, "load").mockReturnValue(new Promise((done) => { resolve = done; }));
     render(<WorkspaceClient repository={repository} mode="demo" />);
     expect(screen.queryByText("Product roadmap")).toBeNull();
-    expect(screen.queryByTestId("shared-workspace-organizer")).toBeNull();
+    expect(screen.queryByTestId("classic-workspace-organizer")).toBeNull();
     await act(async () => resolve(snapshot));
     expect(await screen.findByRole("heading", { name: "Research" })).toBeVisible();
     expect(screen.queryByText("Product roadmap")).toBeNull();

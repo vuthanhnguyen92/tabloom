@@ -54,7 +54,8 @@ export async function openExtension(extensionPath = resolve(process.env.TABLOOM_
 
 export async function openTrash(page: Page, surface: "web" | "extension") {
   if (surface === "web") await page.getByLabel("Account", { exact: true }).click();
-  await page.getByRole("button", { name: "Trash", exact: true }).click();
+  else await page.getByRole("button", { name: "Open account menu", exact: true }).click();
+  await page.getByRole(surface === "web" ? "button" : "menuitem", { name: "Trash", exact: true }).click();
   await expect(page.getByRole("dialog", { name: "Trash", exact: true })).toBeVisible();
 }
 
