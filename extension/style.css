@@ -1,4 +1,5 @@
 @import "../shared/organizer/organizer.css";
+@import "../shared/classic-organizer/classic-organizer.css";
 
 :root { font-family: "Poppins", sans-serif; color: var(--text-primary); background: var(--surface-page); font-synthesis: none; -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
 html, body, #root { height: 100%; min-height: 100%; overflow: hidden; }

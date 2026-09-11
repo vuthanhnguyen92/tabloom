@@ -112,13 +112,15 @@ describe("ExtensionApp bootstrap", () => {
     const retained = await local.load();
     expect([...retained.spaces, ...retained.collections, ...retained.links].every((item) => item.user_id === "local-user")).toBe(true);
     await userEvent.click(await screen.findByRole("button", { name: `Delete ${link.title}` }));
-    await userEvent.click(await screen.findByRole("button", { name: "Trash" }));
+    await userEvent.click(screen.getByRole("button", { name: "Open account menu" }));
+    await userEvent.click(await screen.findByRole("menuitem", { name: "Trash" }));
     expect(await screen.findByRole("button", { name: `Restore ${link.title}` })).toBeVisible();
     await userEvent.click(screen.getByRole("button", { name: "Close Trash" }));
     await userEvent.click(screen.getByRole("button", { name: "Undo" }));
     expect(await screen.findByRole("link", { name: new RegExp(link.title) })).toBeVisible();
     await userEvent.click(screen.getByRole("button", { name: `Delete ${link.title}` }));
-    await userEvent.click(screen.getByRole("button", { name: "Trash" }));
+    await userEvent.click(screen.getByRole("button", { name: "Open account menu" }));
+    await userEvent.click(screen.getByRole("menuitem", { name: "Trash" }));
     await userEvent.click(await screen.findByRole("button", { name: `Restore ${link.title}` }));
     expect(await screen.findByText("Trash is empty.")).toBeVisible();
     await userEvent.click(screen.getByRole("button", { name: "Close Trash" }));
@@ -134,7 +136,8 @@ describe("ExtensionApp bootstrap", () => {
     await userEvent.click(await screen.findByRole("button", { name: "Delete Offline recovery" }));
     await userEvent.click(await screen.findByRole("button", { name: "Undo" }));
     expect(await screen.findByRole("link", { name: /Offline recovery/ })).toBeVisible();
-    await userEvent.click(screen.getByRole("button", { name: "Trash" }));
+    await userEvent.click(screen.getByRole("button", { name: "Open account menu" }));
+    await userEvent.click(screen.getByRole("menuitem", { name: "Trash" }));
     expect(await screen.findByRole("dialog", { name: "Trash" })).toBeVisible();
     expect(await screen.findByText("Trash is empty.")).toBeVisible();
   });
@@ -219,9 +222,12 @@ describe("ExtensionApp bootstrap", () => {
 
     render(<ExtensionApp />);
 
-    expect(await screen.findByTestId("shared-workspace-organizer")).toBeVisible();
+    expect(await screen.findByTestId("classic-workspace-organizer")).toBeVisible();
+    expect(screen.queryByTestId("shared-workspace-organizer")).not.toBeInTheDocument();
     expect(screen.getByRole("complementary", { name: "Current tabs" })).toBeVisible();
     expect(screen.getAllByRole("button", { name: "New collection" })).toHaveLength(1);
+    const workspaceHeader = screen.getByTestId("classic-workspace-organizer").querySelector<HTMLElement>(".ext-main > header")!;
+    expect(within(workspaceHeader).queryByRole("button", { name: "Trash" })).not.toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "New collection" }));
     expect(screen.getAllByRole("dialog")).toHaveLength(1);
   });
@@ -237,7 +243,7 @@ describe("ExtensionApp bootstrap", () => {
     mocks.bootstrapWorkspace.mockResolvedValue({ mode: "local-only", localRepository: new MemoryWorkspaceRepository("local-user", snapshot), session: null, recoverySuggested: false });
 
     render(<ExtensionApp />);
-    await screen.findByTestId("shared-workspace-organizer");
+    await screen.findByTestId("classic-workspace-organizer");
     expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("Remembered space");
     expect(screen.getByRole("button", { name: "Collapse sidebar" })).toBeVisible();
     expect(screen.getByRole("button", { name: "Expand Remembered collection" })).toHaveAttribute("aria-expanded", "false");
@@ -282,11 +288,11 @@ describe("ExtensionApp bootstrap", () => {
   it("keeps the current-tabs sheet vertical and reclaims its width when collapsed", async () => {
     mocks.bootstrapWorkspace.mockResolvedValue({ mode: "local-only", localRepository: new MemoryWorkspaceRepository("local-user", createDemoSnapshot()), session: null, recoverySuggested: false });
     const style = document.createElement("style");
-    style.textContent = readFileSync("shared/organizer/organizer.css", "utf8") + readFileSync("extension/style.css", "utf8").replace(/@import[^;]+;/g, "");
+    style.textContent = readFileSync("shared/organizer/organizer.css", "utf8") + readFileSync("shared/classic-organizer/classic-organizer.css", "utf8") + readFileSync("extension/style.css", "utf8").replace(/@import[^;]+;/g, "");
     document.head.appendChild(style);
     try {
       render(<ExtensionApp />);
-      await screen.findByTestId("shared-workspace-organizer");
+      await screen.findByTestId("classic-workspace-organizer");
       expect(getComputedStyle(screen.getByRole("button", { name: "New collection" })).borderRadius).toBe("10px");
       await userEvent.click(screen.getByRole("button", { name: "Collapse current tabs" }));
       expect(getComputedStyle(screen.getByRole("main")).gridTemplateColumns).toContain("54px");
@@ -366,7 +372,7 @@ describe("ExtensionApp bootstrap", () => {
     mocks.bootstrapWorkspace.mockResolvedValue({ mode: "local-session", localRepository: new MemoryWorkspaceRepository("local-user", snapshot), session: { user: { id: userId } }, recoverySuggested: false });
     render(<ExtensionApp />);
     expect(await screen.findByRole("button", { name: "Sync browser bookmarks" })).toBeVisible();
-    expect(screen.getByTestId("shared-workspace-organizer")).toContainElement(screen.getByRole("region", { name: "Browser bookmark sync" }));
+    expect(screen.getByTestId("classic-workspace-organizer")).toContainElement(screen.getByRole("region", { name: "Browser bookmark sync" }));
     expect(screen.queryByRole("button", { name: "New collection" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Save all as collection" })).toBeDisabled();
   });

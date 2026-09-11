@@ -1,4 +1,4 @@
-import { CheckCircle2, ChevronDown, CircleAlert, Cloud, LoaderCircle, LogIn, LogOut, RefreshCw, UserRound, WifiOff, X } from "lucide-react";
+import { CheckCircle2, ChevronDown, CircleAlert, Cloud, LoaderCircle, LogIn, LogOut, RefreshCw, Trash2, UserRound, WifiOff, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import type { BrowserTarget } from "./browser";
@@ -10,6 +10,7 @@ export type SyncLoginPromptProps = {
   configured: boolean;
   onSignIn: () => Promise<void>;
   onLogout?: () => Promise<void>;
+  onOpenTrash?: () => void;
   target: BrowserTarget;
   user?: SyncUser | null;
   syncState?: WorkspaceSyncState;
@@ -40,7 +41,7 @@ function accountDetails(user: SyncUser) {
   };
 }
 
-export function SyncLoginPrompt({ callbackUrl, configured, onSignIn, onLogout, target, user, syncState, onRetrySync, recoverySuggested = false, openRequest = 0 }: SyncLoginPromptProps) {
+export function SyncLoginPrompt({ callbackUrl, configured, onSignIn, onLogout, onOpenTrash, target, user, syncState, onRetrySync, recoverySuggested = false, openRequest = 0 }: SyncLoginPromptProps) {
   const [open, setOpen] = useState(false);
   const [accountOpen, setAccountOpen] = useState(false);
   const [connecting, setConnecting] = useState(false);
@@ -150,6 +151,7 @@ export function SyncLoginPrompt({ callbackUrl, configured, onSignIn, onLogout, t
           </button>}
         </div>}
         {error && <p className="account-error" role="alert">{error}</p>}
+        {onOpenTrash && <button onClick={() => { setAccountOpen(false); onOpenTrash(); }} role="menuitem"><Trash2 size={16} />Trash</button>}
         <button disabled={connecting} onClick={() => void logout()} role="menuitem">
           {connecting ? <RefreshCw className="account-switching" size={16} /> : <LogOut size={16} />}
           {connecting ? "Logging out…" : "Log out"}
@@ -160,6 +162,14 @@ export function SyncLoginPrompt({ callbackUrl, configured, onSignIn, onLogout, t
 
   return <>
     <button className="sync-login-trigger" onClick={() => setOpen(true)}><Cloud size={15} /> {recoverySuggested ? "Reconnect to restore workspace" : "Sign in to sync"}</button>
+    {onOpenTrash && <div className="account-control" ref={accountRef}>
+      <button aria-expanded={accountOpen} aria-haspopup="menu" aria-label="Open account menu" className="account-trigger" onClick={() => setAccountOpen((current) => !current)}><UserRound size={18} /><ChevronDown size={14} /></button>
+      {accountOpen && <div aria-label="Account" className="account-menu" role="menu">
+        <div className="account-profile"><span aria-hidden="true"><UserRound size={20} /></span><div><strong>Local workspace</strong><small>Stored on this browser</small></div></div>
+        <button onClick={() => { setAccountOpen(false); setOpen(true); }} role="menuitem"><Cloud size={16} />Sign in to sync</button>
+        <button onClick={() => { setAccountOpen(false); onOpenTrash(); }} role="menuitem"><Trash2 size={16} />Trash</button>
+      </div>}
+    </div>}
     {open && createPortal(<div className="drop-confirm-backdrop">
       <section className="drop-confirm sync-login-modal" role="dialog" aria-modal="true" aria-label="Sync with Tabloom">
         <button className="dialog-close" aria-label="Close sign-in" disabled={connecting} onClick={() => setOpen(false)}><X size={18} /></button>
