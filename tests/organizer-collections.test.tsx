@@ -36,15 +36,18 @@ describe("shared saved-link cards", () => {
     expect(screen.queryByRole("combobox", { name: `Move ${link.title} to collection` })).not.toBeInTheDocument();
   });
 
-  it("keeps native navigation separate from small draggable and edit controls", async () => {
+  it("keeps native navigation while allowing the saved-card body and grip to drag", async () => {
     const edit = vi.fn();
-    render(<SavedLinkCard link={link} writable favicon={null} actions={{ onEdit: edit }} onDragStart={vi.fn()} />);
+    const drag = vi.fn();
+    render(<SavedLinkCard link={link} writable favicon={null} actions={{ onEdit: edit }} onDragStart={drag} />);
     const anchor = screen.getByRole("link", { name: /Product roadmap/ });
     expect(anchor).toHaveAttribute("href", link.url);
-    expect(anchor).toHaveAttribute("draggable", "false");
+    expect(anchor).toHaveAttribute("draggable", "true");
     expect(anchor).toHaveStyle({ cursor: "pointer" });
     expect(screen.getByLabelText(`Drag ${link.title}`)).toHaveAttribute("draggable", "true");
     expect(screen.getByLabelText(`Drag ${link.title}`).closest("a")).toBeNull();
+    fireEvent.dragStart(anchor, { dataTransfer: { effectAllowed: "none", setData: vi.fn() } });
+    expect(drag).toHaveBeenCalledOnce();
     let preventedByCard = true;
     const preventNavigation = (event: MouseEvent) => {
       preventedByCard = event.defaultPrevented;
@@ -123,17 +126,18 @@ describe("shared collection interactions", () => {
     expect((await repository.load()).links.filter((item) => item.collection_id === "collection-plan").sort((a, b) => a.position - b.position).map((item) => item.title)).toEqual(["Product roadmap", "Launch checklist", "Customer brief"]);
   });
 
-  it("only starts collection dragging from its explicit handle, never from the row or card body", async () => {
+  it("keeps collection dragging isolated to its handle while card bodies drag links", async () => {
     const { repository, reload } = setup();
     const row = screen.getByRole("group", { name: "Plan collection" });
     const anchor = screen.getByRole("link", { name: /Product roadmap/ });
     const transfer = { effectAllowed: "none", dropEffect: "none", types: [], getData: () => "" };
     expect(row).toHaveAttribute("draggable", "false");
-    expect(anchor.closest('[draggable="true"]')).toBeNull();
+    expect(anchor).toHaveAttribute("draggable", "true");
     expect(fireEvent.dragStart(row, { dataTransfer: transfer })).toBe(false);
-    expect(fireEvent.dragStart(anchor, { dataTransfer: transfer })).toBe(false);
+    expect(fireEvent.dragStart(anchor, { dataTransfer: transfer })).toBe(true);
     expect(row).not.toHaveClass("collection-dragging");
-    expect(anchor).not.toHaveClass("dragging");
+    expect(anchor).toHaveClass("dragging");
+    fireEvent.dragEnd(anchor, { dataTransfer: transfer });
     fireEvent.dragStart(screen.getByRole("button", { name: "Drag Design collection" }), { dataTransfer: transfer });
     expect(screen.getByRole("group", { name: "Design collection" })).toHaveClass("collection-dragging");
     fireEvent.drop(row, { dataTransfer: transfer });

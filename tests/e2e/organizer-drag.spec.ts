@@ -16,19 +16,19 @@ test.beforeEach(async ({ page }) => {
   await expect(page.getByRole("link", { name: /Product roadmap/ })).toBeVisible();
 });
 
-test("a card-body mouse gesture cannot initiate its ancestor collection drag", async ({ page }) => {
+test("a card-body mouse gesture starts link dragging without initiating collection dragging", async ({ page }) => {
   const card = page.getByRole("link", { name: /Product roadmap/ });
   const bounds = (await card.boundingBox())!;
   await page.mouse.move(bounds.x + 80, bounds.y + 40);
   await page.mouse.down();
   await page.mouse.move(bounds.x + 110, bounds.y + 55, { steps: 8 });
   await expect(page.locator(".collection-dragging")).toHaveCount(0);
-  await expect(page.locator(".ext-columns.link-dragging")).toHaveCount(0);
+  await expect(page.locator(".ext-columns.link-dragging")).toHaveCount(1);
   await page.mouse.up();
 });
 
 test("dropping at the actual insertion slot coordinates preserves the displayed index", async ({ page }) => {
-  const source = (await page.getByRole("button", { name: "Drag Launch checklist" }).boundingBox())!;
+  const source = (await page.getByRole("link", { name: /Launch checklist/ }).boundingBox())!;
   const target = (await page.getByRole("link", { name: /Product roadmap/ }).boundingBox())!;
   const x = target.x + 70;
   const y = target.y + 45;
