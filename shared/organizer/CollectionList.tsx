@@ -1,4 +1,4 @@
-import { ChevronRight, GripVertical, Pencil, Share2, Trash2, X } from "lucide-react";
+import { ChevronRight, Pencil, Share2, Trash2, X } from "lucide-react";
 import { Fragment, useEffect, useLayoutEffect, useRef, useState, type DragEvent, type HTMLAttributes } from "react";
 import { CollectionShareDialog } from "../CollectionShareDialog";
 import type { CollectionShareRepository, ShareAvailability } from "../collection-sharing";
@@ -8,7 +8,6 @@ import type { WorkspaceRepository } from "../repository";
 import type { CollectionCollapsePreference } from "./preferences";
 import { CollectionSection } from "./CollectionSection";
 import { SavedLinkCard, type OrganizerFaviconResolver } from "./SavedLinkCard";
-import { previewCollectionDrop } from "./drag-model";
 
 const capturedFavicon: OrganizerFaviconResolver = ({ capturedUrl }) => capturedUrl ?? null;
 
@@ -43,13 +42,11 @@ export type CollectionListProps = {
 };
 
 type DraggedItem =
-  | { kind: "collection"; id: string }
   | { kind: "saved-link"; id: string }
   | { kind: "browser-bookmark"; link: SavedLink }
   | null;
 type LinkDropPreview = { collectionId: string; targetLinkId?: string } | null;
 type PendingDuplicateMove = { sourceId: string; collectionId: string; targetLinkId?: string; duplicate: SavedLink } | null;
-type CollectionDropPreview = { targetId: string; edge: "before" | "after" } | null;
 type EditingLink = { original: SavedLink; title: string; description: string; error?: string } | null;
 type OptimisticLinkText = { title: string; description: string };
 const DELETE_EXIT_MS = 200;
@@ -103,7 +100,6 @@ export function CollectionList({ collections, links, allLinks = links, bookmarkD
   const listRef = useCollectionLayout();
   const [dragged, setDragged] = useState<DraggedItem>(null);
   const [linkDropPreview, setLinkDropPreview] = useState<LinkDropPreview>(null);
-  const [collectionDropPreview, setCollectionDropPreview] = useState<CollectionDropPreview>(null);
   const [browserDropTarget, setBrowserDropTarget] = useState<{ collectionId: string; session: number } | null>(null);
   const [pendingDuplicateMove, setPendingDuplicateMove] = useState<PendingDuplicateMove>(null);
   const [pendingDelete, setPendingDelete] = useState<Collection | null>(null);
@@ -174,7 +170,6 @@ export function CollectionList({ collections, links, allLinks = links, bookmarkD
   function clearDrag() {
     setDragged(null);
     setLinkDropPreview(null);
-    setCollectionDropPreview(null);
     setBrowserDropTarget(null);
   }
 
@@ -247,34 +242,6 @@ export function CollectionList({ collections, links, allLinks = links, bookmarkD
     } catch (reason) {
       onError?.(reason instanceof Error ? reason.message : `Could not rename ${editingCollection.originalName}.`);
     }
-  }
-
-  function collectionOrderForPreview(targetId: string, edge: "before" | "after") {
-    if (dragged?.kind !== "collection") return orderedCollections;
-    const source = orderedCollections.find((item) => item.id === dragged.id);
-    const target = orderedCollections.find((item) => item.id === targetId);
-    if (!source || !target || source.id === target.id) return orderedCollections;
-    const preview = orderedCollections.filter((item) => item.id !== source.id);
-    const targetIndex = preview.findIndex((item) => item.id === target.id);
-    return previewCollectionDrop(orderedCollections, source.id, targetIndex + (edge === "after" ? 1 : 0));
-  }
-
-  function previewCollectionMove(event: DragEvent, targetId: string) {
-    if (dragged?.kind !== "collection" || dragged.id === targetId) return setCollectionDropPreview(null);
-    const bounds = event.currentTarget.getBoundingClientRect();
-    const edge = bounds.height > 0 && event.clientY >= bounds.top + bounds.height / 2 ? "after" : "before";
-    setCollectionDropPreview({ targetId, edge });
-  }
-
-  async function moveCollection(targetId: string) {
-    if (dragged?.kind !== "collection" || dragged.id === targetId) return;
-    const targetCollection = orderedCollections.find((item) => item.id === targetId);
-    if (!targetCollection || !canMutateCollection(targetCollection)) return clearDrag();
-    const preview = collectionDropPreview ?? { targetId, edge: "before" as const };
-    const orderedIds = collectionOrderForPreview(preview.targetId, preview.edge).map((item) => item.id);
-    clearDrag();
-    await repository.reorderCollections(orderedCollections[0].space_id, orderedIds);
-    await onReload();
   }
 
   async function persistLinkMove(sourceId: string, collectionId: string, targetLinkId?: string) {
@@ -413,12 +380,10 @@ export function CollectionList({ collections, links, allLinks = links, bookmarkD
     ? allLinks.filter((link) => link.collection_id === pendingDelete.id && link.origin === "saved").length
     : 0;
   const browserTabDragging = browserTabDragSession > 0;
-  const displayedCollections = dragged?.kind === "collection" && collectionDropPreview
-    ? collectionOrderForPreview(collectionDropPreview.targetId, collectionDropPreview.edge)
-    : orderedCollections;
+  const displayedCollections = orderedCollections;
   const collapseStateReady = !collapsePreference || (collapsedState.ready && collapsedState.scope === collapseScope);
   if (!collapseStateReady) return <div aria-label="Restoring collection layout" className="ext-columns collection-layout-loading" role="status" />;
-  return <div ref={listRef} className={`ext-columns ${dragged?.kind === "saved-link" || dragged?.kind === "browser-bookmark" ? "link-dragging" : ""} ${dragged?.kind === "collection" ? "collection-reordering" : ""} ${browserTabDragging ? "browser-tab-dragging" : ""}`}>
+  return <div ref={listRef} className={`ext-columns ${dragged?.kind === "saved-link" || dragged?.kind === "browser-bookmark" ? "link-dragging" : ""} ${browserTabDragging ? "browser-tab-dragging" : ""}`}>
     {dragged?.kind === "browser-bookmark" && !!bookmarkDropCollections.length && <aside className="bookmark-copy-tray" aria-label="Saved collection drop targets">
       <p>Copy to a saved collection</p>
       <div>{bookmarkDropCollections.filter(canMutateCollection).sort((left, right) => left.name.localeCompare(right.name)).map((collection) => <div
@@ -441,25 +406,18 @@ export function CollectionList({ collections, links, allLinks = links, bookmarkD
       const displayCollection = displayName === collection.name ? collection : { ...collection, name: displayName };
       const isEditingCollection = editingCollection?.id === collection.id;
       const isCollapsed = collapsedState.scope === collapseScope && collapsedState.ids.has(collection.id);
-      const isDraggedCollection = dragged?.kind === "collection" && dragged.id === collection.id;
       return <Fragment key={collection.id}>
-      {isDraggedCollection && collectionDropPreview && <div aria-hidden="true" className="collection-drop-preview"><span>Drop collection here</span></div>}
       <CollectionSection collection={displayCollection} links={collectionLinks} writable={canMutate} collapsed={isCollapsed} onOpenCollection={onOpenCollection}
         aria-label={`${displayName} collection`}
         aria-busy={isRemovingCollection || undefined}
-        className={[showsPreview || isBrowserDropTarget ? "drop-target" : "", isBookmarkDropTarget ? "bookmark-drop-target" : "", canMutate ? "" : "read-only", isDraggedCollection ? "collection-dragging" : "", isCollapsed ? "is-collapsed" : "", isRemovingCollection ? "is-removing" : ""].filter(Boolean).join(" ") || undefined}
+        className={[showsPreview || isBrowserDropTarget ? "drop-target" : "", isBookmarkDropTarget ? "bookmark-drop-target" : "", canMutate ? "" : "read-only", isCollapsed ? "is-collapsed" : "", isRemovingCollection ? "is-removing" : ""].filter(Boolean).join(" ") || undefined}
         draggable={false}
         key={collection.id}
         onDragStart={(event) => { event.preventDefault(); event.stopPropagation(); }}
         onDragEnd={clearDrag}
-        onDragOver={(event) => { if (!canMutate) return; allowDrop(event); if (dragged?.kind === "collection") return previewCollectionMove(event, collection.id); if (!previewBrowserTabDrop(event, collection)) previewLinkDrop(collection); }}
-        onDrop={(event) => { event.preventDefault(); if (!canMutate) return clearDrag(); if (acceptBrowserTab(event, collection)) return; if (dragged?.kind === "collection") void moveCollection(collection.id); else if (dragged?.kind === "browser-bookmark") void copyBookmark(collection); else void moveLink(collection.id); }}
+        onDragOver={(event) => { if (!canMutate) return; allowDrop(event); if (!previewBrowserTabDrop(event, collection)) previewLinkDrop(collection); }}
+        onDrop={(event) => { event.preventDefault(); if (!canMutate) return clearDrag(); if (acceptBrowserTab(event, collection)) return; if (dragged?.kind === "browser-bookmark") void copyBookmark(collection); else void moveLink(collection.id); }}
         header={<div className="ext-col-head"><div className="collection-title-group">
-          {canMutate && !isRemovingCollection && !isEditingCollection && <button aria-label={`Drag ${displayName} collection`} className="collection-drag-handle" draggable
-            onDragStart={(event) => { event.stopPropagation(); event.dataTransfer.effectAllowed = "move"; setLinkDropPreview(null); setBrowserDropTarget(null); setDragged({ kind: "collection", id: collection.id }); }}
-            onDragEnd={clearDrag}
-            onClick={(event) => { event.preventDefault(); event.stopPropagation(); }}
-          ><GripVertical aria-hidden="true" size={14} /></button>}
           <button aria-controls={`collection-body-${collection.id}`} aria-expanded={!isCollapsed} aria-label={`${isCollapsed ? "Expand" : "Collapse"} ${displayName}`} className="collection-collapse-toggle" draggable={false} onClick={(event) => { event.stopPropagation(); toggleCollection(collection.id); }}><ChevronRight aria-hidden="true" size={17} /></button>{isEditingCollection ? <div className="collection-name-editor"><input
           aria-invalid={Boolean(editingCollection.error)}
           aria-label={`Collection name for ${editingCollection.originalName}`}

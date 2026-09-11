@@ -134,20 +134,3 @@ export async function dragRoadmapPreview(page: Page) {
   expect(await page.evaluate(({ x, y }) => Boolean(document.elementFromPoint(x, y)?.closest(".ext-link-drop-preview")), { x, y })).toBe(true);
   await page.mouse.move(x + 2, y + 1);
 }
-
-export async function dragCollectionPreview(page: Page) {
-  const source = (await page.getByRole("button", { name: "Drag Build collection" }).boundingBox())!;
-  const target = (await page.getByRole("group", { name: "Plan collection" }).boundingBox())!;
-  await page.mouse.move(source.x + source.width / 2, source.y + source.height / 2);
-  await page.mouse.down();
-  await page.mouse.move(source.x - 30, source.y, { steps: 4 });
-  await page.mouse.move(target.x + 80, target.y + 10, { steps: 8 });
-  await page.mouse.move(target.x + 81, target.y + 10);
-  await expect.poll(async () => (await page.locator(".collection-drop-preview").boundingBox())?.y).toBeCloseTo(target.y, 0);
-  await expect(page.locator(".collection-drop-preview")).toBeVisible();
-  const slot = (await page.locator(".collection-drop-preview").boundingBox())!;
-  const point = { x: slot.x + slot.width / 2, y: slot.y + slot.height / 2 };
-  await page.mouse.move(point.x, point.y, { steps: 5 });
-  expect(await page.evaluate(({ x, y }) => Boolean(document.elementFromPoint(x, y)?.closest(".collection-drop-preview")), point)).toBe(true);
-  await page.mouse.move(point.x + 1, point.y);
-}

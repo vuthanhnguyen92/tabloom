@@ -1,4 +1,4 @@
-import { Plus } from "lucide-react";
+import { Plus, Trash2 } from "lucide-react";
 import { TabloomMark } from "../TabloomMark";
 import { ControllerCollections } from "../organizer/ControllerCollections";
 import { GlobalSearch } from "../organizer/GlobalSearch";
@@ -43,7 +43,15 @@ export function ClassicWorkspaceOrganizerView({ controller: c, accountControls, 
       <header>
         <div className="classic-header-title">
           {status && <small className={`sync-state-${status.state}`}>{status.subtitle}</small>}
-          <h1 title={active?.name}>{active?.name ?? "Your workspace"}</h1>
+          <div className="classic-active-space-heading">
+            <h1 title={active?.name}>{active?.name ?? "Your workspace"}</h1>
+            {active && props.trashRepository && isWritable(active) && !c.isPending(active.id) && <button
+              aria-label={`Delete ${active.name} space`}
+              className="active-space-delete"
+              onClick={() => { void c.requestDelete("space", active.id); }}
+              type="button"
+            ><Trash2 aria-hidden="true" size={17} /></button>}
+          </div>
         </div>
         <div className="ext-header-tools">
           {active && isWritable(active) && !c.isPending(active.id) && <button aria-label="New collection" className="new-collection-trigger" type="button" onClick={() => c.openDialog({ type: "create-collection", spaceId: active.id })}><Plus aria-hidden="true" size={15} />New collection</button>}
@@ -57,7 +65,17 @@ export function ClassicWorkspaceOrganizerView({ controller: c, accountControls, 
       {!active && <p>Create a space to start organizing your links.</p>}
     </section>
     {currentTabs}
-    <WorkspaceDialogs dialog={c.dialog} onClose={c.closeDialog} onSubmit={(command) => { void c.submitDialog(command); }} busy={c.busy} />
+    <WorkspaceDialogs allowBookmarkImport={Boolean(props.bookmarkImport)} dialog={c.dialog} onClose={c.closeDialog} onSubmit={(command) => { void (async () => {
+      const result = await c.submitDialog(command);
+      if (command.type !== "create-space" || !command.importBookmarks || !props.bookmarkImport || !result || typeof result !== "object" || !("id" in result)) return;
+      try {
+        const summary = await props.bookmarkImport.importIntoSpace(String(result.id));
+        await c.reload();
+        c.notify(`${summary.imported} bookmarks imported${summary.skipped ? ` · ${summary.skipped} skipped` : ""}`);
+      } catch (reason) {
+        c.notify(reason instanceof Error ? reason.message : "Bookmarks could not be imported. Your new space is still available.", "error");
+      }
+    })(); }} busy={c.busy} />
     {props.trashRepository && <TrashDialog repository={props.trashRepository} snapshot={c.snapshot} open={c.trashOpen} onClose={() => c.setTrashOpen(false)} onRestore={c.restoreTrashEntry} />}
     <ToastRegion toasts={c.toasts} onDismiss={c.dismissToast} />
   </main>;

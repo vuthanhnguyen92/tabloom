@@ -7,9 +7,9 @@ import { clearPendingSharedSave, readPendingSharedSave, writePendingSharedSave }
 import { getSupabaseBrowserClient } from "../../lib/supabase-browser";
 
 type ActionState = { phase: "loading" | "ready" | "saving" | "saved" | "existing" | "error" | "unavailable"; result?: SharedCollectionSaveResult; error?: string; retry?: "save" | "status" };
-const explanation = "Save a copy to your account. Changes to the original won’t update your copy.";
+export const sharedSaveExplanation = "Save a copy to your account. Changes to the original won’t update your copy.";
 
-export function SaveSharedCollectionButton({ token }: { token: string }) {
+export function SaveSharedCollectionButton({ token, showExplanation = true }: { token: string; showExplanation?: boolean }) {
   const [state, setState] = useState<ActionState>({ phase: "loading" });
   const [dialog, setDialog] = useState(false);
   const [signingIn, setSigningIn] = useState(false);
@@ -156,7 +156,7 @@ export function SaveSharedCollectionButton({ token }: { token: string }) {
       {state.error && <p role="alert">{state.error}</p>}
       {state.retry && <button className="button" onClick={() => state.retry === "save" ? actions.current.save() : actions.current.status()}>{state.retry === "status" ? "Retry status checking" : "Retry"}</button>}
     </>}
-    <p className="shared-save-explanation">{explanation}</p>
-    {dialog && <div className="dialog-backdrop" role="presentation" onMouseDown={event => { if (event.target === event.currentTarget) setDialog(false); }}><section ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="shared-save-dialog-title" aria-describedby="shared-save-dialog-description" className="dialog shared-save-dialog"><button className="dialog-close" aria-label="Close dialog" onClick={() => setDialog(false)}>×</button><h2 id="shared-save-dialog-title">Sign in to save this collection</h2><p id="shared-save-dialog-description">{explanation}</p>{dialogError && <p role="alert">{dialogError}</p>}<div className="dialog-actions"><button onClick={() => setDialog(false)}>Cancel</button><button className="button-primary" disabled={signingIn} onClick={() => { void signIn(); }}>{signingIn ? "Opening sign-in…" : "Continue with Google"}</button></div></section></div>}
+    {showExplanation && <p className="shared-save-explanation">{sharedSaveExplanation}</p>}
+    {dialog && <div className="dialog-backdrop" role="presentation" onMouseDown={event => { if (event.target === event.currentTarget) setDialog(false); }}><section ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="shared-save-dialog-title" aria-describedby="shared-save-dialog-description" className="dialog shared-save-dialog"><button className="dialog-close" aria-label="Close dialog" onClick={() => setDialog(false)}>×</button><h2 id="shared-save-dialog-title">Sign in to save this collection</h2><p id="shared-save-dialog-description">{sharedSaveExplanation}</p>{dialogError && <p role="alert">{dialogError}</p>}<div className="dialog-actions"><button onClick={() => setDialog(false)}>Cancel</button><button className="button-primary" disabled={signingIn} onClick={() => { void signIn(); }}>{signingIn ? "Opening sign-in…" : "Continue with Google"}</button></div></section></div>}
   </div>;
 }

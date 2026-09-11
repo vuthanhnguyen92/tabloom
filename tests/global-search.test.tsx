@@ -164,7 +164,7 @@ describe("GlobalSearch", () => {
     const user = userEvent.setup();
     renderSearch();
     await user.click(screen.getByRole("button", { name: "Search all links" }));
-    expect(screen.getByText("Search current tabs, saved links, spaces, collections, and bookmarks")).toBeInTheDocument();
+    expect(screen.getByText("Search current tabs, saved links, spaces, and collections")).toBeInTheDocument();
     await user.type(screen.getByRole("searchbox"), "nothing-matches-this");
     expect(screen.getByText("No results found")).toBeInTheDocument();
   });

@@ -7,7 +7,7 @@ import { CollectionSection } from "../shared/organizer/CollectionSection";
 import { SavedLinkCard } from "../shared/organizer/SavedLinkCard";
 import { WorkspaceOrganizer } from "../shared/organizer/WorkspaceOrganizer";
 import { createWebPreferenceStore } from "../shared/organizer/preferences";
-import { previewCollectionDrop, previewLinkDrop, previewLinkTransfer } from "../shared/organizer/drag-model";
+import { previewLinkDrop, previewLinkTransfer } from "../shared/organizer/drag-model";
 import { createDemoSnapshot } from "../shared/domain";
 import { MemoryWorkspaceRepository } from "../shared/repository";
 import type { WorkspaceTrashRepository } from "../shared/trash-repository";
@@ -96,7 +96,6 @@ describe("deterministic insertion previews", () => {
     expect(previewLinkDrop(links, links[2].id, -5).map((item) => item.position)).toEqual([0, 1, 2]);
     expect(links).toEqual(original);
     expect(previewLinkDrop(links, "missing", 1)).toEqual(links);
-    expect(previewCollectionDrop(snapshot.collections, "collection-learn", 0).map((item) => item.name)).toEqual(["Learn", "Plan", "Design"]);
   });
 
   it("previews cross-collection moves without duplicates and normalizes both collections", () => {
@@ -123,23 +122,19 @@ describe("shared collection interactions", () => {
     expect(screen.queryByRole("button", { name: /Move .+ (up|down|earlier|later)/ })).not.toBeInTheDocument();
   });
 
-  it("keeps collection dragging isolated to its handle while card bodies drag links", async () => {
-    const { repository, reload } = setup();
+  it("does not expose collection dragging while card bodies still drag links", () => {
+    setup();
     const row = screen.getByRole("group", { name: "Plan collection" });
     const anchor = screen.getByRole("link", { name: /Product roadmap/ });
     const transfer = { effectAllowed: "none", dropEffect: "none", types: [], getData: () => "" };
     expect(row).toHaveAttribute("draggable", "false");
+    expect(screen.queryByRole("button", { name: /Drag .+ collection/ })).not.toBeInTheDocument();
     expect(anchor).toHaveAttribute("draggable", "true");
     expect(fireEvent.dragStart(row, { dataTransfer: transfer })).toBe(false);
     expect(fireEvent.dragStart(anchor, { dataTransfer: transfer })).toBe(true);
     expect(row).not.toHaveClass("collection-dragging");
     expect(anchor).toHaveClass("dragging");
     fireEvent.dragEnd(anchor, { dataTransfer: transfer });
-    fireEvent.dragStart(screen.getByRole("button", { name: "Drag Design collection" }), { dataTransfer: transfer });
-    expect(screen.getByRole("group", { name: "Design collection" })).toHaveClass("collection-dragging");
-    fireEvent.drop(row, { dataTransfer: transfer });
-    await waitFor(() => expect(reload).toHaveBeenCalledOnce());
-    expect((await repository.load()).collections.sort((a, b) => a.position - b.position).map((item) => item.name)).toEqual(["Design", "Plan", "Learn"]);
   });
 
   it.each([
@@ -265,10 +260,11 @@ describe("shared collection interactions", () => {
 
 describe("controller-backed collection renderer", () => {
   it("preserves every writable collection and saved-link action", async () => {
+    const user = userEvent.setup();
     const repository = new MemoryWorkspaceRepository("demo-user", snapshot);
     const trashRepository: WorkspaceTrashRepository = {
       list: vi.fn(async () => []),
-      prepareDelete: vi.fn(),
+      prepareDelete: vi.fn(async (targetType, targetId) => ({ intentId: "intent-1", targetType, targetId, targetName: "Product launch", collectionCount: 3, linkCount: 8, expiresAt: "2099-01-01T00:00:00.000Z" })),
       deleteEntity: vi.fn(),
       restore: vi.fn(),
     };
@@ -300,6 +296,10 @@ describe("controller-backed collection renderer", () => {
     expect(screen.getByRole("button", { name: "Share Plan" })).toBeVisible();
     expect(screen.getByRole("button", { name: "Add link to Plan" })).toBeVisible();
     expect(screen.getByRole("button", { name: "Delete Plan" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Delete Product launch space" })).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "Delete Product launch space" }));
+    expect(await screen.findByRole("dialog", { name: "Delete “Product launch”?" })).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "Close dialog" }));
     expect(screen.getByRole("button", { name: "Collapse Plan" })).toHaveAttribute("aria-expanded", "true");
     expect(screen.getByRole("button", { name: "Drag Product roadmap" })).toBeVisible();
   });

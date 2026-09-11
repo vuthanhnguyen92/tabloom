@@ -6,7 +6,6 @@ import type { WorkspaceBootstrapResult } from "../extension/workspace-bootstrap"
 import { createDemoSnapshot } from "../shared/domain";
 import { MemoryWorkspaceRepository } from "../shared/repository";
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { BROWSER_BOOKMARKS_SPACE_ID, toBookmarkWorkspace } from "../shared/bookmarks";
 import { ChromeSnapshotCache, createLocalWorkspaceRepository } from "../extension/storage";
 import { LocalFirstStorage } from "../extension/local-first-storage";
 import { LocalFirstWorkspaceRepository } from "../extension/local-first-repository";
@@ -96,7 +95,25 @@ function accountSnapshot(userId: string, offset = 0) {
   };
 }
 
+function emptyInitialSnapshot() {
+  const now = "2026-09-12T00:00:00.000Z";
+  return {
+    spaces: [{ id: "10000000-0000-4000-8000-000000000001", user_id: "local-user", name: "My Space", color: "#7357e6", position: 0, created_at: now, updated_at: now, origin: "saved" as const, read_only: false }],
+    collections: [{ id: "20000000-0000-4000-8000-000000000001", user_id: "local-user", space_id: "10000000-0000-4000-8000-000000000001", name: "My Collection", position: 0, created_at: now, updated_at: now, origin: "saved" as const, read_only: false }],
+    links: [],
+  };
+}
+
 describe("ExtensionApp bootstrap", () => {
+  it("offers a dismissible bookmark import choice on a new local workspace", async () => {
+    mocks.bootstrapWorkspace.mockResolvedValue({ mode: "local-only", localRepository: new MemoryWorkspaceRepository("local-user", emptyInitialSnapshot()), session: null, recoverySuggested: false });
+    render(<ExtensionApp />);
+    expect(await screen.findByRole("region", { name: "Import browser bookmarks" })).toBeVisible();
+    await userEvent.click(screen.getByRole("button", { name: "Not now" }));
+    await waitFor(() => expect(screen.queryByRole("region", { name: "Import browser bookmarks" })).not.toBeInTheDocument());
+    expect(mocks.storageState["tabloom:bookmark-import-onboarding-dismissed:v1"]).toBe(true);
+  });
+
   it("keeps recovered account items locally owned and recoverable after logout", async () => {
     const userId = "11111111-1111-4111-8111-111111111111";
     const snapshot = accountSnapshot(userId);
@@ -361,33 +378,16 @@ describe("ExtensionApp bootstrap", () => {
     expect(screen.getByRole("link", { name: /Locally edited roadmap/ })).toBeVisible();
   });
 
-  it("mounts browser bookmark sync in the remembered read-only space", async () => {
+  it("offers bookmark import while creating an ordinary editable space", async () => {
     const userId = "11111111-1111-4111-8111-111111111111";
     const snapshot = accountSnapshot(userId);
-    const bookmarks = toBookmarkWorkspace(userId, []);
-    snapshot.spaces.push(...bookmarks.spaces);
-    mocks.supabase = { from: () => ({ select: () => ({ order: async () => ({ data: [], error: null }) }) }) } as unknown as SupabaseClient;
-    mocks.storageState["tabloom:selected-spaces:v1"] = { [`account:${userId}`]: BROWSER_BOOKMARKS_SPACE_ID };
     await new ChromeSnapshotCache(browserAdapter.storage).saveCloud(userId, { revision: 1, snapshot });
     mocks.bootstrapWorkspace.mockResolvedValue({ mode: "local-session", localRepository: new MemoryWorkspaceRepository("local-user", snapshot), session: { user: { id: userId } }, recoverySuggested: false });
     render(<ExtensionApp />);
-    expect(await screen.findByRole("button", { name: "Sync browser bookmarks" })).toBeVisible();
-    expect(screen.getByTestId("classic-workspace-organizer")).toContainElement(screen.getByRole("region", { name: "Browser bookmark sync" }));
-    expect(screen.queryByRole("button", { name: "New collection" })).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Save all as collection" })).toBeDisabled();
-  });
-
-  it("offers native bookmark sync before the first bookmark snapshot exists", async () => {
-    const userId = "11111111-1111-4111-8111-111111111111";
-    const snapshot = accountSnapshot(userId);
-    mocks.supabase = { from: () => ({ select: () => ({ order: async () => ({ data: [], error: null }) }) }) } as unknown as SupabaseClient;
-    await new ChromeSnapshotCache(browserAdapter.storage).saveCloud(userId, { revision: 1, snapshot });
-    mocks.bootstrapWorkspace.mockResolvedValue({ mode: "local-session", localRepository: new MemoryWorkspaceRepository("local-user", snapshot), session: { user: { id: userId } }, recoverySuggested: false });
-    render(<ExtensionApp />);
-    await userEvent.click(await screen.findByRole("button", { name: "Open Browser Bookmarks" }));
-    expect(await screen.findByRole("button", { name: "Sync browser bookmarks" })).toBeVisible();
-    expect(screen.queryByRole("button", { name: "New collection" })).toBeNull();
-    expect((await new LocalFirstStorage(browserAdapter.storage, userId).loadOrThrow()).queue).toHaveLength(0);
+    expect(screen.queryByRole("button", { name: "Open Browser Bookmarks" })).not.toBeInTheDocument();
+    await userEvent.click(await screen.findByRole("button", { name: "Add space" }));
+    const checkbox = screen.getByRole("checkbox", { name: "Import bookmarks from this browser" });
+    expect(checkbox).not.toBeChecked();
   });
 
   it("coalesces sync commits until deferred preferences finish, then reloads canonical data once", async () => {

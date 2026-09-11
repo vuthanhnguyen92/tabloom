@@ -1,8 +1,7 @@
-import type { Collection, SavedLink } from "../domain";
+import type { SavedLink } from "../domain";
 import type { BrowserTabSummary } from "./capabilities";
 
 export type OrganizerDragState =
-  | { kind: "collection"; id: string; overIndex: number }
   | { kind: "saved-link"; id: string; sourceCollectionId: string; targetCollectionId?: string; overIndex?: number }
   | { kind: "browser-tab"; tab: BrowserTabSummary; targetCollectionId?: string; overIndex?: number }
   | { kind: "browser-bookmark"; link: SavedLink; targetCollectionId?: string; overIndex?: number }
@@ -20,10 +19,6 @@ function previewOrder<T extends { id: string; position: number }>(items: readonl
 
 export function previewLinkDrop(links: readonly SavedLink[], id: string, index: number): SavedLink[] {
   return previewOrder(links, id, index);
-}
-
-export function previewCollectionDrop(collections: readonly Collection[], id: string, index: number): Collection[] {
-  return previewOrder(collections, id, index);
 }
 
 export function previewLinkTransfer(links: readonly SavedLink[], id: string, collectionId: string, index: number): SavedLink[] {

@@ -150,7 +150,7 @@ test("account cache renders while Supabase is offline", async () => {
   }
 });
 
-test("manual bookmark snapshot appears in the extension and web workspace", async () => {
+test("browser bookmarks import into an ordinary space and sync as saved links", async () => {
   const required = ["VITE_SUPABASE_URL", "VITE_SUPABASE_ANON_KEY", "TABLOOM_E2E_USER_EMAIL", "TABLOOM_E2E_USER_PASSWORD"];
   test.skip(process.env.TABLOOM_E2E_LIVE !== "1" || required.some((name) => !process.env[name]), "Set the documented TABLOOM_E2E variables to run the authenticated headed acceptance test.");
 
@@ -161,22 +161,18 @@ test("manual bookmark snapshot appears in the extension and web workspace", asyn
     await extension.goto("chrome://newtab");
     await signInWithTestSession(extension);
     await installBookmarkFixture(extension, twoDeviceFixture.mac.entries);
-    await extension.reload();
-    await extension.getByRole("button", { name: "Browser Bookmarks" }).click();
-    await extension.getByRole("button", { name: /Sync browser bookmarks|Sync now/ }).click();
-    const deviceName = extension.getByLabel("Device name");
-    if (await deviceName.isVisible()) {
-      await deviceName.fill(twoDeviceFixture.mac.name);
-      await extension.getByRole("button", { name: "Start sync" }).click();
-    }
+    await extension.getByRole("button", { name: "Add space" }).click();
+    await extension.getByRole("textbox", { name: "Space name" }).fill("Imported from Work Mac");
+    await extension.getByRole("checkbox", { name: "Import bookmarks from this browser" }).check();
+    await extension.getByRole("button", { name: "Create space" }).click();
     await expect(extension.getByText("Work / Design", { exact: true })).toBeVisible();
-    await expect(extension.getByText("Unfiled bookmarks", { exact: true })).toBeVisible();
+    await expect(extension.getByText("Imported bookmarks", { exact: true })).toBeVisible();
 
     const web = await context.newPage();
     await web.goto(process.env.TABLOOM_E2E_WEB_URL || "http://localhost:4173");
     await signInWithTestSession(web);
     await web.goto(`${process.env.TABLOOM_E2E_WEB_URL || "http://localhost:4173"}/app`);
-    await web.getByRole("button", { name: "Browser Bookmarks" }).click();
+    await web.getByRole("button", { name: "Open Imported from Work Mac" }).click();
     await expect(web.getByText("Work / Design", { exact: true })).toBeVisible();
   } finally {
     await context.close();

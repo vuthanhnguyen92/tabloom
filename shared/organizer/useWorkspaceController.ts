@@ -5,7 +5,7 @@ import type { DeleteIntent, DeleteReceipt, TrashSource, WorkspaceTrashEntry } fr
 import { CommittedRestoreRefreshError, LocallyCommittedTrashError } from "../trash";
 import type { WorkspaceTrashRepository } from "../trash-repository";
 import type { OrganizerCapabilities } from "./capabilities";
-import { previewCollectionDrop, type OrganizerDragState } from "./drag-model";
+import { type OrganizerDragState } from "./drag-model";
 import { applyMutationFailure, assertWritable, reduceWorkspaceSnapshot, type MutationPolicy, type WorkspaceMutation } from "./mutation-policy";
 import { CollectionCollapsePreference, SelectedSpacePreference, type OrganizerPreferenceStore } from "./preferences";
 import type { OrganizerToast } from "./ToastRegion";
@@ -381,15 +381,8 @@ export function useWorkspaceController(options: WorkspaceControllerOptions) {
     if (link.collection_id !== collectionId && duplicate) { openDialog({ type: "duplicate-link", title: duplicate.title, actionLabel: "Move anyway" }); duplicateAction.current = run; return Promise.resolve(undefined); }
     return run();
   }
-  function moveCollection(id: string, index: number) {
-    if (isPending(id)) return Promise.resolve(undefined);
-    const source = session.snapshot.collections.find((item) => item.id === id);
-    if (!source) return Promise.resolve(undefined);
-    return mutate((snapshot) => ({ type: "reorder-collections", spaceId: source.space_id, ids: previewCollectionDrop(snapshot.collections.filter((item) => item.space_id === source.space_id), id, index).map((item) => item.id) }), (optimistic) => repository.reorderCollections(source.space_id, order(optimistic.collections.filter((item) => item.space_id === source.space_id)).map((item) => item.id)), "Collection moved");
-  }
   function commitDrag() {
     const currentDrag = drag; setDrag(null);
-    if (currentDrag?.kind === "collection") return moveCollection(currentDrag.id, currentDrag.overIndex);
     if (currentDrag?.kind === "saved-link" && currentDrag.targetCollectionId !== undefined && currentDrag.overIndex !== undefined) {
       return moveLink(currentDrag.id, currentDrag.targetCollectionId, currentDrag.overIndex);
     }
@@ -400,9 +393,9 @@ export function useWorkspaceController(options: WorkspaceControllerOptions) {
     collapsedCollections: current.collapsed, railCollapsed: current.railCollapsed,
     dialog, searchOpen, drag, externalDropTarget, toasts, busy, retryRequired, refreshRequired, isPending,
     selectSpace, setRailCollapsed, toggleCollection, openDialog, closeDialog, submitDialog,
-    requestDelete, deleteLink, rejectDelete, restore, restoreTrashEntry, trashOpen, setTrashOpen, reload, retry, mutate, notify, openCollection, moveLink, moveCollection,
+    requestDelete, deleteLink, rejectDelete, restore, restoreTrashEntry, trashOpen, setTrashOpen, reload, retry, mutate, notify, openCollection, moveLink,
     setSearchOpen, setDrag: (value: OrganizerDragState) => {
-      if (value?.kind === "collection" && isPending(value.id) || value?.kind === "saved-link" && (isPending(value.id) || value.targetCollectionId !== undefined && isPending(value.targetCollectionId))) return;
+      if (value?.kind === "saved-link" && (isPending(value.id) || value.targetCollectionId !== undefined && isPending(value.targetCollectionId))) return;
       setDrag(value);
     }, setExternalDropTarget, commitDrag,
     dismissToast: (id: string) => setToasts((items) => items.filter((toast) => toast.id !== id)),

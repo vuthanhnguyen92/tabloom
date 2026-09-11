@@ -49,7 +49,7 @@ test("app route renders an accessible workspace shell", async () => {
   else {
     assert.match(main, /aria-busy="true"/);
     assert.match(main, /aria-label="Loading workspace"/);
-    assert.match(main, /organizer-boot-indicator/);
+    assert.match(main, /workspace-boot-indicator/);
   }
   assert.doesNotMatch(main, /New collection|Sign in with Google/);
 });
@@ -60,10 +60,10 @@ test("privacy route explains Tabloom data handling", async () => {
   const html = await response.text();
   assert.match(html, /Privacy at Tabloom/);
   assert.match(html, /Supabase/);
-  assert.match(html, /Chrome permissions/);
-  assert.match(html, /bookmark titles, URLs, folder paths, ordering/i);
-  assert.match(html, /only when you choose to sync/i);
-  assert.match(html, /device name and sync status/i);
+  assert.match(html, /Browser permissions/);
+  assert.match(html, /copies visible bookmark titles, URLs, and folder organization/i);
+  assert.match(html, /only when you choose to import bookmarks/i);
+  assert.match(html, /browser bookmarks remain unchanged/i);
 });
 
 test("invalid shared collection routes render a generic private state", async () => {

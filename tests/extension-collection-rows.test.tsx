@@ -1,4 +1,4 @@
-import { act, createEvent, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { readFileSync } from "node:fs";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
@@ -742,76 +742,10 @@ describe("CollectionRows", () => {
     expect(container.querySelector(".ext-columns")).not.toHaveClass("link-dragging");
   });
 
-  it("persists collection order when a row is dragged", async () => {
-    const { repository, onReload } = setup();
-    const dataTransfer = createDataTransfer();
-    fireEvent.dragStart(dragHandleFor(screen.getByRole("group", { name: "Learn collection" })), { dataTransfer });
-    fireEvent.dragOver(screen.getByRole("group", { name: "Plan collection" }), { dataTransfer });
-    fireEvent.drop(screen.getByRole("group", { name: "Plan collection" }), { dataTransfer });
-
-    await waitFor(() => expect(onReload).toHaveBeenCalledOnce());
-    const snapshot = await repository.load();
-    expect(snapshot.collections.sort((a, b) => a.position - b.position).map((item) => item.name)).toEqual(["Learn", "Plan", "Design"]);
-  });
-
-  it("shows an insertion marker and shifts collection rows before drop", () => {
-    const { container, onReload } = setup();
-    const source = screen.getByRole("group", { name: "Learn collection" });
-    const target = screen.getByRole("group", { name: "Plan collection" });
-    vi.spyOn(target, "getBoundingClientRect").mockReturnValue({ top: 100, height: 100, bottom: 200, left: 0, right: 600, width: 600, x: 0, y: 100, toJSON: () => ({}) });
-    const dataTransfer = createDataTransfer();
-
-    fireEvent.dragStart(dragHandleFor(source), { dataTransfer });
-    fireEvent.dragOver(target, { clientY: 120, dataTransfer });
-
-    const preview = container.querySelector(".collection-drop-preview");
-    expect(preview).toBeInTheDocument();
-    expect(source).toHaveClass("collection-dragging");
-    expect(getComputedStyle(source).opacity).toBe("0.38");
-    expect(getComputedStyle(preview!).height).toBe("28px");
-    expect(screen.getAllByRole("group", { name: /collection$/i }).map((row) => row.getAttribute("aria-label"))).toEqual([
-      "Learn collection",
-      "Plan collection",
-      "Design collection",
-    ]);
-    expect(onReload).not.toHaveBeenCalled();
-
-    fireEvent.dragEnd(source, { dataTransfer });
-    expect(container.querySelector(".collection-drop-preview")).not.toBeInTheDocument();
-    expect(screen.getAllByRole("group", { name: /collection$/i }).map((row) => row.getAttribute("aria-label"))).toEqual([
-      "Plan collection",
-      "Design collection",
-      "Learn collection",
-    ]);
-  });
-
-  it("uses the pointer midpoint to preview and persist an after-target collection drop", async () => {
-    const { repository, onReload } = setup();
-    const source = screen.getByRole("group", { name: "Plan collection" });
-    const target = screen.getByRole("group", { name: "Design collection" });
-    vi.spyOn(target, "getBoundingClientRect").mockReturnValue({ top: 100, height: 100, bottom: 200, left: 0, right: 600, width: 600, x: 0, y: 100, toJSON: () => ({}) });
-    const dataTransfer = createDataTransfer();
-
-    fireEvent.dragStart(dragHandleFor(source), { dataTransfer });
-    const dragOver = createEvent.dragOver(target, { dataTransfer });
-    Object.defineProperty(dragOver, "clientY", { value: 180 });
-    fireEvent(target, dragOver);
-
-    expect(screen.getAllByRole("group", { name: /collection$/i }).map((row) => row.getAttribute("aria-label"))).toEqual([
-      "Design collection",
-      "Plan collection",
-      "Learn collection",
-    ]);
-
-    fireEvent.drop(target, { clientY: 180, dataTransfer });
-    await waitFor(() => expect(onReload).toHaveBeenCalledOnce());
-    expect((await repository.load()).collections.sort((a, b) => a.position - b.position).map((item) => item.name)).toEqual(["Design", "Plan", "Learn"]);
-  });
-
-  it("uses collection drag handles without rendering position arrow controls", () => {
+  it("does not render collection drag handles or position arrow controls", () => {
     setup();
     const design = screen.getByRole("group", { name: "Design collection" });
-    expect(within(design).getByRole("button", { name: "Drag Design collection" })).toHaveAttribute("draggable", "true");
+    expect(within(design).queryByRole("button", { name: "Drag Design collection" })).not.toBeInTheDocument();
     expect(within(design).queryByRole("button", { name: /Move Design (up|down)/ })).not.toBeInTheDocument();
   });
 

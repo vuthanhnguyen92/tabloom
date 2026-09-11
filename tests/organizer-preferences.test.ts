@@ -80,7 +80,7 @@ describe("organizer capabilities", () => {
     const web = webOrganizerCapabilities({ openUrl: vi.fn() });
 
     expect(web.currentTabs).toBeUndefined();
-    expect(web.bookmarks).toBeUndefined();
+    expect("bookmarks" in web).toBe(false);
     expect(web.openCollection).toBeTypeOf("function");
   });
 

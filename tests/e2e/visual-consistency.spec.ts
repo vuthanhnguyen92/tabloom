@@ -1,5 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
-import { dragCollectionPreview, dragRoadmapPreview, ready, startOrganizerServer, trackPageErrors } from "./helpers/organizer";
+import { dragRoadmapPreview, ready, startOrganizerServer, trackPageErrors } from "./helpers/organizer";
 
 let server: Awaited<ReturnType<typeof startOrganizerServer>>;
 test.beforeAll(async () => { server = await startOrganizerServer(); });
@@ -73,17 +73,5 @@ test("rendered drag preview has a real hit target", async ({ page }) => {
   await screenshot(page, "drag-preview.png");
   await page.mouse.up();
   await expect(page.getByRole("group", { name: "Plan collection" }).locator(".ext-link-card b")).toHaveText(["Launch checklist", "Product roadmap", "Customer brief"]);
-  expect(errors).toEqual([]);
-});
-
-test("rendered collection insertion marker accepts native drops", async ({ page }) => {
-  const errors = trackPageErrors(page);
-  await page.setViewportSize({ width: 1440, height: 900 });
-  await page.goto(server.url);
-  await ready(page);
-  await dragCollectionPreview(page);
-  await screenshot(page, "collection-preview.png");
-  await page.mouse.up();
-  await expect(page.locator(".ext-columns > article").first()).toHaveAttribute("aria-label", "Build collection");
   expect(errors).toEqual([]);
 });

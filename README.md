@@ -163,11 +163,11 @@ For Google sign-in:
 
 Do not reuse the ID from another extension or add a broad `*.chromiumapp.org` wildcard. Each installed target must register the exact callback returned by its own identity API.
 
-The extension requests only `tabs`, `storage`, and `identity`, plus network access to Supabase. Bookmark access is optional: the browser prompts for it only when the user chooses **Sync browser bookmarks**. Tabloom reads bookmarks on demand, keeps the browser authoritative, and never edits the browser bookmark tree.
+The extension requests only `tabs`, `storage`, and `identity`, plus network access to Supabase. Bookmark access is optional: the browser prompts for it only when the user chooses **Import bookmarks** during onboarding or while creating a space. The import creates ordinary editable Tabloom collections and never edits the browser bookmark tree.
 
 See [Cross-browser extension builds](docs/cross-browser-extension.md) for target commands, installation, OAuth callbacks, feature fallbacks, and Safari conversion.
 
-See [Manual bookmark synchronization](docs/bookmark-sync-setup.md) for local Supabase setup, permission behavior, device sources, and the two-device acceptance procedure.
+See [Browser bookmark import](docs/bookmark-sync-setup.md) for permission behavior, folder mapping, and acceptance checks.
 
 ## Project layout
 

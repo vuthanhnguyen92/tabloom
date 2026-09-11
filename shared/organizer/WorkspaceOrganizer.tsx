@@ -29,6 +29,7 @@ export type WorkspaceOrganizerProps = WorkspaceControllerOptions & {
   savedLinkNewTab?: boolean;
   highlightedLinkId?: string;
   trashInAccount?: boolean;
+  bookmarkImport?: { importIntoSpace: (spaceId: string) => Promise<{ imported: number; skipped: number }> };
 };
 
 export function WorkspaceOrganizer(props: WorkspaceOrganizerProps) {
@@ -60,7 +61,17 @@ export function WorkspaceOrganizerView({ controller: c, accountControls, current
       <ControllerCollections {...props} controller={c} />
       {!active && <p>Create a space to start organizing your links.</p>}
     </WorkspaceShell>
-    <WorkspaceDialogs dialog={c.dialog} onClose={c.closeDialog} onSubmit={(command) => { void c.submitDialog(command); }} busy={c.busy} />
+    <WorkspaceDialogs allowBookmarkImport={Boolean(props.bookmarkImport)} dialog={c.dialog} onClose={c.closeDialog} onSubmit={(command) => { void (async () => {
+      const result = await c.submitDialog(command);
+      if (command.type !== "create-space" || !command.importBookmarks || !props.bookmarkImport || !result || typeof result !== "object" || !("id" in result)) return;
+      try {
+        const summary = await props.bookmarkImport.importIntoSpace(String(result.id));
+        await c.reload();
+        c.notify(`${summary.imported} bookmarks imported${summary.skipped ? ` · ${summary.skipped} skipped` : ""}`);
+      } catch (reason) {
+        c.notify(reason instanceof Error ? reason.message : "Bookmarks could not be imported. Your new space is still available.", "error");
+      }
+    })(); }} busy={c.busy} />
     {props.trashRepository && <TrashDialog repository={props.trashRepository} snapshot={c.snapshot} open={c.trashOpen} onClose={() => c.setTrashOpen(false)} onRestore={c.restoreTrashEntry} />}
     <ToastRegion toasts={c.toasts} onDismiss={c.dismissToast} />
   </div>;

@@ -10,16 +10,11 @@ export type CurrentTabsCapability = {
   activate(tabId: number): Promise<void>;
 };
 
-export type BookmarkCapability = {
-  supported: true;
-};
-
 export type OrganizerCapabilities = {
   openLink(input: { url: string; newTab: boolean }): Promise<void>;
   openCollection(name: string, urls: string[]): Promise<void>;
   resolveFavicon(url: string, source?: string | null): Promise<string | null>;
   currentTabs?: CurrentTabsCapability;
-  bookmarks?: BookmarkCapability;
 };
 
 type WebOrganizerCapabilityOptions = {

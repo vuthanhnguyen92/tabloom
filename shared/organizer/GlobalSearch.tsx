@@ -205,7 +205,7 @@ export function GlobalSearch({ snapshot, capabilities, open: controlledOpen, onO
         <div className="global-search-content">
           {currentTabsCapability && currentTabsLoading && <div className="global-search-tabs-status">Loading current tabs…</div>}
           {currentTabsCapability && currentTabsError && <div className="global-search-tabs-status is-error"><span>Current tabs are unavailable.</span><button onClick={() => void loadCurrentTabs()}>Retry current tabs</button></div>}
-          {!query.trim() && <div className="global-search-state"><Search aria-hidden="true" size={24} /><p>{currentTabsCapability ? "Search current tabs, saved links, spaces, collections, and bookmarks" : "Search saved links, spaces, and collections"}</p><small>Type a title, URL, description, space, or collection name</small></div>}
+          {!query.trim() && <div className="global-search-state"><Search aria-hidden="true" size={24} /><p>{currentTabsCapability ? "Search current tabs, saved links, spaces, and collections" : "Search saved links, spaces, and collections"}</p><small>Type a title, URL, description, space, or collection name</small></div>}
           {query.trim() && !results.length && !(currentTabsCapability && currentTabsLoading) && <div className="global-search-state"><p>No results found</p><small>Try another title, collection, space, or URL</small></div>}
           {results.length > 0 && <div id={`${resultId}-results`} aria-label="Search results" className="global-search-results" role="listbox">
             {currentTabResults.length > 0 && <section className="global-search-section">

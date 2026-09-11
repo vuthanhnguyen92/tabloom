@@ -21,6 +21,18 @@ describe("shared organizer dialogs", () => {
     expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ type: `create-${entity}`, name: "Research" }));
   });
 
+  it("offers bookmark import for a new space and leaves it unchecked by default", async () => {
+    const user = userEvent.setup();
+    const onSubmit = vi.fn();
+    render(<WorkspaceDialogs allowBookmarkImport dialog={{ type: "create-space" }} onClose={vi.fn()} onSubmit={onSubmit} />);
+    const checkbox = screen.getByRole("checkbox", { name: "Import bookmarks from this browser" });
+    expect(checkbox).not.toBeChecked();
+    await user.type(screen.getByLabelText("Name"), "Reading");
+    await user.click(checkbox);
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ type: "create-space", name: "Reading", importBookmarks: true }));
+  });
+
   it.each(["space", "collection"] as const)("prefills and edits a %s by stable id", async (entity) => {
     const user = userEvent.setup();
     const onSubmit = vi.fn();

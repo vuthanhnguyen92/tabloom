@@ -22,7 +22,7 @@ describe("web navigation capabilities", () => {
     expect(open.mock.calls).toEqual([["https://a.example", "_blank", "noopener,noreferrer"], ["https://b.example", "_blank", "noopener,noreferrer"]]);
     await done;
     expect(webOrganizerCapabilities.currentTabs).toBeUndefined();
-    expect(webOrganizerCapabilities.bookmarks).toBeUndefined();
+    expect("bookmarks" in webOrganizerCapabilities).toBe(false);
   });
 
   it("uses captured favicons and permits the shared initial fallback when absent", async () => {

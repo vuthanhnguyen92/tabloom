@@ -64,7 +64,7 @@
 .classic-organizer .space-sidebar-heading button:hover,
 .classic-organizer .space-row-actions button:hover { color: #fff; background: rgb(255 255 255 / 10%); }
 .classic-organizer .space-sidebar-heading { display: flex; align-items: center; justify-content: space-between; padding: 0 6px 7px 10px; }
-.classic-organizer .space-sidebar-heading span { color: #a6a0c3; font-size: 9px; font-weight: 700; letter-spacing: .14em; }
+.classic-organizer .space-sidebar-heading span { color: #a6a0c3; font-size: 12px; font-weight: 700; letter-spacing: .14em; }
 .classic-organizer .space-sidebar-heading button { width: 27px; height: 27px; }
 .classic-organizer .space-list { display: flex; flex-direction: column; gap: 5px; }
 .classic-organizer .space-row { position: relative; min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr); align-items: center; border-radius: 9px; }
@@ -92,8 +92,13 @@
 .classic-organizer .ext-main { min-width: 0; min-height: 0; padding: 34px 44px; overflow: hidden auto; }
 .classic-organizer .ext-main > header { position: relative; z-index: 25; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 18px; align-items: center; }
 .classic-organizer .classic-header-title { min-width: 0; }
+.classic-organizer .classic-active-space-heading { display: flex; min-width: 0; align-items: center; gap: 8px; }
 .classic-organizer .classic-header-title h1 { margin: 5px 0; overflow: hidden; font-size: 26px; font-weight: 700; line-height: 1.2; letter-spacing: -.04em; text-overflow: ellipsis; white-space: nowrap; }
-.classic-organizer .classic-header-title small { color: var(--danger); font-size: 9px; font-weight: 700; letter-spacing: .14em; }
+.classic-organizer .classic-active-space-heading h1 { min-width: 0; }
+.classic-organizer .active-space-delete { display: inline-grid; width: 32px; height: 32px; flex: 0 0 32px; place-items: center; border: 1px solid transparent; border-radius: 8px; background: transparent; color: var(--muted); cursor: pointer; transition: background-color 140ms ease, border-color 140ms ease, color 140ms ease; }
+.classic-organizer .active-space-delete:hover,
+.classic-organizer .active-space-delete:focus-visible { border-color: color-mix(in srgb, var(--danger) 40%, transparent); background: color-mix(in srgb, var(--danger) 12%, transparent); color: var(--danger); }
+.classic-organizer .classic-header-title small { color: var(--danger); font-size: 12px; font-weight: 700; letter-spacing: .14em; }
 .classic-organizer .ext-header-tools { min-width: 0; display: flex; align-items: center; justify-content: flex-end; gap: 9px; }
 .classic-organizer .ext-col-meta > button:not(.collection-delete),
 .classic-organizer .collection-share { width: 30px; height: 30px; display: grid; place-items: center; padding: 0; border: 0; border-radius: 8px; color: var(--text-muted); background: transparent; }

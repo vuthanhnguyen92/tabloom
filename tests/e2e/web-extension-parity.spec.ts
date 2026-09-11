@@ -1,5 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
-import { buildAccountExtension, dragCollectionPreview, dragRoadmapPreview, openExtension, ready, startOrganizerServer, trackPageErrors } from "./helpers/organizer";
+import { buildAccountExtension, dragRoadmapPreview, openExtension, ready, startOrganizerServer, trackPageErrors } from "./helpers/organizer";
 
 let server: Awaited<ReturnType<typeof startOrganizerServer>>;
 test.beforeAll(async () => { server = await startOrganizerServer(); });
@@ -102,35 +102,20 @@ test("production web and installed extension share geometry and automatic themes
   } finally { await extension.context.close(); }
 });
 
-test("configured extension retains native bookmark controls with isolated account transport", async () => {
+test("configured extension offers bookmark import only while creating a regular space", async () => {
   const fixture = await test.step("Build isolated account extension", () => buildAccountExtension());
   const extension = await test.step("Open installed extension with isolated account transport", () => openExtension(fixture.path, fixture.origin));
   try {
     expect(await extension.page.evaluate(() => Boolean(chrome.bookmarks))).toBe(false);
-    await extension.page.getByRole("button", { name: /Browser Bookmarks/ }).click();
-    await expect(extension.page.getByRole("button", { name: "Sync browser bookmarks" })).toBeVisible();
-    await expect.poll(() => fixture.requests).toContain("/rest/v1/bookmark_sources");
+    await expect(extension.page.getByRole("button", { name: /Browser Bookmarks/ })).toHaveCount(0);
+    await extension.page.getByRole("button", { name: "Add space" }).click();
+    await expect(extension.page.getByRole("checkbox", { name: "Import bookmarks from this browser" })).not.toBeChecked();
     expect(fixture.unexpected).toEqual([]);
     expect(extension.errors).toEqual([]);
   } finally { await extension.context.close(); await fixture.close(); }
 });
 
 for (const surface of ["web", "extension"] as const) {
-  test(`${surface}: collection preview is a usable drop target`, async ({ page: web }) => {
-    const extension = surface === "extension" ? await openExtension() : undefined;
-    const page = extension?.page ?? web;
-    const errors = extension?.errors ?? trackPageErrors(page);
-    try {
-      if (!extension) { await page.setViewportSize({ width: 1440, height: 900 }); await page.goto(server.url); await ready(page); }
-      await dragCollectionPreview(page);
-      await page.mouse.up();
-      await expect(page.locator(".collection-drop-preview")).toHaveCount(0);
-      await expect(page.locator(".ext-columns > article").first()).toHaveAttribute("aria-label", "Build collection");
-      await expect(page.getByRole("button", { name: /Move .+ (up|down|earlier|later)/ })).toHaveCount(0);
-      expect(errors).toEqual([]);
-    } finally { await page.mouse.up().catch(() => undefined); await extension?.context.close(); }
-  });
-
   test(`${surface}: real drag targets, search and persisted collapse`, async ({ page: web }) => {
     let extension: Awaited<ReturnType<typeof openExtension>> | undefined;
     let page: Page;
@@ -142,9 +127,7 @@ for (const surface of ["web", "extension"] as const) {
       await page.mouse.up();
       await expect(page.getByRole("group", { name: "Plan collection" }).locator(".ext-link-card b")).toHaveText(["Launch checklist", "Product roadmap", "Customer brief"]);
       await expect(page.getByRole("button", { name: /Move .+ (up|down|earlier|later)/ })).toHaveCount(0);
-      await dragCollectionPreview(page);
-      await page.mouse.up();
-      await expect(page.locator(".ext-columns > article").first()).toHaveAttribute("aria-label", "Build collection");
+      await expect(page.getByRole("button", { name: /Drag .+ collection/ })).toHaveCount(0);
       await page.getByRole("button", { name: "Search all links" }).click();
       const search = page.getByRole("searchbox", { name: "Search all spaces and collections" });
       await expect(search).toBeFocused();

@@ -5,10 +5,11 @@ import Link from "next/link";
 import { useState } from "react";
 import type { SharedCollectionSnapshot } from "../../../shared/collection-sharing";
 import { hostnameFor } from "../../../shared/domain";
+import { FaviconTile } from "../../../shared/organizer/FaviconTile";
 import { Brand } from "../../components/Brand";
 import { serializeSharedCollectionJsonLd } from "../../lib/shared-collection-metadata";
 
-import { SaveSharedCollectionButton } from "./SaveSharedCollectionButton";
+import { SaveSharedCollectionButton, sharedSaveExplanation } from "./SaveSharedCollectionButton";
 
 const LARGE_COLLECTION_THRESHOLD = 10;
 
@@ -36,11 +37,11 @@ export function SharedCollectionView({ snapshot, token }: { snapshot: SharedColl
     <section aria-labelledby="shared-collection-title" className="shared-collection-shell">
       <div className="shared-collection-heading">
         <div><span className="eyebrow">LIVE COLLECTION</span><h1 className="shared-collection-title" id="shared-collection-title">{snapshot.name}</h1><p>{snapshot.links.length} {snapshot.links.length === 1 ? "link" : "links"}</p></div>
-        <div className="shared-collection-actions"><SaveSharedCollectionButton key={token} token={token} />{!!snapshot.links.length && <button className="button shared-open-all-button" onClick={requestOpenAll}><ExternalLink size={16} /> Open all</button>}</div>
+        <div className="shared-collection-action-block"><div className="shared-collection-actions"><SaveSharedCollectionButton key={token} token={token} showExplanation={false} />{!!snapshot.links.length && <button className="button shared-open-all-button" onClick={requestOpenAll}><ExternalLink size={16} /> Open all</button>}</div><p className="shared-save-explanation">{sharedSaveExplanation}</p></div>
       </div>
       {snapshot.links.length ? <ol aria-label={snapshot.name} className="shared-link-grid">
         {snapshot.links.map((link) => <li key={link.id}><a className="shared-link-card" href={link.url} rel="noreferrer noopener">
-          <i>{link.title[0]?.toUpperCase()}</i>
+          <FaviconTile src={link.favicon_url} title={link.title} />
           <span><b>{link.title}</b><small>{link.description || hostnameFor(link.url)}</small></span>
           <ExternalLink aria-hidden="true" size={15} />
         </a></li>)}

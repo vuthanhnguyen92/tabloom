@@ -47,4 +47,4 @@ Never commit Google client secrets, Supabase service-role keys, or authenticated
 
 ## Capability behavior
 
-Tab grouping is feature-detected. When the API or optional permission is unavailable, **Open all** still opens every saved link and reports that the tabs were opened without a group. Bookmark access remains optional and is requested only when a user starts manual bookmark synchronization. Safari does not expose the WebExtensions bookmarks API, so its build disables local bookmark import and clearly labels that limitation; bookmark collections synchronized from Chromium or Firefox remain readable in Safari.
+Tab grouping is feature-detected. When the API or optional permission is unavailable, **Open all** still opens every saved link and reports that the tabs were opened without a group. Bookmark access remains optional and is requested only when a user explicitly imports bookmarks during onboarding or while creating a space. Safari does not expose the WebExtensions bookmarks API, so its build omits the import option; ordinary collections imported and synchronized from Chromium or Firefox remain available in Safari.

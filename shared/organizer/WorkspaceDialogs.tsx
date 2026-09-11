@@ -17,7 +17,7 @@ export type WorkspaceDialogState =
   | null;
 
 export type WorkspaceDialogCommand =
-  | { type: "create-space"; name: string; color: string }
+  | { type: "create-space"; name: string; color: string; importBookmarks?: boolean }
   | { type: "edit-space"; id: string; name: string; color: string }
   | { type: "create-collection"; spaceId: string; name: string }
   | { type: "edit-collection"; id: string; name: string }
@@ -34,6 +34,7 @@ export type WorkspaceDialogsProps = {
   onSubmit: (command: WorkspaceDialogCommand) => void;
   busy?: boolean;
   error?: string;
+  allowBookmarkImport?: boolean;
 };
 
 export function WorkspaceDialogs({ dialog, ...props }: WorkspaceDialogsProps) {
@@ -42,12 +43,13 @@ export function WorkspaceDialogs({ dialog, ...props }: WorkspaceDialogsProps) {
   return <WorkspaceDialog key={`${dialog.type}:${identity}`} dialog={dialog} {...props} />;
 }
 
-function WorkspaceDialog({ dialog, onClose, onSubmit, busy = false, error }: Omit<WorkspaceDialogsProps, "dialog"> & { dialog: NonNullable<WorkspaceDialogState> }) {
+function WorkspaceDialog({ dialog, onClose, onSubmit, busy = false, error, allowBookmarkImport = false }: Omit<WorkspaceDialogsProps, "dialog"> & { dialog: NonNullable<WorkspaceDialogState> }) {
   const [name, setName] = useState(dialog.type === "edit-space" ? dialog.space.name : dialog.type === "edit-collection" ? dialog.collection.name : "");
   const [color, setColor] = useState(dialog.type === "edit-space" ? dialog.space.color : "#f56f72");
   const [title, setTitle] = useState(dialog.type === "edit-link" ? dialog.link.title : "");
   const [url, setUrl] = useState(dialog.type === "edit-link" ? dialog.link.url : "https://");
   const [description, setDescription] = useState(dialog.type === "edit-link" ? dialog.link.description : "");
+  const [importBookmarks, setImportBookmarks] = useState(false);
   const [validation, setValidation] = useState("");
   const isLink = dialog.type === "create-link" || dialog.type === "edit-link";
   const isSpace = dialog.type === "create-space" || dialog.type === "edit-space";
@@ -73,7 +75,7 @@ function WorkspaceDialog({ dialog, onClose, onSubmit, busy = false, error }: Omi
       return;
     }
     if (!name.trim() || name.trim().length > 80) return setValidation("Enter a name of 1–80 characters.");
-    if (dialog.type === "create-space") onSubmit({ type: dialog.type, name: name.trim(), color });
+    if (dialog.type === "create-space") onSubmit({ type: dialog.type, name: name.trim(), color, importBookmarks });
     else if (dialog.type === "edit-space") onSubmit({ type: dialog.type, id: dialog.space.id, name: name.trim(), color });
     else if (dialog.type === "create-collection") onSubmit({ type: dialog.type, spaceId: dialog.spaceId, name: name.trim() });
     else if (dialog.type === "edit-collection") onSubmit({ type: dialog.type, id: dialog.collection.id, name: name.trim() });
@@ -91,6 +93,7 @@ function WorkspaceDialog({ dialog, onClose, onSubmit, busy = false, error }: Omi
           <label>Note<textarea name="description" maxLength={1000} value={description} onChange={(event) => { setDescription(event.target.value); setValidation(""); }} /></label>
         </> : <label>Name<input data-initial-focus name="name" maxLength={80} value={name} onChange={(event) => { setName(event.target.value); setValidation(""); }} /></label>}
         {isSpace && <label>Color<input type="color" name="color" value={color} onChange={(event) => setColor(event.target.value)} /></label>}
+        {dialog.type === "create-space" && allowBookmarkImport && <label className="bookmark-import-option"><input type="checkbox" checked={importBookmarks} onChange={(event) => setImportBookmarks(event.target.checked)} />Import bookmarks from this browser</label>}
         {message && <p role="alert">{message}</p>}
         <div className="organizer-dialog-actions"><button type="button" disabled={busy} onClick={onClose}>Cancel</button><button type="submit" className="close-after-save" disabled={busy}>{isLink ? "Save link" : "Save"}</button></div>
       </form> : <>

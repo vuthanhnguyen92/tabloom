@@ -568,16 +568,6 @@ describe("workspace controller", () => {
     expect((await options.repository.load()).links.find((item) => item.id === link.id)?.collection_id).toBe("collection-design");
   });
 
-  it("drops a collection on a row even without a preceding hover event", async () => {
-    const { options } = setup();
-    render(<WorkspaceOrganizer {...options} />);
-    const transfer = { effectAllowed: "none", dropEffect: "none", types: [], getData: () => "" };
-    fireEvent.dragStart(await screen.findByRole("button", { name: "Drag Design collection" }), { dataTransfer: transfer });
-    fireEvent.drop(screen.getByRole("group", { name: "Plan collection" }), { dataTransfer: transfer });
-    await waitFor(() => expect(screen.getAllByRole("group")[0]).toHaveAccessibleName("Design collection"));
-    expect((await options.repository.load()).collections.find((item) => item.id === "collection-design")?.position).toBe(0);
-  });
-
   it("shows an injected external drag target and offers saved destinations for bookmark copies", async () => {
     const { options } = setup();
     const accept = vi.fn(() => true);
