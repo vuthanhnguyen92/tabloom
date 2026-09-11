@@ -91,7 +91,7 @@ export function ControllerCollections({ controller: c, capabilities, resolveFavi
                 c.setDrag({ ...drag, overIndex: remaining.findIndex((item) => item.id === collection.id) + (event.clientY > bounds.top + bounds.height / 2 ? 1 : 0) });
               } else previewLink(event, collection);
             }} onDrop={(event) => { void drop(event, collection, true); }}
-            header={<div className="ext-col-head"><div className="collection-title-group">
+            header={<div className="ext-col-head classic-collection-header"><div className="collection-title-group">
               {writable && <button aria-label={`Drag ${collection.name} collection`} className="collection-drag-handle" draggable onDragStart={(event) => { event.stopPropagation(); event.dataTransfer.effectAllowed = "move"; c.setDrag({ kind: "collection", id: collection.id, overIndex: canonicalIndex }); }} onDragEnd={clearDrag}><GripVertical size={14} /></button>}
               <button aria-label={`${collapsed ? "Expand" : "Collapse"} ${collection.name}`} aria-controls={`collection-body-${collection.id}`} aria-expanded={!collapsed} disabled={c.isPending(collection.id)} className="collection-collapse-toggle" onClick={() => c.toggleCollection(collection.id)}><ChevronRight size={17} /></button>
               {writable ? <button aria-label={`Rename ${collection.name}`} className="collection-name-edit" onClick={() => c.openDialog({ type: "edit-collection", collection })}><b>{collection.name}</b><Pencil size={13} /></button> : <b>{collection.name}</b>}
