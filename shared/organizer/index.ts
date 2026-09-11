@@ -13,3 +13,4 @@ export * from "./WorkspaceDialogs";
 export * from "./mutation-policy";
 export * from "./useWorkspaceController";
 export * from "./WorkspaceOrganizer";
+export * from "./ControllerCollections";
