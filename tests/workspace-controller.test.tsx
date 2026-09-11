@@ -10,6 +10,8 @@ import { createWebPreferenceStore } from "../shared/organizer/preferences";
 import { applyMutationFailure, reduceWorkspaceSnapshot } from "../shared/organizer/mutation-policy";
 import { useWorkspaceController } from "../shared/organizer/useWorkspaceController";
 import { WorkspaceOrganizer } from "../shared/organizer/WorkspaceOrganizer";
+import type { WorkspaceOrganizerProps } from "../shared/organizer/WorkspaceOrganizer";
+import { ClassicWorkspaceOrganizerView } from "../shared/classic-organizer/ClassicWorkspaceOrganizer";
 import { SupabaseTrashRepository } from "../shared/trash-repository";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { LocalTrashRepository } from "../extension/local-trash-repository";
@@ -30,6 +32,15 @@ function setup() {
   const values = new Map<string, string>();
   const preferenceStore = createWebPreferenceStore({ getItem: (key) => values.get(key) ?? null, setItem: (key, value) => { values.set(key, value); }, removeItem: (key) => { values.delete(key); } });
   return { values, options: { repository: new MemoryWorkspaceRepository("demo-user", snapshot), preferenceStore, preferenceScope: "account", userId: "demo-user", mutationPolicy: "rollbackOnFailure" as const, capabilities } };
+}
+
+function WorkspaceOrganizerWithTrashTrigger(props: WorkspaceOrganizerProps) {
+  const controller = useWorkspaceController(props);
+  return <ClassicWorkspaceOrganizerView
+    {...props}
+    accountControls={<button type="button" onClick={() => controller.setTrashOpen(true)}>Trash</button>}
+    controller={controller}
+  />;
 }
 
 describe("workspace mutation policy", () => {
@@ -142,7 +153,7 @@ describe("workspace controller", () => {
       if (outcome === "sync-failure") throw new LocallyCommittedTrashError(canonical);
       return canonical;
     } };
-    render(<WorkspaceOrganizer {...options} trashRepository={trashRepository} />);
+    render(<WorkspaceOrganizerWithTrashTrigger {...options} trashRepository={trashRepository} />);
     await userEvent.click(await screen.findByRole("button", { name: `Edit ${edited.title}` }));
     await userEvent.clear(screen.getByLabelText("Title"));
     await userEvent.type(screen.getByLabelText("Title"), "Rejected edit");
@@ -202,7 +213,7 @@ describe("workspace controller", () => {
   it("keeps expanded space actions overlaid without consuming name layout width", async () => {
     const { options } = setup();
     const style = document.createElement("style");
-    style.textContent = readFileSync("shared/organizer/organizer.css", "utf8");
+    style.textContent = readFileSync("shared/classic-organizer/classic-organizer.css", "utf8");
     document.head.appendChild(style);
     try {
       render(<WorkspaceOrganizer {...options} />);
@@ -365,7 +376,7 @@ describe("workspace controller", () => {
     const create = options.repository.createSpace.bind(options.repository);
     options.repository.createSpace = async (input) => { await gate.promise; return create(input); };
     render(<WorkspaceOrganizer {...options} />);
-    await userEvent.click(await screen.findByRole("button", { name: "New space" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Add space" }));
     await userEvent.type(screen.getByLabelText("Name"), "Pending space");
     await userEvent.click(screen.getByRole("button", { name: "Save" }));
     expect(await screen.findByRole("button", { name: "Open Pending space" })).toBeDisabled();

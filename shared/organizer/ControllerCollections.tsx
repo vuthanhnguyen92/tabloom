@@ -4,7 +4,7 @@ import { CollectionShareDialog } from "../CollectionShareDialog";
 import type { Collection } from "../domain";
 import { CollectionLayout } from "./CollectionList";
 import { CollectionSection } from "./CollectionSection";
-import { SavedLinkCard, type OrganizerFaviconResolver } from "./SavedLinkCard";
+import { SavedLinkCard } from "./SavedLinkCard";
 import { previewCollectionDrop, previewLinkTransfer } from "./drag-model";
 import { isWritable } from "./mutation-policy";
 import type { WorkspaceController } from "./useWorkspaceController";

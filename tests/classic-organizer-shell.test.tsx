@@ -1,6 +1,6 @@
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import { webOrganizerCapabilities } from "../app/app/web-organizer-capabilities";
 import { createDemoSnapshot } from "../shared/domain";
 import { WorkspaceOrganizer } from "../shared/organizer/WorkspaceOrganizer";
