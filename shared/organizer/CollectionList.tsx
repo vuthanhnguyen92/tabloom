@@ -522,13 +522,11 @@ export function CollectionList({ collections, links, allLinks = links, bookmarkD
               copyable={link.origin === "browser-bookmark" && !!onBookmarkDrop}
               highlighted={link.id === highlightedLinkId || link.id === pendingDuplicateMove?.duplicate.id}
               favicon={resolveFavicon({ pageUrl: displayLink.url, capturedUrl: displayLink.favicon_url, size: 32 })}
-              moveDestinations={orderedCollections}
               actions={{
                 onEdit: () => startEditingLink(displayLink),
                 onDelete: () => setPendingDeleteLink(displayLink),
                 onMoveEarlier: linkIndex > 0 ? () => void moveLinkByStep(link, -1) : undefined,
                 onMoveLater: linkIndex < canonicalLinks.length - 1 ? () => void moveLinkByStep(link, 1) : undefined,
-                onMoveToCollection: orderedCollections.some((item) => canMutateCollection(item) && item.id !== collection.id) ? (id) => void requestLinkMove(link.id, id) : undefined,
               }}
               onDragStart={(event) => { event.stopPropagation(); if (isRemovingLink) return event.preventDefault(); event.dataTransfer.effectAllowed = link.origin === "browser-bookmark" ? "copy" : "move"; setLinkDropPreview(null); setDragged(link.origin === "browser-bookmark" ? { kind: "browser-bookmark", link } : { kind: "saved-link", id: link.id }); }}
               onDragEnd={clearDrag}

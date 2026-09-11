@@ -1,6 +1,6 @@
 import { ArrowDown, ArrowUp, GripVertical, Pencil, Trash2 } from "lucide-react";
 import type { DragEventHandler } from "react";
-import { hostnameFor, type Collection, type SavedLink } from "../domain";
+import { hostnameFor, type SavedLink } from "../domain";
 import { FaviconTile } from "./FaviconTile";
 
 export type OrganizerFaviconResolver = (input: { pageUrl: string; capturedUrl?: string | null; size?: number }) => string | null;
@@ -9,14 +9,12 @@ export type SavedLinkActions = {
   onDelete?(): void;
   onMoveEarlier?(): void;
   onMoveLater?(): void;
-  onMoveToCollection?(id: string): void;
 };
 export type SavedLinkCardProps = {
   link: SavedLink;
   writable: boolean;
   favicon?: string | null;
   actions?: SavedLinkActions;
-  moveDestinations?: Collection[];
   dragging?: boolean;
   previewSource?: boolean;
   removing?: boolean;
@@ -28,7 +26,7 @@ export type SavedLinkCardProps = {
   onDrop?: DragEventHandler<HTMLElement>;
 };
 
-export function SavedLinkCard({ link, writable, favicon, actions = {}, moveDestinations = [], dragging, previewSource, removing, highlighted, copyable, onDragStart, onDragEnd, onDragOver, onDrop }: SavedLinkCardProps) {
+export function SavedLinkCard({ link, writable, favicon, actions = {}, dragging, previewSource, removing, highlighted, copyable, onDragStart, onDragEnd, onDragOver, onDrop }: SavedLinkCardProps) {
   const canWrite = writable && link.origin === "saved" && !link.read_only && !removing;
   const canDrag = Boolean(onDragStart && !removing && (canWrite || copyable));
   const subtitle = link.description || hostnameFor(link.url);
@@ -47,13 +45,9 @@ export function SavedLinkCard({ link, writable, favicon, actions = {}, moveDesti
     {canWrite && <div className="classic-card-actions">
       {actions.onEdit && <button aria-label={`Edit ${link.title}`} className="saved-link-action saved-link-edit" draggable={false} onClick={(event) => { event.preventDefault(); event.stopPropagation(); actions.onEdit?.(); }}><Pencil aria-hidden="true" size={14} /></button>}
       {actions.onDelete && <button aria-label={`Delete ${link.title}`} className="saved-link-action saved-link-delete" draggable={false} onClick={(event) => { event.preventDefault(); event.stopPropagation(); actions.onDelete?.(); }}><Trash2 aria-hidden="true" size={14} /></button>}
-      {(actions.onMoveEarlier || actions.onMoveLater || actions.onMoveToCollection) && <div className="saved-link-move-actions">
+      {(actions.onMoveEarlier || actions.onMoveLater) && <div className="saved-link-move-actions">
         <button aria-label={`Move ${link.title} earlier`} disabled={!actions.onMoveEarlier} draggable={false} onClick={(event) => { event.stopPropagation(); actions.onMoveEarlier?.(); }}><ArrowUp aria-hidden="true" size={12} /></button>
         <button aria-label={`Move ${link.title} later`} disabled={!actions.onMoveLater} draggable={false} onClick={(event) => { event.stopPropagation(); actions.onMoveLater?.(); }}><ArrowDown aria-hidden="true" size={12} /></button>
-        {actions.onMoveToCollection && <select aria-label={`Move ${link.title} to collection`} value="" onClick={(event) => event.stopPropagation()} onChange={(event) => actions.onMoveToCollection?.(event.target.value)}>
-          <option value="" disabled>Move to…</option>
-          {moveDestinations.filter((item) => item.id !== link.collection_id && item.origin === "saved" && !item.read_only).map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
-        </select>}
       </div>}
     </div>}
   </div>;

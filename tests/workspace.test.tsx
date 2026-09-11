@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { WorkspaceClient } from "../app/app/WorkspaceClient";
@@ -166,12 +166,17 @@ describe("WorkspaceClient", () => {
     expect(await screen.findByRole("button", { name: "Rename Strategy" })).toBeInTheDocument();
   });
 
-  it("moves links between collections with accessible controls", async () => {
+  it("moves links between collections by drag and drop without a Move to selector", async () => {
     const repository = new MemoryWorkspaceRepository("demo-user", createDemoSnapshot());
-    const user = userEvent.setup();
     render(<WorkspaceClient repository={repository} mode="demo" />);
     await screen.findByText("Product roadmap");
-    await user.selectOptions(screen.getByRole("combobox", { name: "Move Product roadmap to collection" }), "collection-design");
+    const dataTransfer = { effectAllowed: "none", dropEffect: "none", types: [], getData: () => "" };
+    fireEvent.dragStart(screen.getByRole("button", { name: "Drag Product roadmap" }), { dataTransfer });
+    fireEvent.dragOver(screen.getByRole("link", { name: /Brand system/ }), { dataTransfer });
+    const target = screen.getByRole("group", { name: "Design collection" }).querySelector(".ext-link-drop-preview")!;
+    expect(target).toBeInTheDocument();
+    fireEvent.drop(target, { dataTransfer });
+    expect(screen.queryByRole("combobox", { name: "Move Product roadmap to collection" })).not.toBeInTheDocument();
     await waitFor(async () => {
       const snapshot = await repository.load();
       expect(snapshot.links.find((link) => link.title === "Product roadmap")?.collection_id).toBe("collection-design");

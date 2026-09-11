@@ -24,6 +24,18 @@ beforeAll(() => {
 afterAll(() => style.remove());
 
 describe("shared saved-link cards", () => {
+  it("keeps cross-collection movement on drag handles without a Move to selector", () => {
+    render(<SavedLinkCard
+      link={link}
+      writable
+      favicon={null}
+      onDragStart={vi.fn()}
+    />);
+
+    expect(screen.getByRole("button", { name: `Drag ${link.title}` })).toHaveAttribute("draggable", "true");
+    expect(screen.queryByRole("combobox", { name: `Move ${link.title} to collection` })).not.toBeInTheDocument();
+  });
+
   it("keeps native navigation separate from small draggable and edit controls", async () => {
     const edit = vi.fn();
     render(<SavedLinkCard link={link} writable favicon={null} actions={{ onEdit: edit }} onDragStart={vi.fn()} />);
@@ -153,13 +165,6 @@ describe("shared collection interactions", () => {
     for (let hover = 0; hover < 3; hover++) fireEvent.dragOver(slot.firstElementChild!, { dataTransfer: transfer });
     expect(grid.firstElementChild).toBe(slot);
     expect(getComputedStyle(slot).pointerEvents).toBe("auto");
-  });
-
-  it("moves a saved link into another collection through its keyboard-accessible destination control", async () => {
-    const { repository, reload } = setup();
-    await userEvent.selectOptions(screen.getByRole("combobox", { name: "Move Product roadmap to collection" }), "collection-design");
-    await waitFor(() => expect(reload).toHaveBeenCalledOnce());
-    expect((await repository.load()).links.find((item) => item.id === link.id)?.collection_id).toBe("collection-design");
   });
 
   it("shows an insertion target and shifts the source out of its former slot before committing", async () => {

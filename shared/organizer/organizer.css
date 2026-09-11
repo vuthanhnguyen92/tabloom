@@ -258,10 +258,9 @@ button, input, select, textarea { margin: 0; color: inherit; font: inherit; line
 .card-drag-indicator:active, .card-drag-indicator.dragging { cursor: grabbing; }
 .ext-link-card > a.dragging { cursor: pointer; }
 .ext-link-card.drag-preview-source { position: absolute; opacity: 0; pointer-events: none; }
-.saved-link-move-actions { position: absolute; z-index: 3; left: 5px; bottom: 3px; display: flex; gap: 2px; max-width: 158px; opacity: 0; pointer-events: none; background: var(--surface-panel); border-radius: 5px; }
+.saved-link-move-actions { position: absolute; z-index: 3; left: 5px; bottom: 3px; display: flex; gap: 2px; opacity: 0; pointer-events: none; background: var(--surface-panel); border-radius: 5px; }
 .saved-link-move-actions button { display: grid; place-items: center; width: 20px; height: 20px; border: 0; padding: 0; border-radius: 4px; background: transparent; color: var(--text-muted); cursor: pointer; }
 .saved-link-move-actions button:disabled { opacity: .35; cursor: default; }
-.saved-link-move-actions select { min-width: 0; width: 104px; height: 20px; border: 1px solid var(--border-default); border-radius: 4px; color: var(--text-primary); background: var(--surface-panel); font: 10px Poppins, sans-serif; cursor: pointer; }
 .ext-link-card:hover .saved-link-move-actions, .ext-link-card:focus-within .saved-link-move-actions { opacity: 1; pointer-events: auto; }
 .ext-columns, .ext-columns button, .ext-columns input { font-family: Poppins, sans-serif; }
 .ext-link-card, .ext-columns article { transition: transform var(--motion-base) var(--ease-standard); }

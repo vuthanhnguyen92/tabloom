@@ -110,11 +110,9 @@ export function ControllerCollections({ controller: c, capabilities, resolveFavi
               return <Fragment key={link.id}>
                 {preview && sourceLink && linkSlot(collection, index)}
                 <ControllerCard capabilities={capabilities} resolveFavicon={resolveFavicon} link={link} highlighted={link.id === highlightedLinkId} writable={writable && !c.isPending(link.id)} dragging={sourceLink} previewSource={sourceLink && preview} copyable={link.origin === "browser-bookmark" && !!onBookmarkDrop}
-                  moveDestinations={c.snapshot.collections.filter(canWrite)}
                   actions={{ onEdit: () => c.openDialog({ type: "edit-link", link }), onDelete: trashRepository ? () => { void c.deleteLink(link.id); } : undefined,
                     onMoveEarlier: canonicalIndex > 0 ? () => { void c.moveLink(link.id, collection.id, canonicalIndex - 1); } : undefined,
                     onMoveLater: canonicalIndex < canonicalLinks.length - 1 ? () => { void c.moveLink(link.id, collection.id, canonicalIndex + 1); } : undefined,
-                    onMoveToCollection: (collectionId) => { void c.moveLink(link.id, collectionId, c.snapshot.links.filter((item) => item.collection_id === collectionId).length); },
                   }} onDragStart={(event) => {
                     event.stopPropagation(); event.dataTransfer.effectAllowed = link.origin === "browser-bookmark" ? "copy" : "move";
                     c.setDrag(link.origin === "browser-bookmark" ? { kind: "browser-bookmark", link } : { kind: "saved-link", id: link.id, sourceCollectionId: collection.id, targetCollectionId: collection.id, overIndex: canonicalIndex });
