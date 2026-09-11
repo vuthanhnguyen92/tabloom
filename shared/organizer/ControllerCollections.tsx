@@ -1,4 +1,4 @@
-import { ArrowDown, ArrowUp, ChevronRight, GripVertical, Pencil, Plus, Share2, Trash2 } from "lucide-react";
+import { ChevronRight, GripVertical, Pencil, Plus, Share2, Trash2 } from "lucide-react";
 import { Fragment, useEffect, useState, type DragEvent } from "react";
 import { CollectionShareDialog } from "../CollectionShareDialog";
 import type { Collection } from "../domain";
@@ -27,7 +27,10 @@ export function ControllerCollections({ controller: c, capabilities, resolveFavi
   const collections = c.snapshot.collections.filter((item) => item.space_id === c.selectedSpaceId).sort((a, b) => a.position - b.position);
   const drag = c.drag;
   const displayed = drag?.kind === "collection" ? previewCollectionDrop(collections, drag.id, drag.overIndex) : collections;
-  const links = drag?.kind === "saved-link" ? previewLinkTransfer(c.snapshot.links, drag.id, drag.targetCollectionId, drag.overIndex) : c.snapshot.links;
+  const hasLinkTarget = drag?.kind === "saved-link" && drag.targetCollectionId !== undefined && drag.overIndex !== undefined;
+  const links = drag?.kind === "saved-link" && drag.targetCollectionId !== undefined && drag.overIndex !== undefined
+    ? previewLinkTransfer(c.snapshot.links, drag.id, drag.targetCollectionId, drag.overIndex)
+    : c.snapshot.links;
   const canWrite = (collection: Collection) => !c.isPending(collection.id) && isWritable(collection) && isWritable(c.snapshot.spaces.find((space) => space.id === collection.space_id));
   function clearDrag() { c.setDrag(null); c.setExternalDropTarget(null); }
   function accept(event: DragEvent, collection: Collection) {
@@ -74,7 +77,7 @@ export function ControllerCollections({ controller: c, capabilities, resolveFavi
         const canonicalLinks = c.snapshot.links.filter((item) => item.collection_id === collection.id).sort((a, b) => a.position - b.position);
         const collapsed = c.collapsedCollections.has(collection.id);
         const source = drag?.kind === "collection" && drag.id === collection.id;
-        const preview = drag?.kind === "saved-link" && drag.targetCollectionId === collection.id;
+        const preview = hasLinkTarget && drag.targetCollectionId === collection.id;
         const externalTarget = c.externalDropTarget?.collectionId === collection.id && c.externalDropTarget.session === externalDrop?.session;
         return <Fragment key={collection.id}>
           {source && <div className="collection-drop-preview" onDragOver={(event) => { event.preventDefault(); event.stopPropagation(); }} onDrop={(event) => { void drop(event, collection); }}><span>Drop collection here</span></div>}
@@ -97,7 +100,6 @@ export function ControllerCollections({ controller: c, capabilities, resolveFavi
               {writable ? <button aria-label={`Rename ${collection.name}`} className="collection-name-edit" onClick={() => c.openDialog({ type: "edit-collection", collection })}><b>{collection.name}</b><Pencil size={13} /></button> : <b>{collection.name}</b>}
             </div><div className="ext-col-meta">
               {writable && <>
-                <div className="collection-reorder-actions"><button aria-label={`Move ${collection.name} up`} disabled={canonicalIndex === 0 || !canWrite(collections[canonicalIndex - 1])} onClick={() => { void c.moveCollection(collection.id, canonicalIndex - 1); }}><ArrowUp size={14} /></button><button aria-label={`Move ${collection.name} down`} disabled={canonicalIndex === collections.length - 1 || !canWrite(collections[canonicalIndex + 1])} onClick={() => { void c.moveCollection(collection.id, canonicalIndex + 1); }}><ArrowDown size={14} /></button></div>
                 {share && <button aria-label={`Share ${collection.name}`} className="collection-share" onClick={() => setSharingCollection(collection)}><Share2 size={15} /></button>}
                 <button aria-label={`Add link to ${collection.name}`} onClick={() => c.openDialog({ type: "create-link", collectionId: collection.id })}><Plus size={15} /></button>
               </>}
@@ -106,16 +108,12 @@ export function ControllerCollections({ controller: c, capabilities, resolveFavi
             </div></div>}>
             {collectionLinks.map((link, index) => {
               const sourceLink = drag?.kind === "saved-link" && drag.id === link.id;
-              const canonicalIndex = canonicalLinks.findIndex((item) => item.id === link.id);
               return <Fragment key={link.id}>
                 {preview && sourceLink && linkSlot(collection, index)}
                 <ControllerCard capabilities={capabilities} resolveFavicon={resolveFavicon} link={link} highlighted={link.id === highlightedLinkId} writable={writable && !c.isPending(link.id)} dragging={sourceLink} previewSource={sourceLink && preview} copyable={link.origin === "browser-bookmark" && !!onBookmarkDrop}
-                  actions={{ onEdit: () => c.openDialog({ type: "edit-link", link }), onDelete: trashRepository ? () => { void c.deleteLink(link.id); } : undefined,
-                    onMoveEarlier: canonicalIndex > 0 ? () => { void c.moveLink(link.id, collection.id, canonicalIndex - 1); } : undefined,
-                    onMoveLater: canonicalIndex < canonicalLinks.length - 1 ? () => { void c.moveLink(link.id, collection.id, canonicalIndex + 1); } : undefined,
-                  }} onDragStart={(event) => {
+                  actions={{ onEdit: () => c.openDialog({ type: "edit-link", link }), onDelete: trashRepository ? () => { void c.deleteLink(link.id); } : undefined }} onDragStart={(event) => {
                     event.stopPropagation(); event.dataTransfer.effectAllowed = link.origin === "browser-bookmark" ? "copy" : "move";
-                    c.setDrag(link.origin === "browser-bookmark" ? { kind: "browser-bookmark", link } : { kind: "saved-link", id: link.id, sourceCollectionId: collection.id, targetCollectionId: collection.id, overIndex: canonicalIndex });
+                    c.setDrag(link.origin === "browser-bookmark" ? { kind: "browser-bookmark", link } : { kind: "saved-link", id: link.id, sourceCollectionId: collection.id });
                   }} onDragEnd={clearDrag} onDragOver={(event) => previewLink(event, collection, link.id)} onDrop={(event) => { void drop(event, collection); }} />
               </Fragment>;
             })}

@@ -1,4 +1,4 @@
-import { ArrowDown, ArrowUp, ChevronRight, GripVertical, Pencil, Share2, Trash2, X } from "lucide-react";
+import { ChevronRight, GripVertical, Pencil, Share2, Trash2, X } from "lucide-react";
 import { Fragment, useEffect, useLayoutEffect, useRef, useState, type DragEvent, type HTMLAttributes } from "react";
 import { CollectionShareDialog } from "../CollectionShareDialog";
 import type { CollectionShareRepository, ShareAvailability } from "../collection-sharing";
@@ -8,7 +8,7 @@ import type { WorkspaceRepository } from "../repository";
 import type { CollectionCollapsePreference } from "./preferences";
 import { CollectionSection } from "./CollectionSection";
 import { SavedLinkCard, type OrganizerFaviconResolver } from "./SavedLinkCard";
-import { previewCollectionDrop, previewLinkDrop as reorderLinkPreview } from "./drag-model";
+import { previewCollectionDrop } from "./drag-model";
 
 const capturedFavicon: OrganizerFaviconResolver = ({ capturedUrl }) => capturedUrl ?? null;
 
@@ -277,22 +277,6 @@ export function CollectionList({ collections, links, allLinks = links, bookmarkD
     await onReload();
   }
 
-  async function moveCollectionByStep(collectionId: string, direction: -1 | 1) {
-    const index = orderedCollections.findIndex((collection) => collection.id === collectionId);
-    const targetIndex = index + direction;
-    if (index < 0 || targetIndex < 0 || targetIndex >= orderedCollections.length) return;
-    const target = orderedCollections[targetIndex];
-    if (!canMutateCollection(orderedCollections[index]) || !canMutateCollection(target)) return;
-    const orderedIds = orderedCollections.map((collection) => collection.id);
-    [orderedIds[index], orderedIds[targetIndex]] = [orderedIds[targetIndex], orderedIds[index]];
-    try {
-      await repository.reorderCollections(orderedCollections[index].space_id, orderedIds);
-      await onReload();
-    } catch (reason) {
-      onError?.(reason instanceof Error ? reason.message : "Could not move this collection.");
-    }
-  }
-
   async function persistLinkMove(sourceId: string, collectionId: string, targetLinkId?: string) {
     const orderedIds = allLinks
       .filter((item) => item.origin === "saved" && item.collection_id === collectionId && item.id !== sourceId)
@@ -309,15 +293,6 @@ export function CollectionList({ collections, links, allLinks = links, bookmarkD
   async function moveLink(collectionId: string, targetLinkId?: string) {
     if (dragged?.kind !== "saved-link") return;
     await requestLinkMove(dragged.id, collectionId, targetLinkId);
-  }
-
-  async function moveLinkByStep(link: SavedLink, direction: -1 | 1) {
-    const ordered = allLinks.filter((item) => item.collection_id === link.collection_id).sort((a, b) => a.position - b.position);
-    const index = ordered.findIndex((item) => item.id === link.id);
-    const destination = index + direction;
-    if (index < 0 || destination < 0 || destination >= ordered.length) return;
-    const preview = reorderLinkPreview(ordered, link.id, destination);
-    await requestLinkMove(link.id, link.collection_id, preview[destination + 1]?.id);
   }
 
   async function requestLinkMove(sourceId: string, collectionId: string, targetLinkId?: string) {
@@ -467,9 +442,6 @@ export function CollectionList({ collections, links, allLinks = links, bookmarkD
       const isEditingCollection = editingCollection?.id === collection.id;
       const isCollapsed = collapsedState.scope === collapseScope && collapsedState.ids.has(collection.id);
       const isDraggedCollection = dragged?.kind === "collection" && dragged.id === collection.id;
-      const canonicalIndex = orderedCollections.findIndex((item) => item.id === collection.id);
-      const canMoveUp = canMutate && canonicalIndex > 0 && canMutateCollection(orderedCollections[canonicalIndex - 1]);
-      const canMoveDown = canMutate && canonicalIndex < orderedCollections.length - 1 && canMutateCollection(orderedCollections[canonicalIndex + 1]);
       return <Fragment key={collection.id}>
       {isDraggedCollection && collectionDropPreview && <div aria-hidden="true" className="collection-drop-preview"><span>Drop collection here</span></div>}
       <CollectionSection collection={displayCollection} links={collectionLinks} writable={canMutate} collapsed={isCollapsed} onOpenCollection={onOpenCollection}
@@ -502,7 +474,6 @@ export function CollectionList({ collections, links, allLinks = links, bookmarkD
           ref={collectionNameInputRef}
           value={editingCollection.value}
         />{editingCollection.error && <small role="alert">{editingCollection.error}</small>}</div> : canMutate ? <button aria-label={`Rename ${displayName}`} className="collection-name-edit" draggable={false} title={`Rename ${displayName}`} onClick={(event) => { event.stopPropagation(); startRenamingCollection(collection, displayName); }}><b>{displayName}</b><Pencil aria-hidden="true" size={13} /></button> : <b className="collection-name-readonly">{displayName}</b>}</div><div className="ext-col-meta">
-          {canMutate && !isEditingCollection && <div className="collection-reorder-actions"><button aria-label={`Move ${displayName} up`} disabled={!canMoveUp} draggable={false} onClick={(event) => { event.stopPropagation(); void moveCollectionByStep(collection.id, -1); }}><ArrowUp size={14} /></button><button aria-label={`Move ${displayName} down`} disabled={!canMoveDown} draggable={false} onClick={(event) => { event.stopPropagation(); void moveCollectionByStep(collection.id, 1); }}><ArrowDown size={14} /></button></div>}
           {canMutate && !isEditingCollection && share && <button aria-label={`Share ${displayName}`} className="collection-share" draggable={false} title={`Share ${displayName}`} onClick={(event) => { event.preventDefault(); event.stopPropagation(); clearDrag(); setSharingCollection(displayCollection); }}><Share2 size={15} /></button>}
           <span>{collectionLinks.length} links</span>
           {canMutate && !isEditingCollection && <button aria-label={`Delete ${displayName}`} className="collection-delete" draggable={false} title={`Delete ${displayName}`} onClick={(event) => { event.stopPropagation(); setPendingDelete(displayCollection); }}><Trash2 size={15} /></button>}
@@ -512,8 +483,6 @@ export function CollectionList({ collections, links, allLinks = links, bookmarkD
             const isRemovingLink = removingLinkId === link.id;
             const optimisticText = optimisticLinkText[link.id];
             const displayLink = optimisticText ? { ...link, ...optimisticText } : link;
-            const canonicalLinks = allLinks.filter((item) => item.collection_id === collection.id).sort((a, b) => a.position - b.position);
-            const linkIndex = canonicalLinks.findIndex((item) => item.id === link.id);
             const isDragged = (dragged?.kind === "saved-link" && dragged.id === link.id) || (dragged?.kind === "browser-bookmark" && dragged.link.id === link.id);
             return <Fragment key={link.id}>
             {showsPreview && linkDropPreview.targetLinkId === link.id && renderLinkDropSlot(collection, link.id)}
@@ -525,8 +494,6 @@ export function CollectionList({ collections, links, allLinks = links, bookmarkD
               actions={{
                 onEdit: () => startEditingLink(displayLink),
                 onDelete: () => setPendingDeleteLink(displayLink),
-                onMoveEarlier: linkIndex > 0 ? () => void moveLinkByStep(link, -1) : undefined,
-                onMoveLater: linkIndex < canonicalLinks.length - 1 ? () => void moveLinkByStep(link, 1) : undefined,
               }}
               onDragStart={(event) => { event.stopPropagation(); if (isRemovingLink) return event.preventDefault(); event.dataTransfer.effectAllowed = link.origin === "browser-bookmark" ? "copy" : "move"; setLinkDropPreview(null); setDragged(link.origin === "browser-bookmark" ? { kind: "browser-bookmark", link } : { kind: "saved-link", id: link.id }); }}
               onDragEnd={clearDrag}

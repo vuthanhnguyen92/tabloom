@@ -229,7 +229,7 @@ describe("CollectionRows", () => {
     expect(repository.get).toHaveBeenCalledWith("collection-plan");
   });
 
-  it("keeps sharing visible without overlapping the collection controls", () => {
+  it("keeps sharing visible and omits position arrow controls", () => {
     const snapshot = createDemoSnapshot();
     render(<CollectionRows
       collections={snapshot.collections}
@@ -248,12 +248,11 @@ describe("CollectionRows", () => {
 
     const shareButton = screen.getByRole("button", { name: "Share Plan" });
     const metadata = shareButton.closest<HTMLElement>(".ext-col-meta")!;
-    const reorderActions = screen.getByRole("button", { name: "Move Plan down" }).closest<HTMLElement>(".collection-reorder-actions")!;
 
     expect(getComputedStyle(shareButton).position).toBe("static");
     expect(getComputedStyle(shareButton).opacity).toBe("1");
-    expect(metadata).toContainElement(reorderActions);
-    expect(getComputedStyle(reorderActions).right).toBe("calc(100% + 8px)");
+    expect(metadata).toContainElement(shareButton);
+    expect(screen.queryByRole("button", { name: /Move .+ (up|down|earlier|later)/ })).not.toBeInTheDocument();
   });
 
   it("never offers sharing for browser-bookmark collections", () => {
@@ -809,17 +808,11 @@ describe("CollectionRows", () => {
     expect((await repository.load()).collections.sort((a, b) => a.position - b.position).map((item) => item.name)).toEqual(["Design", "Plan", "Learn"]);
   });
 
-  it("supports keyboard collection reordering with move actions", async () => {
-    const { repository, onReload } = setup();
+  it("uses collection drag handles without rendering position arrow controls", () => {
+    setup();
     const design = screen.getByRole("group", { name: "Design collection" });
-    const moveUp = within(design).getByRole("button", { name: "Move Design up" });
-    expect(getComputedStyle(moveUp.closest(".collection-reorder-actions")!).top).toBe("15px");
-
-    moveUp.focus();
-    await userEvent.keyboard("{Enter}");
-
-    await waitFor(() => expect(onReload).toHaveBeenCalledOnce());
-    expect((await repository.load()).collections.sort((a, b) => a.position - b.position).map((item) => item.name)).toEqual(["Design", "Plan", "Learn"]);
+    expect(within(design).getByRole("button", { name: "Drag Design collection" })).toHaveAttribute("draggable", "true");
+    expect(within(design).queryByRole("button", { name: /Move Design (up|down)/ })).not.toBeInTheDocument();
   });
 
   it("persists link position and collection when a tile is dragged", async () => {

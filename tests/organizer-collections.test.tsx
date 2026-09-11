@@ -117,13 +117,10 @@ describe("shared collection interactions", () => {
     return { repository, reload };
   }
 
-  it("moves a link with keyboard controls using the full unfiltered collection order", async () => {
-    const { repository, reload } = setup(snapshot.links.filter((item) => item.title !== "Customer brief"));
-    const move = screen.getByRole("button", { name: "Move Launch checklist earlier" });
-    move.focus();
-    await userEvent.keyboard("{Enter}");
-    await waitFor(() => expect(reload).toHaveBeenCalledOnce());
-    expect((await repository.load()).links.filter((item) => item.collection_id === "collection-plan").sort((a, b) => a.position - b.position).map((item) => item.title)).toEqual(["Product roadmap", "Launch checklist", "Customer brief"]);
+  it("omits position arrow controls while keeping link drag handles", () => {
+    setup(snapshot.links.filter((item) => item.title !== "Customer brief"));
+    expect(screen.getByRole("button", { name: "Drag Launch checklist" })).toHaveAttribute("draggable", "true");
+    expect(screen.queryByRole("button", { name: /Move .+ (up|down|earlier|later)/ })).not.toBeInTheDocument();
   });
 
   it("keeps collection dragging isolated to its handle while card bodies drag links", async () => {

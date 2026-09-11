@@ -536,7 +536,20 @@ describe("workspace controller", () => {
     expect(trash.deleteEntity).toHaveBeenCalledWith("collection", "collection-plan", "web", expect.any(String), "intent");
   });
 
-  it("composes slots, native links, keyboard moves and exact drag insertion targets", async () => {
+  it("keeps the native drag source stable until it reaches a valid drop target", async () => {
+    const { options } = setup();
+    render(<WorkspaceOrganizer {...options} />);
+    const anchor = await screen.findByRole("link", { name: /Product roadmap/ });
+    const card = anchor.closest(".ext-link-card")!;
+    const transfer = { effectAllowed: "none", dropEffect: "none", types: [], getData: () => "" };
+
+    fireEvent.dragStart(anchor, { dataTransfer: transfer });
+
+    expect(card).not.toHaveClass("drag-preview-source");
+    expect(screen.queryByText("Drop link here")).not.toBeInTheDocument();
+  });
+
+  it("uses drag and drop—not position arrow buttons—for collection and link ordering", async () => {
     const { options } = setup();
     render(<WorkspaceOrganizer {...options} accountControls={<button>Account</button>} currentTabs={<aside aria-label="Current tabs">Tabs</aside>} />);
     const anchor = await screen.findByRole("link", { name: /Product roadmap/ });
@@ -544,10 +557,9 @@ describe("workspace controller", () => {
     expect(anchor).not.toHaveAttribute("target");
     expect(screen.getByRole("button", { name: "Account" })).toBeVisible();
     expect(screen.getByRole("complementary", { name: "Current tabs" })).toBeVisible();
-    await userEvent.click(screen.getByRole("button", { name: "Move Launch checklist earlier" }));
-    await waitFor(() => expect(within(screen.getByRole("group", { name: "Plan collection" })).getAllByRole("link")[1]).toHaveTextContent("Launch checklist"));
+    expect(screen.queryByRole("button", { name: /Move .+ (earlier|later|up|down)/ })).not.toBeInTheDocument();
     const transfer = { effectAllowed: "none", dropEffect: "none", types: [], getData: () => "" };
-    fireEvent.dragStart(screen.getByRole("button", { name: "Drag Product roadmap" }), { dataTransfer: transfer });
+    fireEvent.dragStart(anchor, { dataTransfer: transfer });
     fireEvent.dragOver(screen.getByRole("link", { name: /Brand system/ }), { dataTransfer: transfer });
     const target = screen.getByRole("group", { name: "Design collection" }).querySelector(".ext-link-drop-preview")!;
     expect(target).toBeInTheDocument();

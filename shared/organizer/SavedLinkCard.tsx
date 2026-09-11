@@ -1,4 +1,4 @@
-import { ArrowDown, ArrowUp, GripVertical, Pencil, Trash2 } from "lucide-react";
+import { GripVertical, Pencil, Trash2 } from "lucide-react";
 import type { DragEventHandler } from "react";
 import { hostnameFor, type SavedLink } from "../domain";
 import { FaviconTile } from "./FaviconTile";
@@ -7,8 +7,6 @@ export type OrganizerFaviconResolver = (input: { pageUrl: string; capturedUrl?: 
 export type SavedLinkActions = {
   onEdit?(): void;
   onDelete?(): void;
-  onMoveEarlier?(): void;
-  onMoveLater?(): void;
 };
 export type SavedLinkCardProps = {
   link: SavedLink;
@@ -45,10 +43,6 @@ export function SavedLinkCard({ link, writable, favicon, actions = {}, dragging,
     {canWrite && <div className="classic-card-actions">
       {actions.onEdit && <button aria-label={`Edit ${link.title}`} className="saved-link-action saved-link-edit" draggable={false} onClick={(event) => { event.preventDefault(); event.stopPropagation(); actions.onEdit?.(); }}><Pencil aria-hidden="true" size={14} /></button>}
       {actions.onDelete && <button aria-label={`Delete ${link.title}`} className="saved-link-action saved-link-delete" draggable={false} onClick={(event) => { event.preventDefault(); event.stopPropagation(); actions.onDelete?.(); }}><Trash2 aria-hidden="true" size={14} /></button>}
-      {(actions.onMoveEarlier || actions.onMoveLater) && <div className="saved-link-move-actions">
-        <button aria-label={`Move ${link.title} earlier`} disabled={!actions.onMoveEarlier} draggable={false} onClick={(event) => { event.stopPropagation(); actions.onMoveEarlier?.(); }}><ArrowUp aria-hidden="true" size={12} /></button>
-        <button aria-label={`Move ${link.title} later`} disabled={!actions.onMoveLater} draggable={false} onClick={(event) => { event.stopPropagation(); actions.onMoveLater?.(); }}><ArrowDown aria-hidden="true" size={12} /></button>
-      </div>}
     </div>}
   </div>;
 }

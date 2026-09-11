@@ -390,7 +390,9 @@ export function useWorkspaceController(options: WorkspaceControllerOptions) {
   function commitDrag() {
     const currentDrag = drag; setDrag(null);
     if (currentDrag?.kind === "collection") return moveCollection(currentDrag.id, currentDrag.overIndex);
-    if (currentDrag?.kind === "saved-link") return moveLink(currentDrag.id, currentDrag.targetCollectionId, currentDrag.overIndex);
+    if (currentDrag?.kind === "saved-link" && currentDrag.targetCollectionId !== undefined && currentDrag.overIndex !== undefined) {
+      return moveLink(currentDrag.id, currentDrag.targetCollectionId, currentDrag.overIndex);
+    }
   }
   return {
     ready: current.ready, bootError, snapshot: current.snapshot, selectedSpaceId: current.selected,
@@ -400,7 +402,7 @@ export function useWorkspaceController(options: WorkspaceControllerOptions) {
     selectSpace, setRailCollapsed, toggleCollection, openDialog, closeDialog, submitDialog,
     requestDelete, deleteLink, rejectDelete, restore, restoreTrashEntry, trashOpen, setTrashOpen, reload, retry, mutate, notify, openCollection, moveLink, moveCollection,
     setSearchOpen, setDrag: (value: OrganizerDragState) => {
-      if (value?.kind === "collection" && isPending(value.id) || value?.kind === "saved-link" && (isPending(value.id) || isPending(value.targetCollectionId))) return;
+      if (value?.kind === "collection" && isPending(value.id) || value?.kind === "saved-link" && (isPending(value.id) || value.targetCollectionId !== undefined && isPending(value.targetCollectionId))) return;
       setDrag(value);
     }, setExternalDropTarget, commitDrag,
     dismissToast: (id: string) => setToasts((items) => items.filter((toast) => toast.id !== id)),

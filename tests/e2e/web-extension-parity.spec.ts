@@ -126,12 +126,12 @@ for (const surface of ["web", "extension"] as const) {
       await page.mouse.up();
       await expect(page.locator(".collection-drop-preview")).toHaveCount(0);
       await expect(page.locator(".ext-columns > article").first()).toHaveAttribute("aria-label", "Build collection");
-      await expect(page.getByRole("button", { name: "Move Build up" })).toBeDisabled();
+      await expect(page.getByRole("button", { name: /Move .+ (up|down|earlier|later)/ })).toHaveCount(0);
       expect(errors).toEqual([]);
     } finally { await page.mouse.up().catch(() => undefined); await extension?.context.close(); }
   });
 
-  test(`${surface}: real drag targets, keyboard ordering, search and persisted collapse`, async ({ page: web }) => {
+  test(`${surface}: real drag targets, search and persisted collapse`, async ({ page: web }) => {
     let extension: Awaited<ReturnType<typeof openExtension>> | undefined;
     let page: Page;
     let errors: string[];
@@ -141,15 +141,9 @@ for (const surface of ["web", "extension"] as const) {
       await dragRoadmapPreview(page);
       await page.mouse.up();
       await expect(page.getByRole("group", { name: "Plan collection" }).locator(".ext-link-card b")).toHaveText(["Launch checklist", "Product roadmap", "Customer brief"]);
-      const earlier = page.getByRole("button", { name: "Move Product roadmap earlier" });
-      await expect(earlier).toBeEnabled();
-      await earlier.focus();
-      await expect(earlier).toBeFocused();
-      await page.keyboard.press("Enter");
-      await expect(page.getByRole("group", { name: "Plan collection" }).locator(".ext-link-card b")).toHaveText(["Product roadmap", "Launch checklist", "Customer brief"]);
-      const moveCollection = page.getByRole("button", { name: "Move Build up" });
-      await moveCollection.focus();
-      await page.keyboard.press("Enter");
+      await expect(page.getByRole("button", { name: /Move .+ (up|down|earlier|later)/ })).toHaveCount(0);
+      await dragCollectionPreview(page);
+      await page.mouse.up();
       await expect(page.locator(".ext-columns > article").first()).toHaveAttribute("aria-label", "Build collection");
       await page.getByRole("button", { name: "Search all links" }).click();
       const search = page.getByRole("searchbox", { name: "Search all spaces and collections" });
@@ -164,7 +158,7 @@ for (const surface of ["web", "extension"] as const) {
       await page.reload();
       await expect(page.getByRole("button", { name: "Expand Plan" })).toBeVisible();
       await page.getByRole("button", { name: "Expand Plan" }).click();
-      await expect(page.getByRole("group", { name: "Plan collection" }).locator(".ext-link-card b")).toHaveText(["Product roadmap", "Launch checklist", "Customer brief"]);
+      await expect(page.getByRole("group", { name: "Plan collection" }).locator(".ext-link-card b")).toHaveText(["Launch checklist", "Product roadmap", "Customer brief"]);
       expect(errors).toEqual([]);
     } finally { await page.mouse.up().catch(() => undefined); await extension?.context.close(); }
   });

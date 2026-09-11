@@ -3,7 +3,7 @@ import type { BrowserTabSummary } from "./capabilities";
 
 export type OrganizerDragState =
   | { kind: "collection"; id: string; overIndex: number }
-  | { kind: "saved-link"; id: string; sourceCollectionId: string; targetCollectionId: string; overIndex: number }
+  | { kind: "saved-link"; id: string; sourceCollectionId: string; targetCollectionId?: string; overIndex?: number }
   | { kind: "browser-tab"; tab: BrowserTabSummary; targetCollectionId?: string; overIndex?: number }
   | { kind: "browser-bookmark"; link: SavedLink; targetCollectionId?: string; overIndex?: number }
   | null;
