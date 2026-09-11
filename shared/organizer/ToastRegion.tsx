@@ -109,7 +109,7 @@ export function ToastRegion({ onDismiss, toasts }: ToastRegionProps) {
   }, []);
 
   if (!toasts.length) return null;
-  return <section aria-label="Notifications" className="organizer-toast-region toast-region">
+  return <section aria-label="Notifications" className="organizer-toast-region toast-region classic-toast-region">
     {toasts.map((toast) => {
       const error = toast.tone === "error";
       return <p className={`organizer-toast ${error ? "error" : ""}`} key={toast.id} role={error ? "alert" : "status"}>
