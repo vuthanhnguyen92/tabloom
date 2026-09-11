@@ -13,6 +13,7 @@ import { WorkspaceHeader, type OrganizerStatus } from "./WorkspaceHeader";
 import { WorkspaceShell } from "./WorkspaceShell";
 import { isWritable } from "./mutation-policy";
 import { useWorkspaceController, type WorkspaceController, type WorkspaceControllerOptions } from "./useWorkspaceController";
+import { ClassicWorkspaceOrganizerView } from "../classic-organizer/ClassicWorkspaceOrganizer";
 
 export type WorkspaceOrganizerProps = WorkspaceControllerOptions & {
   accountControls?: ReactNode;
@@ -32,7 +33,7 @@ export type WorkspaceOrganizerProps = WorkspaceControllerOptions & {
 
 export function WorkspaceOrganizer(props: WorkspaceOrganizerProps) {
   const controller = useWorkspaceController(props);
-  return <WorkspaceOrganizerView {...props} controller={controller} />;
+  return <ClassicWorkspaceOrganizerView {...props} controller={controller} />;
 }
 
 /** Compositions that also coordinate platform sync may retain and supply the controller. */
